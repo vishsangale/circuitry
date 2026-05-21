@@ -89,3 +89,22 @@ def test_condition_number_diag():
 
 def test_condition_number_returns_float():
     assert isinstance(weight.condition_number(torch.eye(3)), float)
+
+
+def test_heavy_tail_alpha_random_matrix():
+    # Marchenko-Pastur bulk → alpha is finite and positive.
+    torch.manual_seed(0)
+    W = torch.randn(64, 64)
+    alpha = weight.heavy_tail_alpha(W)
+    assert isinstance(alpha, float)
+    assert math.isfinite(alpha)
+    assert alpha > 0
+
+
+def test_heavy_tail_alpha_low_rank_is_finite():
+    # Constructed power-law tail (rank ~10 in 64-dim space).
+    torch.manual_seed(0)
+    U = torch.randn(64, 10)
+    V = torch.randn(10, 64)
+    alpha = weight.heavy_tail_alpha(U @ V)
+    assert math.isfinite(alpha)

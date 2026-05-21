@@ -79,3 +79,26 @@ def condition_number(W: ArrayLike, eps: float = 1e-12) -> float:
     if s.numel() == 0 or s[-1].item() < eps:
         return float("inf")
     return float((s[0] / s[-1]).item())
+
+
+def heavy_tail_alpha(W: ArrayLike, top_frac: float = 0.5) -> float:
+    """Hill estimator of the tail index of the squared-singular-value
+    distribution. Computed on the top ``top_frac`` (default half) of squared
+    singular values; that fraction is the empirically robust default used in
+    the mendu paper-2 spectral diagnostics.
+
+    Returns ``+inf`` on degenerate inputs.
+    """
+    s = singular_values(W)
+    if s.numel() < 4:
+        return float("inf")
+    s2 = s.pow(2).sort(descending=True).values
+    k = max(2, int(s2.numel() * top_frac))
+    top = s2[:k]
+    smin = top[-1].clamp_min(1e-30)
+    # Hill: alpha_hat = k / sum(log(s_i / s_k))
+    logs = torch.log(top / smin)
+    denom = logs.sum().item()
+    if denom <= 0:
+        return float("inf")
+    return float(k / denom)
