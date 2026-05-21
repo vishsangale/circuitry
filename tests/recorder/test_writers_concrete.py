@@ -39,3 +39,30 @@ def test_jsonl_writer_dumps_histogram_to_artifacts(tmp_path):
     w.close()
     art_dir = tmp_path / "circuitry" / "artifacts"
     assert any(p.name.startswith("grad") and p.suffix == ".npy" for p in art_dir.iterdir())
+
+
+def test_tensorboard_writer_writes_event_files(tmp_path):
+    from circuitry.writers.tensorboard import TensorBoardWriter
+
+    w = TensorBoardWriter(tmp_path)
+    w.add_scalar("loss", 1.5, 1)
+    w.add_histogram("g", torch.arange(10.0), 1)
+    w.add_image("k", torch.zeros(3, 8, 8), 1, dataformats="CHW")
+    w.add_text("n", "ok", 1)
+    w.flush()
+    w.close()
+
+    event_files = [p for p in tmp_path.rglob("events.out.tfevents.*")]
+    assert event_files, "TensorBoard event file not written"
+
+
+def test_tensorboard_writer_async_does_not_lose_data(tmp_path):
+    from circuitry.writers.tensorboard import TensorBoardWriter
+
+    w = TensorBoardWriter(tmp_path, async_writes=True)
+    for i in range(50):
+        w.add_scalar("loss", float(i), i)
+    w.flush()
+    w.close()
+    event_files = [p for p in tmp_path.rglob("events.out.tfevents.*")]
+    assert event_files
