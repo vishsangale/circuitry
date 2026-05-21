@@ -1,0 +1,21 @@
+[importlinter]
+root_package = circuitry
+
+[importlinter:contract:core-is-pure]
+name = core/ is pure — no imports of higher layers
+type = forbidden
+source_modules =
+    circuitry.core
+forbidden_modules =
+    circuitry.recorder
+    circuitry.recipes
+    circuitry.writers
+    circuitry.cli
+
+[importlinter:contract:recipes-not-cli]
+name = recipes/ must not import cli/
+type = forbidden
+source_modules =
+    circuitry.recipes
+forbidden_modules =
+    circuitry.cli
