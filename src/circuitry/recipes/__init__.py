@@ -47,8 +47,8 @@ def _clear_registry_for_tests() -> None:
 
 
 def _register_stock_recipes() -> None:
-    from circuitry.recipes import llm
-    for mod in (llm,):
+    from circuitry.recipes import llm, vision
+    for mod in (llm, vision):
         try:
             mod.register()
         except ValueError:
