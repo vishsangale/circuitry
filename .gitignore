@@ -39,4 +39,5 @@ htmlcov/
 # Scratch
 scratch/
 tmp/
+runs/
 *.log
