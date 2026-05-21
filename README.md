@@ -46,6 +46,14 @@ circuitry report --run runs/my_run
 - **Recipes** — `llm` / `vision` / `two_tower` plug the right hooks and diagnostics into your model; subclass `Recipe` or `register_recipe(...)` for custom architectures.
 - **MetricWriter protocol** — TB by default; wandb / jsonl / null adapters ship in-tree.
 
+## Performance
+
+Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer (see `docs/design.md` §10). Benchmark numbers will land alongside the M2 mendu cutover. Run the harness yourself:
+
+```bash
+python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
+```
+
 ## v0.1.0 limits
 
 - Single-process training only. In a multi-rank DDP/FSDP run `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce **incorrect** diagnostics on rank 0. Multi-process support lands in v0.next; see `docs/design.md` §11 for the upgrade path.
