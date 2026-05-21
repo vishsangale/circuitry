@@ -36,7 +36,7 @@ def test_step_writes_weight_diagnostic_scalars(tmp_path):
     tags = {t for t, _, _ in writer.scalars}
     assert any("effective_rank" in t for t in tags)
     assert any("stable_rank" in t for t in tags)
-    assert ("loss", 1.0, 0) in writer.scalars
+    assert ("train/loss", 1.0, 0) in writer.scalars
 
 
 def test_step_respects_every_n_steps(tmp_path):
@@ -56,7 +56,7 @@ def test_step_respects_every_n_steps(tmp_path):
     # Emit steps: 0, 3, 6
     assert steps_with_rank == [0, 3, 6]
     # Loss is recorded every step.
-    assert sorted(s for t, _, s in writer.scalars if t == "loss") == list(range(7))
+    assert sorted(s for t, _, s in writer.scalars if t == "train/loss") == list(range(7))
 
 
 def test_step_runs_activation_diagnostic_after_forward(tmp_path):

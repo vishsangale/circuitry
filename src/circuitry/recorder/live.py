@@ -189,14 +189,19 @@ class Recorder:
             self._writer.close()
             self._writer = None
 
-    def step(self, step: int, loss: float | None = None, **user: Any) -> None:
+    def step(self, step: int, loss: float | None = None, *,
+             loss_components: dict[str, float] | None = None, **user: Any) -> None:
         if self._noop:
             return
         self._current_step = int(step)
         assert self._writer is not None, "Recorder.step called before attach()"
 
         if loss is not None:
-            self._writer.add_scalar("loss", float(loss), self._current_step)
+            self._writer.add_scalar("train/loss", float(loss), self._current_step)
+
+        if loss_components is not None and self._writer is not None:
+            for name, value in loss_components.items():
+                self._writer.add_scalar(f"train/{name}", float(value), self._current_step)
 
         if not self._should_capture(self._current_step):
             return
