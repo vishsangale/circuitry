@@ -17,8 +17,28 @@ import torch.nn as nn
 from circuitry.recipes import Recipe, get_recipe
 from circuitry.recorder.hooks import HookPoint, StepContext, TensorSource, match_modules
 from circuitry.writers.base import MetricWriter
+from circuitry.core import activation as _act
+from circuitry.core import gradient as _grad
+from circuitry.core import weight as _w
 
 logger = logging.getLogger("circuitry")
+
+_WEIGHT_DIAGS = {
+    "effective_rank": _w.effective_rank,
+    "stable_rank": _w.stable_rank,
+    "condition_number": _w.condition_number,
+    "heavy_tail_alpha": _w.heavy_tail_alpha,
+}
+
+_ACT_DIAGS = {
+    "dead_fraction": _act.dead_fraction,
+    "participation_ratio": _act.participation_ratio,
+    "kurtosis": lambda x: float(_act.kurtosis(x).mean().item()),
+}
+
+_GRAD_DIAGS = {
+    "layer_norm": _grad.layer_norm,  # dict in, dict out
+}
 
 _WRITERS: dict[str, Any] = {}  # name → factory; populated below
 
@@ -173,4 +193,85 @@ class Recorder:
         if self._noop:
             return
         self._current_step = int(step)
-        # Body lands in Task D4.
+        assert self._writer is not None, "Recorder.step called before attach()"
+
+        if loss is not None:
+            self._writer.add_scalar("loss", float(loss), self._current_step)
+
+        if not self._should_capture(self._current_step):
+            return
+
+        # Build StepContext from currently-captured tensors + read-on-demand weights/grads.
+        name_to_mod = dict(self.model.named_modules())
+        weights: dict[str, torch.Tensor] = {}
+        gradients: dict[str, torch.Tensor] = {}
+        for idx, hp in enumerate(self.recipe.hook_points):
+            if hp.source is TensorSource.WEIGHT:
+                for n in self._matched[idx]:
+                    p = getattr(name_to_mod[n], "weight", None)
+                    if isinstance(p, torch.Tensor):
+                        weights[n] = p.detach()
+            elif hp.source is TensorSource.GRAD:
+                for n in self._matched[idx]:
+                    p = getattr(name_to_mod[n], "weight", None)
+                    if isinstance(p, torch.Tensor) and p.grad is not None:
+                        gradients[n] = p.grad.detach()
+
+        ctx = StepContext(
+            step=self._current_step,
+            model=self.model,
+            activations=dict(self._captured_activations),
+            gradients=gradients,
+            weights=weights,
+            loss=loss,
+            user=dict(user),
+        )
+
+        self._run_diagnostics(ctx)
+        # Discard activations now that we've consumed them.
+        self._captured_activations.clear()
+
+    def _enabled(self, name: str) -> bool:
+        return self.recipe.enabled.get(name, True)
+
+    def _run_diagnostics(self, ctx: StepContext) -> None:
+        assert self._writer is not None
+        for name in self.recipe.weight_diagnostics:
+            if not self._enabled(name):
+                continue
+            fn = _WEIGHT_DIAGS.get(name)
+            if fn is None:
+                logger.warning("circuitry: unknown weight diagnostic %r — skipping", name)
+                continue
+            for mod_name, w in ctx.weights.items():
+                self._writer.add_scalar(f"weight/{name}/{mod_name}", float(fn(w)), ctx.step)
+
+        for name in self.recipe.activation_diagnostics:
+            if not self._enabled(name):
+                continue
+            fn = _ACT_DIAGS.get(name)
+            if fn is None:
+                logger.warning("circuitry: unknown activation diagnostic %r — skipping", name)
+                continue
+            for mod_name, x in ctx.activations.items():
+                self._writer.add_scalar(f"activation/{name}/{mod_name}", float(fn(x)), ctx.step)
+
+        for name in self.recipe.gradient_diagnostics:
+            if not self._enabled(name):
+                continue
+            if name == "layer_norm":
+                for mod_name, val in _grad.layer_norm(ctx.gradients).items():
+                    self._writer.add_scalar(f"gradient/layer_norm/{mod_name}", val, ctx.step)
+            else:
+                logger.warning("circuitry: unknown gradient diagnostic %r — skipping", name)
+
+        for fn in self.recipe.custom:
+            out = fn(ctx)
+            for tag, val in out.items():
+                if isinstance(val, torch.Tensor):
+                    if val.numel() == 1:
+                        self._writer.add_scalar(f"custom/{tag}", float(val.item()), ctx.step)
+                    else:
+                        self._writer.add_histogram(f"custom/{tag}", val, ctx.step)
+                else:
+                    self._writer.add_scalar(f"custom/{tag}", float(val), ctx.step)
