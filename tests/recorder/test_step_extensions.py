@@ -1,3 +1,6 @@
+import json
+
+import torch
 import torch.nn as nn
 
 from circuitry import Recorder
@@ -44,3 +47,31 @@ def test_loss_components_optional(tmp_path):
     rec.attach()
     rec.step(step=0, loss=0.5)  # no loss_components
     rec.detach()
+
+
+def test_gradient_norms_per_param(tmp_path):
+    _clear_registry_for_tests()
+    register_recipe(Recipe(
+        name="probe_grad",
+        hook_points=[
+            HookPoint(source=TensorSource.WEIGHT, pattern=r"^linear$"),
+            HookPoint(source=TensorSource.GRAD,   pattern=r"^linear$"),
+        ],
+        gradient_diagnostics=["norms_per_param"],
+    ))
+    model = nn.Sequential()
+    model.add_module("linear", nn.Linear(4, 4))
+    rec = Recorder(model, run_dir=tmp_path, recipe="probe_grad", writer="jsonl", every_n_steps=1)
+    rec.attach()
+    # Run a backward pass to populate .grad
+    x = torch.randn(2, 4)
+    y = model(x).sum()
+    y.backward()
+    rec.step(step=0, loss=float(y))
+    rec.detach()
+
+    keys = set()
+    for line in (tmp_path / "metrics.jsonl").read_text().splitlines():
+        keys.add(json.loads(line)["tag"])
+    assert any(k.startswith("grad/per_param/") and k.endswith("/norm") for k in keys)
+    assert "grad/global/total_norm" in keys

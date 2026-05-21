@@ -267,6 +267,14 @@ class Recorder:
             if name == "layer_norm":
                 for mod_name, val in _grad.layer_norm(ctx.gradients).items():
                     self._writer.add_scalar(f"gradient/layer_norm/{mod_name}", val, ctx.step)
+            elif name == "norms_per_param":
+                if ctx.gradients:
+                    global_sq = 0.0
+                    for mod_name, g in ctx.gradients.items():
+                        n = float(g.detach().to(torch.float32).norm().item())
+                        self._writer.add_scalar(f"grad/per_param/{mod_name}/norm", n, ctx.step)
+                        global_sq += n * n
+                    self._writer.add_scalar("grad/global/total_norm", global_sq ** 0.5, ctx.step)
             else:
                 logger.warning("circuitry: unknown gradient diagnostic %r — skipping", name)
 
