@@ -16,12 +16,16 @@
 **Key user decisions (captured 2026-05-21):**
 1. Hybrid strategy (circuitry grows for universal; paper2 stays in mendu Recipe).
 2. Accept scalar-name break (no preservation of mendu's historical names).
-3. Port the three `diagnose_*.py` kernels into `recipes/vision.py`.
+3. **`diagnose_*.py` scripts dropped from scope.** On inspection they're tightly coupled to mendu's biologically-inspired architectures (Wix/Wei weights, `HierarchicalConvPCNet`, `model.signal_propagation_stats()`) and cannot be lifted into a generic vision recipe. They remain as paper-1-archive mendu-local utilities. `docs/design.md` §7 (rewritten in Phase 5 S2) acknowledges they were never actually ported in M1 either.
 4. Port `token_similarity` into `circuitry.core.activation`.
 
 **Working-directory discipline:** Every task names its repo. Use full venv paths (no `source venv/bin/activate`):
 - circuitry: `cd ~/workspace/circuitry && venv/bin/pytest ...`
 - mendu: `cd ~/workspace/mendu && venv/bin/pytest ...`
+
+**Cross-repo discipline (for subagent-driven execution):** Phase 3 tasks land in `~/workspace/mendu` and Phase 4 in `~/workspace/latent-superpowers-inspect`. `superpowers:subagent-driven-development` is single-repo by default — for Phases 3 and 4, either (a) prefix each dispatched subagent's prompt with the target repo path and the venv path, or (b) drop to inline execution. **Do not** dispatch Phase 3/4 subagents from one of circuitry's `.claude/worktrees/` — they must `cd` into the correct repo first.
+
+**Known limitation — cadence collapse.** Mendu's pre-cutover `Cadence(step_scalars=50, weight_cheap=200)` ran cheap scalars 4× more often than heavy weight stats. Circuitry's `every_n_steps` is single-tier; the post-cutover paper2 recipe runs the full LLM-recipe diagnostic set (including SVD-driven `effective_rank`, `sv_histogram`, `heavy_tail_alpha`) at the cheap cadence. If S1's `bench_50m` shows >10% wall-clock overhead, the implementer should split the paper2 recipe's heavy diagnostics into a custom-diag gated by `step % 200 == 0` inside `ctx.user`. Note in `parity_results.md` and/or `README.md` if this gating becomes necessary.
 
 ---
 
@@ -36,12 +40,10 @@
 | 1 | `src/circuitry/recipes/_discovery.py` | new — LLaMA-family `arch_discovery` helper |
 | 1 | `src/circuitry/recorder/live.py` | extend — `loss_components` kwarg on `step()`; emit per-param grad norms; emit sv histograms |
 | 1 | `src/circuitry/recipes/__init__.py` | extend — `Recipe.weight_diagnostics` accepts `"sv_histogram"`; `Recipe.gradient_diagnostics` accepts `"norms_per_param"` |
-| 1 | `src/circuitry/recipes/vision.py` | extend — three custom diagnostics: `ei_ratio`, `signal_prop_depth`, `trained_pc_stats` |
-| 1 | `src/circuitry/recipes/llm.py` | extend — wire `norms_per_param` + `sv_histogram` into LLM recipe |
+| 1 | `src/circuitry/recipes/llm.py` | extend — add GRAD HookPoint; wire `norms_per_param` + `sv_histogram` into the recipe |
 | 1 | `tests/core/test_activation.py` | add `token_similarity` tests |
 | 1 | `tests/core/test_weight.py` | add dynamics tests |
 | 1 | `tests/recipes/test_discovery.py` | new — arch_discovery tests |
-| 1 | `tests/recipes/test_vision_custom.py` | new — vision custom-diag tests |
 | 1 | `tests/recorder/test_step_extensions.py` | new — `loss_components`, per-param emission |
 | 1 | `pyproject.toml` | version bump 0.1.0 → 0.2.0a0 |
 | 2 | `scripts/parity_check.py` | extend — body |
@@ -83,7 +85,7 @@
 
 ---
 
-## Phase 1 — Circuitry v0.2 grow (~10 tasks)
+## Phase 1 — Circuitry v0.2 grow (~8 tasks)
 
 Universal features that mendu needs and that any future user of circuitry plausibly wants. Each task is TDD: failing test first, minimal implementation, verify pass, commit.
 
@@ -709,246 +711,21 @@ git commit -m "feat(recorder): 'sv_histogram' weight diagnostic emits per-param 
 
 ---
 
-### Task N7: Port `diagnose_ei_bottlenecks.py` kernel as a vision custom diagnostic
+### (REMOVED: former N7 / N8 / N9 — diagnose_*.py ports)
 
-**Files:**
-- Modify: `src/circuitry/recipes/vision.py`
-- Create: `tests/recipes/test_vision_custom.py`
+**On inspection these scripts are not portable into a generic vision recipe** (they depend on mendu-specific models — `Wix`/`Wei` EI weights, `HierarchicalConvPCNet`, `model.signal_propagation_stats()`). They remain as paper-1-archive mendu-local utilities. See key-decision #3 in the header and the §7 rewrite in S2.
 
-Read `mendu/scripts/diagnose_ei_bottlenecks.py`. The diagnostic kernel computes per-layer E/I (excitatory/inhibitory) channel balance from weight signs. Port as a `(StepContext) → dict[str, float]` function emitting `vision/ei_ratio/<layer>`.
+**(The previously planned `ei_ratio`, `signal_prop_depth`, `trained_pc_stats` custom diagnostics are not implemented.)**
 
-- [ ] **Step 1: Inspect the source**
+(See header key-decision #3. Skip to Task N7 below.)
 
-```bash
-sed -n '1,40p' ~/workspace/mendu/scripts/diagnose_ei_bottlenecks.py
-```
-
-Identify the function that computes the ratio (typically `diagnose_ei_checkpoint(ckpt_path)` or a helper). The kernel is roughly: for each conv layer's weight, count positive vs. negative input channels, emit ratio per layer.
-
-- [ ] **Step 2: Add the failing test**
-
-Create `tests/recipes/test_vision_custom.py`:
-
-```python
-import torch
-import torch.nn as nn
-
-from circuitry.recipes.vision import ei_ratio
-from circuitry.recorder.hooks import StepContext
-
-
-def test_ei_ratio_all_positive():
-    w = torch.ones(8, 3, 3, 3)  # (out, in, k, k); all positive
-    ctx = StepContext(step=0, model=nn.Identity(), weights={"conv1.weight": w})
-    out = ei_ratio(ctx)
-    assert "vision/ei_ratio/conv1.weight" in out
-    assert abs(out["vision/ei_ratio/conv1.weight"] - 1.0) < 1e-6
-
-
-def test_ei_ratio_balanced():
-    w = torch.cat([torch.ones(8, 3, 3, 3), -torch.ones(8, 3, 3, 3)], dim=1)  # 50/50
-    ctx = StepContext(step=0, model=nn.Identity(), weights={"conv1.weight": w})
-    out = ei_ratio(ctx)
-    assert abs(out["vision/ei_ratio/conv1.weight"] - 0.5) < 1e-6
-```
-
-→ FAIL (function not exported from `recipes/vision.py`).
-
-- [ ] **Step 3: Implement**
-
-In `src/circuitry/recipes/vision.py`, add:
-
-```python
-import torch
-
-from circuitry.recorder.hooks import StepContext
-
-
-def ei_ratio(ctx: StepContext) -> dict[str, float]:
-    """Per-conv-weight fraction of input channels with positive mean.
-
-    Ports the kernel of mendu/scripts/diagnose_ei_bottlenecks.py: for each
-    conv weight (4-D tensor), reduces the spatial + output dims to a per-input-channel
-    mean, then returns the fraction of input channels with mean > 0.
-    """
-    out: dict[str, float] = {}
-    for name, w in ctx.weights.items():
-        if w.dim() != 4:
-            continue
-        # (out, in, kh, kw) → mean over (out, kh, kw) → (in,)
-        per_in = w.detach().to(torch.float32).mean(dim=(0, 2, 3))
-        out[f"vision/ei_ratio/{name}"] = float((per_in > 0).float().mean().item())
-    return out
-```
-
-Then add it to the recipe's `custom` list. Find the `RECIPE = Recipe(...)` block in the same file and update:
-
-```python
-RECIPE = Recipe(
-    name="vision",
-    hook_points=[...],
-    weight_diagnostics=["effective_rank", "stable_rank"],
-    activation_diagnostics=["dead_fraction", "participation_ratio"],
-    gradient_diagnostics=["layer_norm"],
-    custom=[ei_ratio],   # NEW
-)
-```
-
-- [ ] **Step 4: Run, verify pass**
-
-`venv/bin/pytest tests/recipes/test_vision_custom.py -v` → 2 PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/circuitry/recipes/vision.py tests/recipes/test_vision_custom.py
-git commit -m "feat(recipes): port diagnose_ei_bottlenecks kernel as vision custom diag"
-```
-
----
-
-### Task N8: Port `diagnose_signal_prop.py` kernel
-
-**Files:**
-- Modify: `src/circuitry/recipes/vision.py`
-- Modify: `tests/recipes/test_vision_custom.py`
-
-The diagnostic computes activation-norm decay across vision-stack depth. Kernel: per matched activation, compute mean L2 norm; emit one scalar per layer index.
-
-- [ ] **Step 1: Inspect**
-
-```bash
-sed -n '1,50p' ~/workspace/mendu/scripts/diagnose_signal_prop.py
-```
-
-- [ ] **Step 2: Add test**
-
-Append to `tests/recipes/test_vision_custom.py`:
-
-```python
-def test_signal_prop_depth_emits_per_activation():
-    from circuitry.recipes.vision import signal_prop_depth
-    act1 = torch.randn(2, 8, 16, 16)
-    act2 = torch.randn(2, 8, 16, 16) * 2.0
-    ctx = StepContext(step=0, model=nn.Identity(),
-                      activations={"blocks.0.attn": act1, "blocks.1.attn": act2})
-    out = signal_prop_depth(ctx)
-    assert "vision/signal_prop/blocks.0.attn/mean_l2" in out
-    assert "vision/signal_prop/blocks.1.attn/mean_l2" in out
-    # blocks.1.attn was scaled 2x → ~2x larger
-    assert out["vision/signal_prop/blocks.1.attn/mean_l2"] > \
-           out["vision/signal_prop/blocks.0.attn/mean_l2"]
-```
-
-- [ ] **Step 3: Implement**
-
-Append to `src/circuitry/recipes/vision.py`:
-
-```python
-def signal_prop_depth(ctx: StepContext) -> dict[str, float]:
-    """Per-activation mean L2 norm — depth-of-signal-propagation diagnostic.
-
-    Ports the kernel of mendu/scripts/diagnose_signal_prop.py: each hooked
-    activation reduces to its mean L2 norm across the batch.
-    """
-    out: dict[str, float] = {}
-    for name, act in ctx.activations.items():
-        flat = act.detach().to(torch.float32).flatten(1)
-        out[f"vision/signal_prop/{name}/mean_l2"] = float(flat.norm(dim=1).mean().item())
-    return out
-```
-
-Add to `RECIPE.custom`: `custom=[ei_ratio, signal_prop_depth]`.
-
-- [ ] **Step 4: Run, verify pass**
-
-→ PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/circuitry/recipes/vision.py tests/recipes/test_vision_custom.py
-git commit -m "feat(recipes): port diagnose_signal_prop kernel as vision custom diag"
-```
-
----
-
-### Task N9: Port `diagnose_trained_pc.py` kernel
-
-**Files:**
-- Modify: `src/circuitry/recipes/vision.py`
-- Modify: `tests/recipes/test_vision_custom.py`
-
-Kernel: per-channel mean L2 norm of weights, plus participation ratio across channels — a "trained predictive-coding signature."
-
-- [ ] **Step 1: Inspect**
-
-```bash
-sed -n '1,40p' ~/workspace/mendu/scripts/diagnose_trained_pc.py
-```
-
-- [ ] **Step 2: Add test**
-
-Append:
-
-```python
-def test_trained_pc_stats_emits_per_conv():
-    from circuitry.recipes.vision import trained_pc_stats
-    w = torch.randn(16, 8, 3, 3)
-    ctx = StepContext(step=0, model=nn.Identity(), weights={"conv1.weight": w})
-    out = trained_pc_stats(ctx)
-    assert "vision/trained_pc/conv1.weight/channel_mean_l2" in out
-    assert "vision/trained_pc/conv1.weight/channel_pr" in out
-```
-
-- [ ] **Step 3: Implement**
-
-Append to `vision.py`:
-
-```python
-def trained_pc_stats(ctx: StepContext) -> dict[str, float]:
-    """Per-conv-weight channel statistics: mean L2 norm + participation ratio.
-
-    Ports the kernel of mendu/scripts/diagnose_trained_pc.py — a 'trained
-    predictive-coding signature' measured as the spread of channel-wise L2
-    norms (participation ratio of the squared-norms distribution).
-    """
-    out: dict[str, float] = {}
-    for name, w in ctx.weights.items():
-        if w.dim() != 4:
-            continue
-        # (out, in, kh, kw) → channel-norm = norm over (in, kh, kw) → (out,)
-        ch_norms = w.detach().to(torch.float32).flatten(1).norm(dim=1)  # (out,)
-        out[f"vision/trained_pc/{name}/channel_mean_l2"] = float(ch_norms.mean().item())
-        sq = ch_norms ** 2
-        # Participation ratio: (sum sq)^2 / sum(sq^2)
-        pr = float((sq.sum() ** 2 / (sq ** 2).sum()).item()) if sq.numel() > 0 else 0.0
-        out[f"vision/trained_pc/{name}/channel_pr"] = pr
-    return out
-```
-
-Add to `RECIPE.custom`: `custom=[ei_ratio, signal_prop_depth, trained_pc_stats]`.
-
-- [ ] **Step 4: Run, verify pass**
-
-→ PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/circuitry/recipes/vision.py tests/recipes/test_vision_custom.py
-git commit -m "feat(recipes): port diagnose_trained_pc kernel as vision custom diag"
-```
-
----
-
-### Task N10: Wire `norms_per_param` + `sv_histogram` into the stock LLM recipe
+### Task N7: Wire GRAD hook + `norms_per_param` + `sv_histogram` into the stock LLM recipe
 
 **Files:**
 - Modify: `src/circuitry/recipes/llm.py`
 - Test: `tests/recipes/test_llm.py` (extend)
 
-After the universal extensions, the stock LLM recipe should emit these by default — mendu's cutover depends on it.
+After the universal extensions, the stock LLM recipe should emit these by default — mendu's cutover depends on it. **Critical:** the v0.1.0 LLM recipe ships with only WEIGHT and OUTPUT hook points (see `src/circuitry/recipes/llm.py:10-19`); without a GRAD HookPoint, `norms_per_param` is a silent no-op. This task adds the GRAD hook and wires both new diagnostics.
 
 - [ ] **Step 1: Add the failing test**
 
@@ -960,40 +737,62 @@ def test_llm_recipe_has_sv_histogram_and_per_param_grad():
     r = get_recipe("llm")
     assert "sv_histogram" in r.weight_diagnostics
     assert "norms_per_param" in r.gradient_diagnostics
+
+
+def test_llm_recipe_has_grad_hook():
+    """Without a GRAD HookPoint, norms_per_param is a silent no-op."""
+    from circuitry.recipes import get_recipe
+    from circuitry.recorder.hooks import TensorSource
+    r = get_recipe("llm")
+    assert any(hp.source == TensorSource.GRAD for hp in r.hook_points)
 ```
 
 - [ ] **Step 2: Run, verify fail**
 
-→ FAIL.
+`venv/bin/pytest tests/recipes/test_llm.py -k "sv_histogram or grad_hook" -v` → FAIL on both.
 
 - [ ] **Step 3: Implement**
 
-In `src/circuitry/recipes/llm.py`, append to `weight_diagnostics` and `gradient_diagnostics`:
+In `src/circuitry/recipes/llm.py`, update the `RECIPE` definition. Add a GRAD HookPoint that mirrors the existing WEIGHT patterns (so we capture gradients for the same set of matched parameters), and extend `weight_diagnostics` + `gradient_diagnostics`:
 
 ```python
 RECIPE = Recipe(
     name="llm",
-    hook_points=[...],
+    hook_points=[
+        HookPoint(source=TensorSource.WEIGHT,
+                  pattern=r".*\.(attn|mlp)\.(c_attn|c_proj|c_fc|wq|wk|wv|wo|w1|w2|w3)\.weight$"),
+        HookPoint(source=TensorSource.WEIGHT, pattern=r"embed.*"),
+        HookPoint(source=TensorSource.WEIGHT, pattern=r"lm_head$"),
+        # NEW: gradient hook — mirror the weight pattern so per-param grad norms cover
+        # the same set of matched parameters.
+        HookPoint(source=TensorSource.GRAD,
+                  pattern=r".*\.(attn|mlp)\.(c_attn|c_proj|c_fc|wq|wk|wv|wo|w1|w2|w3)\.weight$"),
+        HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.attn$"),
+        HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.mlp$"),
+        HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.ln_[12]$"),
+    ],
     weight_diagnostics=["effective_rank", "stable_rank", "heavy_tail_alpha", "sv_histogram"],
     activation_diagnostics=["dead_fraction", "participation_ratio"],
     gradient_diagnostics=["layer_norm", "norms_per_param"],
 )
 ```
 
+(Open `src/circuitry/recipes/llm.py` and adjust the existing `hook_points=[…]` block in-place. The exact WEIGHT regex patterns may differ from the example; keep whatever is there and add the GRAD HookPoint with the same regex.)
+
 - [ ] **Step 4: Run, verify pass**
 
-→ PASS.
+`venv/bin/pytest tests/recipes/test_llm.py -v` → all PASS, including the smoke test that runs an actual training step and inspects emitted scalars.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/circuitry/recipes/llm.py tests/recipes/test_llm.py
-git commit -m "feat(recipes): LLM recipe emits sv_histogram + per-param grad norms"
+git commit -m "feat(recipes): LLM recipe emits sv_histogram + per-param grad norms + GRAD hook"
 ```
 
 ---
 
-### Task N11: Version bump 0.1.0 → 0.2.0a0, integration test
+### Task N8: Version bump 0.1.0 → 0.2.0a0, integration test
 
 **Files:**
 - Modify: `src/circuitry/__init__.py`
@@ -1345,13 +1144,30 @@ def test_paper2_recipe_registered():
 
 
 def test_eval_ppl_uses_eval_batch_from_user():
-    # Provide eval_batch via ctx.user
-    model = nn.Linear(8, 8)
+    # eval_batch is (B, S) int64 input_ids; model returns (B, S, V) logits.
+    class _ToyLM(nn.Module):
+        def __init__(self, vocab=16, dim=8):
+            super().__init__()
+            self.emb = nn.Embedding(vocab, dim)
+            self.head = nn.Linear(dim, vocab)
+        def forward(self, ids):
+            return self.head(self.emb(ids))
+
     from circuitry.recorder.hooks import StepContext
-    eb = torch.randn(2, 8)
+    model = _ToyLM()
+    eb = torch.randint(0, 16, (2, 4), dtype=torch.long)  # (B=2, S=4) input_ids
     ctx = StepContext(step=0, model=model, user={"eval_batch": eb})
     out = eval_ppl(ctx)
     assert "eval/clean_ppl" in out
+    assert out["eval/clean_ppl"] > 0.0
+
+
+def test_eval_ppl_skipped_when_no_eval_batch():
+    """When eval_batch absent from ctx.user, the diag emits nothing."""
+    from circuitry.recorder.hooks import StepContext
+    ctx = StepContext(step=0, model=nn.Linear(4, 4))  # no user dict entry
+    out = eval_ppl(ctx)
+    assert out == {}
 
 
 def test_ei_balance_per_layer():
@@ -1408,18 +1224,29 @@ from circuitry.recorder.hooks import StepContext
 
 
 def eval_ppl(ctx: StepContext) -> dict[str, float]:
+    """Clean-eval perplexity from a held-out batch of input_ids.
+
+    Contract: ``ctx.user["eval_batch"]`` is a ``(batch, seq)`` int64 tensor of
+    input_ids; ``ctx.model(eval_batch)`` returns ``(batch, seq, vocab)`` logits.
+    Targets are the same input_ids (next-token cross-entropy, autoregressive).
+    Returns ``{}`` if ``eval_batch`` is absent — the diagnostic is silent rather
+    than emitting nonsense from a malformed input.
+    """
     eb = ctx.user.get("eval_batch")
     if eb is None:
         return {}
     with torch.no_grad():
         logits = ctx.model(eb)
-        if logits.dim() == 3:
-            logits = logits.view(-1, logits.shape[-1])
-            targets = eb.view(-1) if eb.dim() == 2 else eb.flatten()
-            loss = F.cross_entropy(logits, targets)
-        else:
-            loss = (logits ** 2).mean()
-    return {"eval/clean_ppl": float(loss.exp().item())}
+        if logits.dim() != 3:
+            raise ValueError(
+                f"eval_ppl expects model(eval_batch) → (B, S, V) logits; got shape "
+                f"{tuple(logits.shape)}. If you have a non-LM model, supply your own "
+                f"eval custom diagnostic."
+            )
+        # Next-token CE: shift targets left by one — standard autoregressive setup.
+        ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.shape[-1]),
+                             eb[:, 1:].reshape(-1))
+    return {"eval/clean_ppl": float(ce.exp().item())}
 
 
 def ei_balance(ctx: StepContext) -> dict[str, float]:
@@ -1924,9 +1751,7 @@ paper-specific features stay in caller-side custom Recipes.
 - `Recorder.step(loss_components=)` — per-component scalar emission as `train/<name>`.
 - `"norms_per_param"` gradient diagnostic — per-param `grad/<name>/norm` + global.
 - `"sv_histogram"` weight diagnostic — per-param singular-value histograms.
-- Vision recipe gains 3 custom diagnostics: `ei_ratio`, `signal_prop_depth`, `trained_pc_stats`
-  (ports of mendu's `diagnose_*.py` scripts).
-- LLM recipe now emits `sv_histogram` + `norms_per_param` by default.
+- LLM recipe now emits `sv_histogram` + `norms_per_param` by default; adds a GRAD HookPoint.
 - Benchmark numbers in README's Performance section.
 - Parity-check script body (`scripts/parity_check.py`) wired against mendu.
 
@@ -1986,7 +1811,7 @@ Verify the release page exists at https://github.com/vishsangale/circuitry/relea
 **Spec coverage** vs. design.md §7 + the 4 user decisions:
 - ✓ Hybrid strategy: Phase 1 grows circuitry; Phase 3 Q2 builds the paper2 Recipe.
 - ✓ Scalar name break: handled by circuitry-native naming; documented in §7 rewrite.
-- ✓ diagnose_*.py ports: tasks N7, N8, N9.
+- ✓ diagnose_*.py: dropped from scope per user decision (see header key-decision #3); the §7 rewrite in S2 records that they were never actually ported in M1 either.
 - ✓ token_similarity: task N1.
 - ✓ Parity check: Phase 2.
 - ✓ mendu cutover: Phase 3.
@@ -2009,6 +1834,6 @@ Verify the release page exists at https://github.com/vishsangale/circuitry/relea
 - mendu commits happen in `~/workspace/mendu`, not in circuitry. ✓
 - latent-superpowers-inspect commits happen in that repo. ✓
 
-**Total task count:** 23 (Phase 1: 11, Phase 2: 3, Phase 3: 7, Phase 4: 2, Phase 5: 3).
+**Total task count:** 20 (Phase 1: 8, Phase 2: 3, Phase 3: 7, Phase 4: 2, Phase 5: 3).
 
 ---
