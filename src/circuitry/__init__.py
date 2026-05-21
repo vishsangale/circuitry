@@ -1,4 +1,4 @@
-"""circuitry — training-time mechanistic-interpretability diagnostics for PyTorch.
+"""circuitry — mechanistic-interpretability diagnostics for PyTorch (live during training or post-hoc on a checkpoint).
 
 Public surface re-exports below are the v0.1.0 stable API. Anything not re-exported
 here is an internal implementation detail and may change without notice.

@@ -1,8 +1,8 @@
 # circuitry
 
-> **Disambiguation:** `circuitry` is statistical diagnostics on neural-network weights / activations / gradients during training. It is **not** mechanistic-circuit discovery in the activation-patching / SAE / logit-lens sense. The name is borrowed from electronics.
+> **Scope:** Statistical diagnostics on neural-network weights, activations, and gradients — usable live during training or post-hoc on saved checkpoints. Lens-style and attribution primitives (logit lens, activation patching, SAE probes) are on the future-work list; today's surface is statistical and modality-agnostic. The name is borrowed from electronics.
 
-Training-time mechanistic-interpretability diagnostics for PyTorch — works across LLMs, vision (CNNs / ViTs), and recommender (two-tower) models with a single API.
+Mechanistic-interpretability diagnostics for PyTorch — works across LLMs, vision (CNNs / ViTs), and recsys models with a single API, live during training or post-hoc on a checkpoint.
 
 **Status:** v0.1.0 (alpha). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md). Implementation plan: [`docs/plan.md`](docs/plan.md).
 

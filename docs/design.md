@@ -4,7 +4,7 @@
 **Status:** draft for implementation
 **Owner:** Vishwanath Sangale
 
-`circuitry` is a new standalone Python library that extracts and unifies the mechanistic-interpretability and training-time diagnostic code currently scattered across `mendu` (and not-yet-extracted siblings) into a single reusable package suitable for use across LLM, vision, and recommender projects.
+`circuitry` is a new standalone Python library that extracts and unifies the mechanistic-interpretability and diagnostic code currently scattered across `mendu` (and not-yet-extracted siblings) into a single reusable package suitable for use across LLM, vision, and recsys projects.
 
 This document is the design contract. A separate implementation plan will follow.
 
@@ -22,7 +22,7 @@ A 2026 survey of the field (TransformerLens, nnsight, captum, pyvene, SAELens, t
 
 ### Naming clarity
 
-`circuitry` is statistical diagnostics on weights / activations / gradients during training. It is **not** mechanistic-circuit discovery in the activation-patching / SAE / logit-lens sense. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line disambiguation so users arriving from mechanistic-interpretability work are not surprised.
+`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. Lens-style and attribution primitives (logit lens, activation patching, SAE probes) are on the future-work list — today's surface is statistical and modality-agnostic. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
 
 ### Non-goals
 

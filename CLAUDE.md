@@ -2,7 +2,7 @@
 
 ## Project goal
 
-`circuitry` is a standalone Python library being extracted from `~/workspace/mendu` (and partially from `~/workspace/latent-superpowers-inspect`) into a reusable, public, MIT-licensed package. The library provides training-time mechanistic-interpretability diagnostics (weight / activation / gradient / spectral primitives + a `Recorder` workflow) that works across LLM, vision, and recsys two-tower models.
+`circuitry` is a standalone Python library being extracted from `~/workspace/mendu` (and partially from `~/workspace/latent-superpowers-inspect`) into a reusable, public, MIT-licensed package. The library provides mechanistic-interpretability diagnostics (weight / activation / gradient / spectral primitives + a `Recorder` workflow for live use + a `scan` workflow for post-hoc analysis) that works across LLM, vision, and recsys models.
 
 **The design contract is `docs/design.md`. Read it before substantive work.** Sections of particular note:
 
