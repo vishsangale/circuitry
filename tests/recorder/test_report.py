@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import pathlib
 
-import torch
-
 from circuitry.recorder.report import build_report
 
 

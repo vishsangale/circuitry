@@ -72,17 +72,22 @@ class _Small(nn.Module):
 
 def _train(model: nn.Module, steps: int, rec: Recorder | None) -> float:
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-    if rec: rec.attach()
+    if rec:
+        rec.attach()
     t0 = time.perf_counter()
     for s in range(steps):
         tokens = torch.randint(0, 64, (4, 16))
         logits = model(tokens)
         loss = logits.mean()
-        opt.zero_grad(); loss.backward(); opt.step()
-        if rec: rec.step(s, loss=float(loss.item()))
-    out = time.perf_counter() - t0
-    if rec: rec.detach()
-    return out
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if rec:
+            rec.step(s, loss=float(loss.item()))
+    elapsed = time.perf_counter() - t0
+    if rec:
+        rec.detach()
+    return elapsed
 
 
 @pytest.mark.benchmark(group="overhead")

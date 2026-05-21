@@ -14,12 +14,12 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from circuitry.recipes import Recipe, get_recipe
-from circuitry.recorder.hooks import HookPoint, StepContext, TensorSource, match_modules
-from circuitry.writers.base import MetricWriter
 from circuitry.core import activation as _act
 from circuitry.core import gradient as _grad
 from circuitry.core import weight as _w
+from circuitry.recipes import Recipe, get_recipe
+from circuitry.recorder.hooks import StepContext, TensorSource, match_modules
+from circuitry.writers.base import MetricWriter
 
 logger = logging.getLogger("circuitry")
 

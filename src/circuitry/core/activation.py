@@ -6,12 +6,11 @@ See docs/design.md §4.1 for the contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
 
 import numpy as np
 import torch
 
-ArrayLike = Union[torch.Tensor, np.ndarray]
+ArrayLike = torch.Tensor | np.ndarray
 
 
 @dataclass(frozen=True)

@@ -6,12 +6,11 @@ See docs/design.md §4.1 for the contract.
 from __future__ import annotations
 
 import math
-from typing import Union
 
 import numpy as np
 import torch
 
-ArrayLike = Union[torch.Tensor, np.ndarray]
+ArrayLike = torch.Tensor | np.ndarray
 
 
 def _as_2d(W: ArrayLike) -> torch.Tensor:

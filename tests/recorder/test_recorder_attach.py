@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import pathlib
 
 import pytest
 import torch.nn as nn
@@ -92,8 +91,6 @@ def test_detach_removes_all_hooks(tmp_path):
     rec = Recorder(model, run_dir=tmp_path, recipe="demo",
                    writer=RecordingWriter(), every_n_steps=1)
     rec.attach()
-    pre = sum(len(m._forward_hooks) + len(m._forward_pre_hooks)
-              + len(m._backward_hooks) for m in model.modules())
     rec.detach()
     post = sum(len(m._forward_hooks) + len(m._forward_pre_hooks)
                + len(m._backward_hooks) for m in model.modules())

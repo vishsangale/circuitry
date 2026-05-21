@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from circuitry.recipes import Recipe, get_recipe, list_recipes, register_recipe, _clear_registry_for_tests
+from circuitry.recipes import (
+    Recipe,
+    _clear_registry_for_tests,
+    get_recipe,
+    list_recipes,
+    register_recipe,
+)
 from circuitry.recorder.hooks import HookPoint, TensorSource
 
 

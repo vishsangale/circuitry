@@ -5,7 +5,7 @@ See docs/design.md §4.1 for the contract.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 import torch
 

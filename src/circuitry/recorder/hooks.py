@@ -8,9 +8,10 @@ HookPoint against ``model.named_modules()`` and to enforce
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.nn as nn

@@ -35,7 +35,7 @@ def test_cli_scan_and_report(tmp_path):
     (tmp_path / "metrics.jsonl").write_text(
         '{"tag": "loss", "value": 1.0, "step": 0, "kind": "scalar"}\n'
     )
-    out = subprocess.run(
+    subprocess.run(
         [sys.executable, "-m", "circuitry.cli.main", "report",
          "--run", str(tmp_path)],
         capture_output=True, text=True, check=True,
