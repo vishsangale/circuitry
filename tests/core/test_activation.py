@@ -72,3 +72,23 @@ def test_participation_ratio_spike_is_one():
 
 def test_participation_ratio_returns_float():
     assert isinstance(activation.participation_ratio(torch.ones(4)), float)
+
+
+def test_token_similarity_identical_tokens():
+    # All tokens identical → cosine similarity = 1.0
+    h = torch.ones(1, 5, 8)
+    sim = activation.token_similarity(h)
+    assert torch.allclose(sim, torch.tensor(1.0), atol=1e-6)
+
+
+def test_token_similarity_orthogonal_tokens():
+    # Standard basis tokens → off-diagonal cosine = 0
+    h = torch.eye(4).unsqueeze(0)  # (1, 4, 4)
+    sim = activation.token_similarity(h)
+    assert torch.allclose(sim, torch.tensor(0.0), atol=1e-6)
+
+
+def test_token_similarity_handles_batch():
+    h = torch.randn(3, 5, 8)
+    sim = activation.token_similarity(h)
+    assert sim.shape == ()  # scalar, mean across batch

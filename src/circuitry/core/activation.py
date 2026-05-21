@@ -76,3 +76,24 @@ def participation_ratio(x: ArrayLike) -> float:
     num = t.abs().sum().pow(2)
     den = t.pow(2).sum().clamp_min(1e-30)
     return float((num / den).item())
+
+
+def token_similarity(h: torch.Tensor) -> torch.Tensor:
+    """Mean off-diagonal cosine similarity between token hidden states.
+
+    Args:
+        h: ``(batch, seq, dim)`` or ``(seq, dim)`` hidden states.
+
+    Returns:
+        Scalar mean off-diagonal cosine similarity (averaged over batch).
+    """
+    if h.dim() == 2:
+        h = h.unsqueeze(0)
+    normalized = torch.nn.functional.normalize(h, dim=-1)
+    gram = torch.matmul(normalized, normalized.transpose(-2, -1))  # (B, S, S)
+    seq = gram.shape[-1]
+    if seq < 2:
+        return torch.tensor(0.0, dtype=h.dtype, device=h.device)
+    off_diag_mask = ~torch.eye(seq, dtype=torch.bool, device=h.device)
+    off_diag = gram[..., off_diag_mask].view(gram.shape[0], -1)
+    return off_diag.mean()
