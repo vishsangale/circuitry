@@ -66,3 +66,18 @@ def test_tensorboard_writer_async_does_not_lose_data(tmp_path):
     w.close()
     event_files = [p for p in tmp_path.rglob("events.out.tfevents.*")]
     assert event_files
+
+
+def test_wandb_writer_skips_when_wandb_absent():
+    pytest = __import__("pytest")
+    try:
+        import wandb  # noqa: F401
+    except ImportError:
+        pytest.skip("wandb not installed")
+    from circuitry.writers.wandb import WandbWriter
+
+    # Use mode='disabled' so no network/auth is required.
+    w = WandbWriter(project="circuitry-test", mode="disabled")
+    w.add_scalar("loss", 1.0, 1)
+    w.flush()
+    w.close()
