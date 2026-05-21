@@ -44,3 +44,15 @@ def list_recipes() -> list[str]:
 def _clear_registry_for_tests() -> None:
     """Test-only escape hatch. Not part of the public API."""
     _REGISTRY.clear()
+
+
+def _register_stock_recipes() -> None:
+    from circuitry.recipes import llm
+    for mod in (llm,):
+        try:
+            mod.register()
+        except ValueError:
+            pass  # already registered
+
+
+_register_stock_recipes()
