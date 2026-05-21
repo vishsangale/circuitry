@@ -50,3 +50,30 @@ def norm_stats(x: ArrayLike, k: float = 3.0) -> NormStats:
         max=float(abs_t.max().item()),
         frac_above_k_median=float((abs_t > k * med).float().mean().item()) if med > 0 else 0.0,
     )
+
+
+def kurtosis(x: ArrayLike, dim: int | tuple[int, ...] = -1) -> torch.Tensor:
+    """Excess kurtosis along ``dim``. Returns a tensor (not a Python float)
+    because callers commonly want per-channel kurtosis."""
+    t = _as_tensor(x)
+    mean = t.mean(dim=dim, keepdim=True)
+    centered = t - mean
+    var = centered.pow(2).mean(dim=dim)
+    m4 = centered.pow(4).mean(dim=dim)
+    # Avoid div-by-zero
+    out = m4 / var.clamp_min(1e-30).pow(2) - 3.0
+    out = torch.where(var > 0, out, torch.zeros_like(out))
+    return out
+
+
+def participation_ratio(x: ArrayLike) -> float:
+    """``(sum |x|)^2 / sum(x^2)`` — soft count of "active" units.
+
+    Equals ``n`` when ``|x|`` is uniform, equals 1 when ``x`` is a one-hot.
+    """
+    t = _as_tensor(x).flatten()
+    if t.numel() == 0:
+        return 0.0
+    num = t.abs().sum().pow(2)
+    den = t.pow(2).sum().clamp_min(1e-30)
+    return float((num / den).item())
