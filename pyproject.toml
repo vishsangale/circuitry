@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "circuitry"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Training-time mechanistic-interpretability diagnostics for PyTorch (LLM / vision / two-tower)."
 readme = "README.md"
 license = { file = "LICENSE" }
