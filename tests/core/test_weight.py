@@ -108,3 +108,33 @@ def test_heavy_tail_alpha_low_rank_is_finite():
     V = torch.randn(10, 64)
     alpha = weight.heavy_tail_alpha(U @ V)
     assert math.isfinite(alpha)
+
+
+def test_update_delta_zero_when_unchanged():
+    sd = {"w": torch.ones(3, 3)}
+    out = weight.update_delta(sd, sd)
+    assert out["w"] == 0.0
+
+
+def test_update_delta_l2_when_shifted():
+    sd_now = {"w": torch.tensor([[1.0, 0.0], [0.0, 1.0]])}
+    sd_prev = {"w": torch.tensor([[0.0, 0.0], [0.0, 0.0]])}
+    out = weight.update_delta(sd_now, sd_prev)
+    assert abs(out["w"] - (2.0 ** 0.5)) < 1e-6
+
+
+def test_direction_cosine_collinear_updates():
+    # prev_prev -> prev: +I; prev -> now: +2I (same direction)
+    sd_pp = {"w": torch.zeros(2, 2)}
+    sd_p = {"w": torch.eye(2)}
+    sd_n = {"w": torch.eye(2) * 3.0}
+    out = weight.direction_cosine(sd_n, sd_p, sd_pp)
+    assert abs(out["w"] - 1.0) < 1e-6
+
+
+def test_direction_cosine_opposite_updates():
+    sd_pp = {"w": torch.zeros(2, 2)}
+    sd_p = {"w": torch.eye(2)}
+    sd_n = {"w": torch.zeros(2, 2)}  # update reverses
+    out = weight.direction_cosine(sd_n, sd_p, sd_pp)
+    assert abs(out["w"] - (-1.0)) < 1e-6

@@ -6,6 +6,7 @@ See docs/design.md §4.1 for the contract.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 import numpy as np
 import torch
@@ -101,3 +102,48 @@ def heavy_tail_alpha(W: ArrayLike, top_frac: float = 0.5) -> float:
     if denom <= 0:
         return float("inf")
     return float(k / denom)
+
+
+def update_delta(
+    sd_now: Mapping[str, torch.Tensor],
+    sd_prev: Mapping[str, torch.Tensor],
+) -> dict[str, float]:
+    """L2 norm of the delta between two state-dict snapshots, per parameter.
+
+    Returns ``{name: ||sd_now[name] - sd_prev[name]||_2}`` for every name
+    present in both. Names missing from either side are skipped.
+    """
+    out: dict[str, float] = {}
+    for name in sd_now:
+        if name not in sd_prev:
+            continue
+        diff = (sd_now[name].to(torch.float32) - sd_prev[name].to(torch.float32))
+        out[name] = float(diff.norm().item())
+    return out
+
+
+def direction_cosine(
+    sd_now: Mapping[str, torch.Tensor],
+    sd_prev: Mapping[str, torch.Tensor],
+    sd_prev_prev: Mapping[str, torch.Tensor],
+) -> dict[str, float]:
+    """Cosine similarity between two consecutive parameter updates.
+
+    Update_1 = sd_prev - sd_prev_prev
+    Update_2 = sd_now  - sd_prev
+
+    Returns ``{name: cos(Update_1, Update_2)}``. Zero-norm updates return 0.0.
+    """
+    out: dict[str, float] = {}
+    for name in sd_now:
+        if name not in sd_prev or name not in sd_prev_prev:
+            continue
+        u2 = (sd_now[name].to(torch.float32) - sd_prev[name].to(torch.float32)).flatten()
+        u1 = (sd_prev[name].to(torch.float32) - sd_prev_prev[name].to(torch.float32)).flatten()
+        n2 = float(u2.norm().item())
+        n1 = float(u1.norm().item())
+        if n1 == 0.0 or n2 == 0.0:
+            out[name] = 0.0
+        else:
+            out[name] = float((u1 @ u2).item()) / (n1 * n2)
+    return out
