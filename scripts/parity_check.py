@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from tensorboard.backend.event_processing import event_accumulator
+
 DEFAULT_TOLERANCES = {
     "default": {"rtol": 1e-5, "atol": 1e-7},
     "svd": {"rtol": 1e-4, "atol": 1e-6},
@@ -29,6 +31,58 @@ SVD_METRICS = {
     "singular_values",
     "stable_rank",
 }
+
+# Tag mapping: mendu's pre-cutover name → circuitry's post-cutover name.
+# Both pipelines emit the listed-on-the-left tag in mendu's run; circuitry emits
+# the listed-on-the-right tag. The "scalar name break" was a user decision (see
+# plan-m2.md key-decision #2).
+UNIVERSAL_TAGS = {
+    "train/lm_loss": "train/lm_loss",
+    "train/lr": "train/lr",
+    "grad/global/total_norm": "grad/global/total_norm",
+}
+
+
+def _load_scalars(run_dir):
+    """Return {tag: list[Scalar(step, value, wall_time)]} for all scalar tags in a TB run dir."""
+    ea = event_accumulator.EventAccumulator(str(run_dir), size_guidance={"scalars": 0})
+    ea.Reload()
+    return {tag: ea.Scalars(tag) for tag in ea.Tags()["scalars"]}
+
+
+def _tag_bucket(tag: str) -> str:
+    return "svd" if any(s in tag for s in SVD_METRICS) else "default"
+
+
+def _close(a: float, b: float, tol: dict) -> bool:
+    return abs(a - b) <= tol["atol"] + tol["rtol"] * abs(b)
+
+
+def _compare(mendu_scalars: dict, circuitry_scalars: dict) -> list[str]:
+    """Return a list of failure strings; empty list means all in-spec."""
+    failures: list[str] = []
+    for mendu_tag, circuitry_tag in UNIVERSAL_TAGS.items():
+        if mendu_tag not in mendu_scalars:
+            failures.append(f"missing in mendu: {mendu_tag}")
+            continue
+        if circuitry_tag not in circuitry_scalars:
+            failures.append(f"missing in circuitry: {circuitry_tag}")
+            continue
+        bucket = _tag_bucket(mendu_tag)
+        tol = DEFAULT_TOLERANCES[bucket]
+        # Pair by step index (assumes both pipelines emit at the same cadence)
+        m_by_step = {s.step: s.value for s in mendu_scalars[mendu_tag]}
+        c_by_step = {s.step: s.value for s in circuitry_scalars[circuitry_tag]}
+        for step, m_val in m_by_step.items():
+            if step not in c_by_step:
+                continue  # different cadence at this step; skip
+            c_val = c_by_step[step]
+            if not _close(m_val, c_val, tol):
+                failures.append(
+                    f"{mendu_tag} @ step {step}: mendu={m_val:.6g} circuitry={c_val:.6g} "
+                    f"(bucket={bucket}, rtol={tol['rtol']}, atol={tol['atol']})"
+                )
+    return failures
 
 
 def _build_tiny_llama(seed: int = 0):
@@ -212,7 +266,17 @@ def main() -> int:
     _run_mendu(pathlib.Path(args.mendu_root), args.steps, mendu_dir)
     _run_circuitry(args.steps, circuitry_dir)
 
-    print("Both pipelines completed. Tolerance comparison wires up in P2.")
+    print("Both pipelines completed. Comparing TB scalars...")
+    mendu_scalars = _load_scalars(mendu_dir / "tb")  # InspectorTBWriter writes to <run_dir>/tb
+    circuitry_scalars = _load_scalars(circuitry_dir / "circuitry")  # circuitry writes to <run_dir>/circuitry
+
+    failures = _compare(mendu_scalars, circuitry_scalars)
+    if failures:
+        print(f"PARITY FAILED ({len(failures)} mismatches):")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print(f"PARITY OK — all {len(UNIVERSAL_TAGS)} universal tags within tolerances.")
     print(f"Output: {out_base}")
     return 0
 
