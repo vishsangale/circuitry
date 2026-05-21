@@ -75,3 +75,23 @@ def test_gradient_norms_per_param(tmp_path):
         keys.add(json.loads(line)["tag"])
     assert any(k.startswith("grad/per_param/") and k.endswith("/norm") for k in keys)
     assert "grad/global/total_norm" in keys
+
+
+def test_sv_histogram_emitted(tmp_path):
+    _clear_registry_for_tests()
+    register_recipe(Recipe(
+        name="probe_hist",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r"^linear$")],
+        weight_diagnostics=["effective_rank", "sv_histogram"],
+    ))
+    model = nn.Sequential()
+    model.add_module("linear", nn.Linear(8, 8))
+    rec = Recorder(model, run_dir=tmp_path, recipe="probe_hist", writer="jsonl", every_n_steps=1)
+    rec.attach()
+    rec.step(step=0, loss=0.0)
+    rec.detach()
+
+    # JsonlWriter stores histograms as ".npy" side files
+    art_dir = tmp_path / "circuitry" / "artifacts"
+    sv_files = list(art_dir.glob("*sv_histogram*.npy"))
+    assert len(sv_files) >= 1

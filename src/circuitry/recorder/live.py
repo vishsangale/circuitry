@@ -244,12 +244,19 @@ class Recorder:
         for name in self.recipe.weight_diagnostics:
             if not self._enabled(name):
                 continue
-            fn = _WEIGHT_DIAGS.get(name)
-            if fn is None:
-                logger.warning("circuitry: unknown weight diagnostic %r — skipping", name)
-                continue
-            for mod_name, w in ctx.weights.items():
-                self._writer.add_scalar(f"weight/{name}/{mod_name}", float(fn(w)), ctx.step)
+            if name == "sv_histogram":
+                if ctx.weights:
+                    from circuitry.core.weight import singular_values
+                    for mod_name, w in ctx.weights.items():
+                        sv = singular_values(w)
+                        self._writer.add_histogram(f"spectral/per_param/{mod_name}/sv_histogram", sv, ctx.step)
+            else:
+                fn = _WEIGHT_DIAGS.get(name)
+                if fn is None:
+                    logger.warning("circuitry: unknown weight diagnostic %r — skipping", name)
+                    continue
+                for mod_name, w in ctx.weights.items():
+                    self._writer.add_scalar(f"weight/{name}/{mod_name}", float(fn(w)), ctx.step)
 
         for name in self.recipe.activation_diagnostics:
             if not self._enabled(name):
