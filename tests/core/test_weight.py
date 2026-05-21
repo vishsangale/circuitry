@@ -60,3 +60,32 @@ def test_effective_rank_invariant_under_orthogonal():
     assert weight.effective_rank(W) == pytest.approx(
         weight.effective_rank(Q @ W), rel=1e-5
     )
+
+
+def test_stable_rank_identity():
+    n = 5
+    assert weight.stable_rank(torch.eye(n)) == pytest.approx(n, rel=1e-6)
+
+
+def test_stable_rank_rank1_is_one():
+    u = torch.randn(8, 1)
+    v = torch.randn(1, 8)
+    assert weight.stable_rank(u @ v) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_stable_rank_returns_float():
+    assert isinstance(weight.stable_rank(torch.eye(3)), float)
+
+
+def test_condition_number_orthogonal_is_one():
+    Q, _ = torch.linalg.qr(torch.randn(8, 8))
+    assert weight.condition_number(Q) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_condition_number_diag():
+    W = torch.diag(torch.tensor([4.0, 1.0]))
+    assert weight.condition_number(W) == pytest.approx(4.0, rel=1e-6)
+
+
+def test_condition_number_returns_float():
+    assert isinstance(weight.condition_number(torch.eye(3)), float)

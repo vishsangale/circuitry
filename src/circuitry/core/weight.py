@@ -59,3 +59,23 @@ def effective_rank(W: ArrayLike, eps: float = 1e-12) -> float:
     p = s / s.sum()
     H = -(p * torch.log(p)).sum().item()
     return float(math.exp(H))
+
+
+def stable_rank(W: ArrayLike) -> float:
+    """``||W||_F^2 / ||W||_2^2``. Lower-bounds the algebraic rank and is
+    numerically robust on near-singular matrices.
+    """
+    s = singular_values(W)
+    if s.numel() == 0:
+        return 0.0
+    return float((s.pow(2).sum() / (s[0].pow(2))).item())
+
+
+def condition_number(W: ArrayLike, eps: float = 1e-12) -> float:
+    """``sigma_max / sigma_min``. Returns ``+inf`` if the smallest singular
+    value is below ``eps``.
+    """
+    s = singular_values(W)
+    if s.numel() == 0 or s[-1].item() < eps:
+        return float("inf")
+    return float((s[0] / s[-1]).item())
