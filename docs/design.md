@@ -22,7 +22,7 @@ A 2026 survey of the field (TransformerLens, nnsight, captum, pyvene, SAELens, t
 
 ### Naming clarity
 
-`circuitry` is statistical diagnostics on weights / activations / gradients during training. It is **not** causal-pathway discovery in the Anthropic "circuits" research sense. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line disambiguation so users arriving from Anthropic-circuits work are not surprised.
+`circuitry` is statistical diagnostics on weights / activations / gradients during training. It is **not** mechanistic-circuit discovery in the activation-patching / SAE / logit-lens sense. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line disambiguation so users arriving from mechanistic-interpretability work are not surprised.
 
 ### Non-goals
 

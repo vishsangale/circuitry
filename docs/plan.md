@@ -347,7 +347,7 @@ Replace existing content with:
 ```markdown
 # circuitry
 
-> **Disambiguation:** `circuitry` is statistical diagnostics on neural-network weights / activations / gradients during training. It is **not** causal-pathway discovery in the Anthropic "circuits" research sense. The name is borrowed from electronics.
+> **Disambiguation:** `circuitry` is statistical diagnostics on neural-network weights / activations / gradients during training. It is **not** mechanistic-circuit discovery in the activation-patching / SAE / logit-lens sense. The name is borrowed from electronics.
 
 Training-time mechanistic-interpretability diagnostics for PyTorch — works across LLMs, vision (CNNs / ViTs), and recommender (two-tower) models with a single API.
 
