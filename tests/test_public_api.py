@@ -15,8 +15,12 @@ def test_public_surface():
         "TensorSource",
         "__version__",
         "build_report",
+        "direction_cosine",
+        "discover",
         "register_recipe",
         "scan_run",
+        "token_similarity",
+        "update_delta",
     }
     assert set(circuitry.__all__) == expected
     for name in expected:
@@ -27,3 +31,12 @@ def test_version_is_a_string():
     import circuitry
     assert isinstance(circuitry.__version__, str)
     assert circuitry.__version__
+
+
+def test_v02_surface_exports():
+    import circuitry
+    assert circuitry.__version__ == "0.2.0a0"
+    assert hasattr(circuitry, "token_similarity")
+    assert hasattr(circuitry, "update_delta")
+    assert hasattr(circuitry, "direction_cosine")
+    assert hasattr(circuitry, "discover")
