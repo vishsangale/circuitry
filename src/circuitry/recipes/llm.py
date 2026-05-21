@@ -17,10 +17,13 @@ RECIPE = Recipe(
         HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.ln_[12]$"),
         HookPoint(source=TensorSource.WEIGHT, pattern=r"embed.*"),
         HookPoint(source=TensorSource.WEIGHT, pattern=r"lm_head$"),
+        HookPoint(source=TensorSource.GRAD,
+                  pattern=r".*\.(q|k|v|o)_proj$"),
     ],
-    weight_diagnostics=["effective_rank", "stable_rank", "heavy_tail_alpha"],
+    weight_diagnostics=["effective_rank", "stable_rank", "heavy_tail_alpha",
+                        "sv_histogram"],
     activation_diagnostics=["dead_fraction", "kurtosis", "participation_ratio"],
-    gradient_diagnostics=["layer_norm"],
+    gradient_diagnostics=["layer_norm", "norms_per_param"],
 )
 
 

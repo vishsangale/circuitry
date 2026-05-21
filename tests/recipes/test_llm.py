@@ -80,3 +80,18 @@ def test_llm_recipe_attaches_and_emits_scalars(tmp_path):
 def test_llm_recipe_is_registered():
     r = get_recipe("llm")
     assert any(hp.pattern and "attn" in hp.pattern for hp in r.hook_points)
+
+
+def test_llm_recipe_has_sv_histogram_and_per_param_grad():
+    from circuitry.recipes import get_recipe
+    r = get_recipe("llm")
+    assert "sv_histogram" in r.weight_diagnostics
+    assert "norms_per_param" in r.gradient_diagnostics
+
+
+def test_llm_recipe_has_grad_hook():
+    """Without a GRAD HookPoint, norms_per_param is a silent no-op."""
+    from circuitry.recipes import get_recipe
+    from circuitry.recorder.hooks import TensorSource
+    r = get_recipe("llm")
+    assert any(hp.source == TensorSource.GRAD for hp in r.hook_points)
