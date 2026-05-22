@@ -442,3 +442,47 @@ def test_attention_head_rank_skips_when_no_config(tmp_path, caplog):
     assert not any("attention_head_rank" in t for t, _, _ in writer.scalars)
     assert any("attention_head_rank" in r.message and "config" in r.message.lower()
                for r in caplog.records)
+
+
+def test_gate_stats_emits_three_subscalars_per_module(tmp_path):
+    """v0.8.0: gate_stats is an activation diagnostic that emits three
+    subscalars per hooked module: frac_active, mean_abs, std."""
+    import torch
+
+    class _Mlp(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.down_proj = nn.Linear(16, 8, bias=False)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            # The INPUT pre-hook captures whatever we pass to down_proj.
+            return self.down_proj(x)
+
+    class _M(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mlp = _Mlp()
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.mlp(x)
+
+    register_recipe(Recipe(
+        name="gate_demo",
+        hook_points=[HookPoint(source=TensorSource.INPUT,
+                               pattern=r"down_proj$")],
+        activation_diagnostics=["gate_stats"],
+    ))
+    writer = RecordingWriter()
+    rec = Recorder(_M(), run_dir=tmp_path, recipe="gate_demo",
+                   writer=writer, every_n_steps=1)
+    rec.attach()
+    _ = _M().forward  # warm-up of registered hook trees not needed; use rec.model
+    x = torch.randn(2, 16)
+    rec.model(x)
+    rec.step(0)
+    rec.detach()
+
+    tags = {t for t, _, _ in writer.scalars}
+    assert any("activation/gate_stats/mlp.down_proj/frac_active" in t for t in tags)
+    assert any("activation/gate_stats/mlp.down_proj/mean_abs" in t for t in tags)
+    assert any("activation/gate_stats/mlp.down_proj/std" in t for t in tags)

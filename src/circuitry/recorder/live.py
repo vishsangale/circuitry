@@ -457,6 +457,16 @@ class Recorder:
         for name in self.recipe.activation_diagnostics:
             if not self._enabled(name):
                 continue
+            if name == "gate_stats":
+                from circuitry.core.activation import gate_stats as _gs
+                for mod_name, x in ctx.activations.items():
+                    out = _gs(x)
+                    for sub, val in out.items():
+                        self._writer.add_scalar(
+                            f"activation/gate_stats/{mod_name}/{sub}",
+                            val, ctx.step,
+                        )
+                continue
             fn = _ACT_DIAGS.get(name)
             if fn is None:
                 logger.warning("circuitry: unknown activation diagnostic %r — skipping", name)
