@@ -134,9 +134,14 @@ class Recorder:
                         idx, label, len(names), names)
 
             if len(names) == 0:
-                raise RuntimeError(
-                    f"HookPoint {idx} ({label}) matched 0 modules — refusing to attach"
-                )
+                msg = f"HookPoint {idx} ({label}) matched 0 modules"
+                if self.strict:
+                    raise RuntimeError(
+                        msg + " — refusing to attach (pass strict=False to skip "
+                        "unmatched HookPoints with a warning)"
+                    )
+                logger.warning("circuitry: %s — skipping this HookPoint", msg)
+                continue
             expected = self.recipe.expected_min_matches.get(hp.pattern or "", 0)
             if expected and len(names) < expected:
                 msg = (f"HookPoint {idx} ({label}) matched {len(names)} modules but "

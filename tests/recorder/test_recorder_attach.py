@@ -55,16 +55,37 @@ def test_attach_logs_matched_modules_at_info(tmp_path, caplog):
     assert any("matched" in r.message.lower() for r in caplog.records)
 
 
-def test_attach_raises_on_zero_matches_regardless_of_strict(tmp_path):
+def test_attach_raises_on_zero_matches_in_strict_mode(tmp_path):
     register_recipe(Recipe(
         name="bad",
         hook_points=[HookPoint(source=TensorSource.WEIGHT,
                                pattern=r"this-matches-nothing")],
     ))
     rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="bad",
-                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+                   writer=RecordingWriter(), every_n_steps=1, strict=True)
     with pytest.raises(RuntimeError, match="matched 0 modules"):
         rec.attach()
+
+
+def test_attach_warns_and_skips_zero_matches_in_non_strict_mode(tmp_path, caplog):
+    """v0.4.0 contract: strict=False relaxes both 0-match and under-match
+    failures to warnings so circuitry can be dropped into an existing
+    training script without authoring a perfect recipe first."""
+    register_recipe(Recipe(
+        name="partial",
+        hook_points=[
+            HookPoint(source=TensorSource.WEIGHT, pattern=r"^\d+$"),  # matches
+            HookPoint(source=TensorSource.WEIGHT,
+                      pattern=r"this-matches-nothing"),  # 0-match, skipped
+        ],
+        weight_diagnostics=["effective_rank"],
+    ))
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="partial",
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.detach()
+    assert any("matched 0 modules" in r.message for r in caplog.records)
 
 
 def test_attach_raises_on_min_matches_violation_in_strict_mode(tmp_path):

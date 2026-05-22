@@ -12,9 +12,17 @@ RECIPE = Recipe(
                   pattern=r".*\.(q|k|v|o)_proj$"),
         HookPoint(source=TensorSource.WEIGHT,
                   pattern=r".*\.(w1|w2|w3|gate_proj|up_proj|down_proj)$"),
-        HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.attn$"),
+        # Attention submodule output. Covers HF (`self_attn`), HF-GPT-2 (`attn`),
+        # and canonical LLaMA reference (`attention`).
+        HookPoint(source=TensorSource.OUTPUT,
+                  pattern=r".*\.(self_attn|attn|attention)$"),
         HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.mlp$"),
-        HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.ln_[12]$"),
+        # Per-block layernorms. Covers HF (`input_layernorm`,
+        # `post_attention_layernorm`), GPT-2 (`ln_1`, `ln_2`), and canonical
+        # LLaMA reference (`attention_norm`, `ffn_norm`).
+        HookPoint(source=TensorSource.OUTPUT,
+                  pattern=r".*\.(input_layernorm|post_attention_layernorm"
+                          r"|attention_norm|ffn_norm|ln_[12])$"),
         HookPoint(source=TensorSource.WEIGHT, pattern=r"embed.*"),
         HookPoint(source=TensorSource.WEIGHT, pattern=r"lm_head$"),
         HookPoint(source=TensorSource.GRAD,
@@ -23,7 +31,7 @@ RECIPE = Recipe(
     weight_diagnostics=["effective_rank", "stable_rank", "heavy_tail_alpha",
                         "sv_histogram"],
     activation_diagnostics=["dead_fraction", "kurtosis", "participation_ratio"],
-    gradient_diagnostics=["layer_norm", "norms_per_param"],
+    gradient_diagnostics=["norms_per_param"],
 )
 
 

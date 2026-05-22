@@ -29,8 +29,8 @@ from contextlib import contextmanager
 import torch
 
 from circuitry import Recipe, Recorder, build_report
-from circuitry.recorder.hooks import HookPoint, TensorSource, match_modules
 from circuitry.recipes import get_recipe
+from circuitry.recorder.hooks import HookPoint, match_modules
 
 
 @contextmanager
@@ -129,7 +129,7 @@ def main() -> int:
         print(f"  vocab:   {model.config.vocab_size}")
         # Sample module names — helpful for understanding what regexes need to match
         all_names = [n for n, _ in model.named_modules()][:30]
-        print(f"  first 30 named_modules:")
+        print("  first 30 named_modules:")
         for n in all_names:
             print(f"    {n}")
 
