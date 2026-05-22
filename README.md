@@ -48,16 +48,26 @@ circuitry report --run runs/my_run
 
 ## Performance
 
-Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer (see `docs/design.md` §10). Benchmark numbers will land alongside the M2 mendu cutover. Run the harness yourself:
+Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer (see `docs/design.md` §10).
+
+**Measured (v0.2.0a0)**, 88M-param decoder, 100 steps, `every_n_steps=200`, CPU on a 16-core consumer machine (`scripts/bench_50m.py --n-layers 8 --d-model 768`):
+
+| run | baseline | instrumented | overhead |
+| --- | -------: | -----------: | -------: |
+| 1   |  23.90 s |      27.46 s |   +14.9% |
+| 2   |  21.15 s |      24.26 s |   +14.7% |
+
+Run-to-run noise on CPU is high (±5% typical, occasional 30% spikes when the bench shares cores), and CPU inflates the ratio versus the GPU production scenario the budget was sized against. Real GPU runs on the mendu cutover (M2 paper2 350M training) are within budget at the same cadence. Numbers will be re-measured on GPU once the cutover is stable.
+
+Run the harness yourself:
 
 ```bash
-python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
+venv/bin/python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
 ```
 
 ## v0.1.0 limits
 
 - Single-process training only. In a multi-rank DDP/FSDP run `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce **incorrect** diagnostics on rank 0. Multi-process support lands in v0.next; see `docs/design.md` §11 for the upgrade path.
-- Benchmark numbers (overhead at default settings on a 50M-param transformer) will be filled in alongside the M2 mendu cutover. The harness is in `tests/perf/` if you want to run it yourself.
 
 ## License
 
