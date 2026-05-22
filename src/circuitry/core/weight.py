@@ -146,3 +146,50 @@ def direction_cosine(
         else:
             out[name] = float((u1 @ u2).item()) / (n1 * n2)
     return out
+
+
+def attention_head_rank(
+    W: ArrayLike,
+    n_heads: int,
+    head_dim: int,
+    axis: int,
+) -> list[float]:
+    """Per-head ``effective_rank`` of an attention projection weight.
+
+    Args:
+        W: A 2-D weight matrix. For q/k/v_proj the head dimension lives
+            in the OUTPUT axis (``axis=0``); for o_proj it lives in the
+            INPUT axis (``axis=1``).
+        n_heads: Number of heads in this projection. For GQA models the
+            caller passes ``num_key_value_heads`` for k/v_proj and
+            ``num_attention_heads`` for q/o_proj — the primitive does
+            not infer this.
+        head_dim: Per-head dimension. The product ``n_heads * head_dim``
+            must equal ``W.shape[axis]``.
+        axis: 0 for "output-head" projections (q/k/v), 1 for
+            "input-head" projections (o).
+
+    Returns:
+        ``n_heads`` floats, the ``effective_rank`` of each per-head
+        slice. Order matches head index.
+
+    Raises:
+        ValueError: if ``W.shape[axis] != n_heads * head_dim`` or if
+            ``W`` is not 2-D.
+    """
+    t = _as_2d(W)
+    if t.ndim != 2:
+        raise ValueError(f"attention_head_rank expects 2-D, got shape {tuple(t.shape)}")
+    if t.shape[axis] != n_heads * head_dim:
+        raise ValueError(
+            f"attention_head_rank: W.shape[{axis}] == {t.shape[axis]} but "
+            f"n_heads * head_dim == {n_heads * head_dim}"
+        )
+    ranks: list[float] = []
+    for i in range(n_heads):
+        if axis == 0:
+            slice_i = t[i * head_dim : (i + 1) * head_dim]
+        else:
+            slice_i = t[:, i * head_dim : (i + 1) * head_dim]
+        ranks.append(effective_rank(slice_i))
+    return ranks
