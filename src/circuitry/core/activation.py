@@ -97,3 +97,29 @@ def token_similarity(h: torch.Tensor) -> torch.Tensor:
     off_diag_mask = ~torch.eye(seq, dtype=torch.bool, device=h.device)
     off_diag = gram[..., off_diag_mask].view(gram.shape[0], -1)
     return off_diag.mean()
+
+
+def gate_stats(x: ArrayLike, eps: float = 1e-6) -> dict[str, float]:
+    """Statistics on a post-gate MLP activation tensor.
+
+    For Llama-/Gemma-style gated MLPs the input to ``down_proj`` is
+    ``act(gate_proj(x)) * up_proj(x)`` — i.e. the activations the MLP
+    actually integrates. ``dead_fraction`` on the MLP output can't tell
+    you whether a channel was gated off versus computed-and-discarded;
+    this primitive reads the gated tensor directly.
+
+    Returns a dict so the recorder can fan out ``gate_stats/<sub>``
+    scalars without the primitive needing to know about tag naming.
+
+    Keys:
+        ``frac_active`` — fraction of entries with ``|x| > eps``.
+        ``mean_abs`` — mean of ``|x|`` over all entries.
+        ``std`` — standard deviation of ``x`` (unbiased=False).
+    """
+    t = _as_tensor(x).detach().to(torch.float32)
+    abs_t = t.abs()
+    return {
+        "frac_active": float((abs_t > eps).float().mean().item()),
+        "mean_abs": float(abs_t.mean().item()),
+        "std": float(t.std(unbiased=False).item()),
+    }
