@@ -1,8 +1,8 @@
 """LLaMA-family state_dict classifier: param-name → (role, layer_idx).
 
-Lifted from latent_inspect_checkpoint.arch_discovery and trimmed to what
-circuitry recipes need. Supports the naming variants seen across mendu's
-paper2 bets; if you need a different family, extend ``_ROLE_PATTERNS``.
+Supports the common naming variants in the wild (canonical LLaMA reference
+plus the ``blocks.N.`` block-prefix convention). For other families, extend
+``_ROLE_PATTERNS``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-# Block-prefix variants: "layers.N." (LLaMA) and "blocks.N." (paper2 alt).
+# Block-prefix variants: "layers.N." (canonical LLaMA) and "blocks.N." (alt).
 _LAYER_RE = re.compile(r"^(?:layers|blocks)\.(\d+)\.")
 
 # Role assignment — applied after stripping the layer prefix.

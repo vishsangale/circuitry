@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import sys
 
 SRC = pathlib.Path(__file__).parent.parent / "src" / "circuitry"
 
@@ -14,7 +15,11 @@ FORBIDDEN = {
     "recipes": ("circuitry.cli",),
 }
 
-SIBLING_FORBIDDEN = ("mendu", "rl_recsys", "rl-recsys", "bumblebee", "plum", "bonsai", "gpt_2", "llm_council", "latent_superpowers")
+# Allowlist for the reverse-dependency rule (§3): `circuitry` may only import
+# from itself, the standard library, or its declared third-party deps. Any
+# other root package implies an unauthorized dependency on a consumer codebase
+# or an undeclared third-party — both should fail this test.
+ALLOWED_ROOTS = frozenset({"circuitry", "torch", "numpy", "tensorboard"}) | sys.stdlib_module_names
 
 
 def _imports(path: pathlib.Path) -> set[str]:
@@ -49,11 +54,18 @@ def test_recipes_do_not_import_cli():
                 )
 
 
-def test_no_sibling_workspace_imports():
+def test_only_approved_root_packages_imported():
+    """Reverse-dependency rule (§3): circuitry is the consumed dep, never the
+    consumer. Implemented as an allowlist — any new root package is a red flag
+    that the author should add to ``ALLOWED_ROOTS`` explicitly if intentional.
+    """
     for py in SRC.rglob("*.py"):
         for imp in _imports(py):
             root = imp.split(".", 1)[0]
-            assert root not in SIBLING_FORBIDDEN, (
-                f"{py.relative_to(SRC)} imports {imp} from sibling workspace project — "
-                f"reverse-dependency rule (§3)"
+            assert root in ALLOWED_ROOTS, (
+                f"{py.relative_to(SRC)} imports {imp!r} — root package {root!r} "
+                f"is not in ALLOWED_ROOTS. Either it's an unauthorized "
+                f"consumer-codebase import (§3 reverse-dependency rule) or a "
+                f"new third-party dep that needs declaring in pyproject.toml "
+                f"and added to ALLOWED_ROOTS in this test."
             )

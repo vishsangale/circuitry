@@ -56,7 +56,7 @@ Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 5
 | 1   |  23.90 s |      27.46 s |   +14.9% |
 | 2   |  21.15 s |      24.26 s |   +14.7% |
 
-Run-to-run noise on CPU is high (±5% typical, occasional 30% spikes when the bench shares cores), and CPU inflates the ratio versus the GPU production scenario the budget was sized against. Real GPU runs on the mendu cutover (M2 paper2 350M training) are within budget at the same cadence. Numbers will be re-measured on GPU once the cutover is stable.
+Run-to-run noise on CPU is high (±5% typical, occasional 30% spikes when the bench shares cores), and CPU inflates the ratio versus the GPU production scenario the budget was sized against. GPU re-measurement is on the to-do list.
 
 Run the harness yourself:
 

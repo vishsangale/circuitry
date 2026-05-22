@@ -84,8 +84,7 @@ def condition_number(W: ArrayLike, eps: float = 1e-12) -> float:
 def heavy_tail_alpha(W: ArrayLike, top_frac: float = 0.5) -> float:
     """Hill estimator of the tail index of the squared-singular-value
     distribution. Computed on the top ``top_frac`` (default half) of squared
-    singular values; that fraction is the empirically robust default used in
-    the mendu paper-2 spectral diagnostics.
+    singular values — the empirically robust default.
 
     Returns ``+inf`` on degenerate inputs.
     """
