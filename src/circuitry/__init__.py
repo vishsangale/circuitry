@@ -1,6 +1,6 @@
 """circuitry — mechanistic-interpretability diagnostics for PyTorch (live during training or post-hoc on a checkpoint).
 
-Public surface re-exports below are the v0.2.0a0 stable API. Anything not re-exported
+Public surface re-exports below are the v0.2.0 stable API. Anything not re-exported
 here is an internal implementation detail and may change without notice.
 """
 
@@ -14,7 +14,7 @@ from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
 from circuitry.writers.base import MetricWriter
 
-__version__ = "0.2.0a0"
+__version__ = "0.2.0"
 
 __all__ = [
     "HookPoint",
