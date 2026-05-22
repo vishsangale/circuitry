@@ -321,8 +321,7 @@ Phase N (circuitry surface):
 - Built-in `"norms_per_param"` (gradient) and `"sv_histogram"` (weight) diagnostics added; LLM recipe now wires the GRAD `HookPoint` and both new diagnostics.
 
 Phase P (parity harness, gated on canonical run):
-- `scripts/parity_check.py` trains a tiny LLaMA-shaped model under both mendu's `InspectionRecorder` and circuitry's `Recorder`, compares TB scalars with `rtol=1e-5, atol=1e-7` (most metrics) / `rtol=1e-4` (SVD-derived: `effective_rank`, `condition_number`, `heavy_tail_alpha`, `singular_values`, `stable_rank`). Tolerances are parameterized.
-- `parity_results.md` records the post-harness numbers and any scalar-name mappings.
+- `scripts/parity_check.py` trains a tiny LLaMA-shaped model under both mendu's `InspectionRecorder` and circuitry's `Recorder`, compares TB scalars with `rtol=1e-5, atol=1e-7` (most metrics) / `rtol=1e-4` (SVD-derived: `effective_rank`, `condition_number`, `heavy_tail_alpha`, `singular_values`, `stable_rank`). Tolerances are parameterized. The M2 canonical run PASSed; numbers preserved in git history.
 
 Phase Q (mendu cutover):
 - `venv/bin/pip install -e ~/workspace/circuitry` into mendu.
@@ -341,7 +340,7 @@ Phase S (release):
 - This §7 rewrite.
 - Tag `v0.2.0`, push, cut GitHub Release.
 
-**Scalar-name break:** mendu pre-cutover TB runs are not directly comparable to post-cutover runs (`loss` → `train/loss`, paper2-specific prefixes like `optim/per_param/...` are new). Accepted trade-off — see `docs/plan-m2.md` "Key decisions".
+**Scalar-name break:** mendu pre-cutover TB runs are not directly comparable to post-cutover runs (`loss` → `train/loss`, paper2-specific prefixes like `optim/per_param/...` are new). Accepted trade-off.
 
 ### Phase M3 — siblings adopt (opportunistic, no timeline)
 

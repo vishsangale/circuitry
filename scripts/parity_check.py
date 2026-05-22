@@ -34,8 +34,8 @@ SVD_METRICS = {
 
 # Tag mapping: mendu's pre-cutover name → circuitry's post-cutover name.
 # Both pipelines emit the listed-on-the-left tag in mendu's run; circuitry emits
-# the listed-on-the-right tag. The "scalar name break" was a user decision (see
-# plan-m2.md key-decision #2).
+# the listed-on-the-right tag. (User-accepted "scalar name break" — see
+# design.md §7.)
 UNIVERSAL_TAGS = {
     "train/lm_loss": "train/lm_loss",
     "train/lr": "train/lr",
@@ -213,7 +213,11 @@ def _run_circuitry(steps: int, out_dir) -> None:
     import torch
 
     from circuitry import Recorder  # noqa: PLC0415
-    from circuitry.recipes import Recipe, register_recipe, _clear_registry_for_tests  # noqa: PLC0415
+    from circuitry.recipes import (  # noqa: PLC0415
+        Recipe,
+        _clear_registry_for_tests,
+        register_recipe,
+    )
     from circuitry.recorder.hooks import HookPoint, TensorSource  # noqa: PLC0415
 
     # Custom recipe matching TinyLLaMA's LLaMA-style param names.

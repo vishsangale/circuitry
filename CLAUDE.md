@@ -12,7 +12,7 @@
 - §10 — Performance budget (≤10% wall-clock at default settings).
 - §11 — Multi-process design notes (v1 single-process; v2 additive path).
 
-The implementation plan (when written) lives at `docs/plan.md`.
+Active implementation plans, when in flight, live under `docs/` (e.g. `docs/plan-m3.md` for any future milestone). Historical plans are kept in git history rather than the working tree.
 
 ## Agent delegation strategy
 
@@ -50,11 +50,11 @@ These are non-negotiable; don't propose changes without amending `docs/design.md
 
 ### Before suggesting next steps
 1. `git log --oneline -10` for recent history.
-2. Read `docs/design.md` (and `docs/plan.md` once it exists).
+2. Read `docs/design.md` (and any active plan under `docs/`).
 3. Only then propose work — do not duplicate something already done.
 
 ### Before committing
-1. Check whether `docs/design.md` or `docs/plan.md` needs updating to match the code change.
+1. Check whether `docs/design.md` (or any active plan under `docs/`) needs updating to match the code change.
 2. Update docs first, include in the same commit if both changed.
 3. Commit message scope is the area being touched (`feat(core)`, `feat(recorder)`, `feat(recipes)`, `test(...)`, `docs(...)`, `chore(...)`).
 
