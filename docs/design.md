@@ -297,24 +297,51 @@ CI: GitHub Actions, Python 3.10 / 3.11 / 3.12, PyTorch latest stable. No GPU job
 
 Three phases; no flag day required.
 
-### Phase M1 — extract & publish (~week 1)
+### Phase M1 — extract & publish (shipped 2026-05-21)
 
-Create `~/workspace/circuitry/`. Seed:
+Tagged `v0.1.0` at commit `d5029cf`; public release at
+[github.com/vishsangale/circuitry/releases/tag/v0.1.0](https://github.com/vishsangale/circuitry/releases/tag/v0.1.0).
+82 tests pass; ruff + import-linter clean.
+
+Seeded from:
 
 - `mendu/tools/inspect_checkpoint/{live,arch_hooks,__main__}.py` → `src/circuitry/recorder/`.
-- `mendu/paper2/bet2_daleian/analysis/spectral_diagnostics.py` + `spectral_at_depth.py` → `src/circuitry/core/{spectral,weight}.py`. Strip paper-2-specific bits.
-- `mendu/scripts/diagnose_{ei_bottlenecks,signal_prop,trained_pc}.py` → ported into `recipes/vision.py` + `tests/recipes/test_vision.py`.
+- `mendu/paper2/bet2_daleian/analysis/spectral_diagnostics.py` (generic primitives only — see below) → `src/circuitry/core/{spectral,weight,activation}.py`.
+- `mendu/scripts/diagnose_{ei_bottlenecks,signal_prop,trained_pc}.py` — **dropped from scope.** These depend on mendu-specific architectures (Wix/Wei E/I weights, `HierarchicalConvPCNet`, `model.signal_propagation_stats()`) and cannot live in a generic `recipes/vision.py`.
 
-Tag `v0.1.0`.
+### Phase M2 — mendu cutover (shipped 2026-05-21)
 
-### Phase M2 — mendu cutover (~week 1-2)
+Executed against tag `v0.2.0` (commit TBD on tag-and-push). Strategy: **hybrid** — circuitry grows for universal features; paper2-specific diagnostics stay in mendu via a custom `Recipe` registered through `register_recipe`.
 
-- `venv/bin/pip install -e ~/workspace/circuitry`.
-- Replace `from tools.inspect_checkpoint...` with `from circuitry...` across mendu.
-- Side-by-side sanity check on one canonical run: same TB scalars within `rtol=1e-5, atol=1e-7` for most metrics; `rtol=1e-4` for SVD-derived ones (`effective_rank`, `condition_number`, `heavy_tail_alpha`, `singular_values`) since these are sensitive to LAPACK backend and hardware. Tolerances are parameterized in the parity-check script; ratchet down if a metric is stricter than expected.
-- After parity check passes: delete `mendu/tools/inspect_checkpoint/` and the now-redundant copies in `paper2/.../analysis/`.
-- Update `mendu/CLAUDE.md`: replace the `latent-superpowers/core/inspect-checkpoint` install line with `pip install -e ~/workspace/circuitry`.
-- Archive `~/workspace/latent-superpowers-inspect`: tag `pre-circuitry`, set README to "moved to circuitry."
+Phase N (circuitry surface):
+- `circuitry.core.activation.token_similarity(h)` — ported from `mendu/paper2/.../spectral_diagnostics.py`.
+- `circuitry.core.weight.update_delta(sd1, sd0)` and `direction_cosine(sd2, sd1, sd0)` — lifted from `latent_inspect_checkpoint.metrics`.
+- `circuitry.recipes._discovery.discover()` — LLaMA-family arch discovery; matches `layers.N.attention.wq` and `blocks.N.attn.q_proj` naming conventions.
+- `Recorder.step(loss=..., loss_components=...)` — emits `train/<key>` scalars; `train/loss` replaces the previous `loss` tag.
+- Built-in `"norms_per_param"` (gradient) and `"sv_histogram"` (weight) diagnostics added; LLM recipe now wires the GRAD `HookPoint` and both new diagnostics.
+
+Phase P (parity harness, gated on canonical run):
+- `scripts/parity_check.py` trains a tiny LLaMA-shaped model under both mendu's `InspectionRecorder` and circuitry's `Recorder`, compares TB scalars with `rtol=1e-5, atol=1e-7` (most metrics) / `rtol=1e-4` (SVD-derived: `effective_rank`, `condition_number`, `heavy_tail_alpha`, `singular_values`, `stable_rank`). Tolerances are parameterized.
+- `parity_results.md` records the post-harness numbers and any scalar-name mappings.
+
+Phase Q (mendu cutover):
+- `venv/bin/pip install -e ~/workspace/circuitry` into mendu.
+- `mendu/paper2/circuitry_recipe.py` builds a `"paper2"` `Recipe` with five custom diagnostics (`eval_ppl`, `ei_balance`, `route_fractions`, `adam_moments`, `weight_dynamics`) that read mendu-specific state through `ctx.user`. The recipe's attention WEIGHT/GRAD hooks use a selector that walks every submodule under `.attn.` and yields those with an `nn.Parameter` named `weight` — this covers Bet1 (`q_proj`/`k_proj`/`v_proj`/`proj`), Bet2 native_sparse, MLA / DaleianMLA (`W_DQ`/`W_UQ`/`W_QR`/`W_DKV`/`W_UK`/`W_UV`/`W_KR`/`W_O`), and DaleianMHA (fused `qkv`) without per-variant regex sprawl. `SignConstrainedLinear` projections expose `raw_weight` rather than `weight` and are intentionally skipped. The `.attn` OUTPUT hook is **not** wired for paper2: DaleianMHA/DaleianMLA return a dataclass rather than a tensor, which circuitry's tensor-shaped output hook cannot consume; `.mlp` outputs cover the activation diagnostics surface uniformly.
+- Three training call-sites rewritten: `paper2/bet1_surprise/train/train_350m.py`, `paper2/bet1_surprise/train/train_350m_ste.py`, `paper2/bet2_daleian/train/train_350m.py`. Each tracks `inspector_prev_state` / `inspector_prev_prev_state` as locals and rotates them at `ckpt_interval` cadence (matching the old `on_checkpoint` semantics); state threads to the recipe via `Recorder.step(**kwargs)` → `ctx.user`.
+- 5 affected mendu tests migrated; the legacy `paper2/tests/inspect_checkpoint/` tests deleted alongside the in-tree inspector.
+- `mendu/tools/inspect_checkpoint/` deleted; `latent_inspect_checkpoint` uninstalled from mendu venv. `paper2/bet2_daleian/analysis/spectral_diagnostics.py` is **trimmed** (not deleted) to keep the attention-tensor-shaped functions (`effective_rank` over `[..., T, T]`, `singular_value_spectrum` over `[..., H, T, T]`) that have no generic counterpart in `circuitry.core`.
+
+Phase R (latent-superpowers-inspect archival):
+- Tag `pre-circuitry-extraction` on the working branch before deletion.
+- `core/inspect-checkpoint/`, `tests/inspect-checkpoint/`, and the four `adapters/*/inspect-checkpoint/` directories deleted; the 13 unrelated subsystems (`hydra`, `wandb`, `mlflow`, `ablation-analysis`, `profiling-optimization`, `local-dashboard`, `paper-to-code`, `experiment-runner`, `eval-benchmark`, `dataset-pipeline`, `reproducibility`, `slurm-cluster`, `common`) untouched.
+- README updated with a forwarding note pointing at circuitry.
+
+Phase S (release):
+- `scripts/bench_50m.py` numbers recorded in the README (CPU run, ~15% overhead on 88M params; GPU re-measurement to follow).
+- This §7 rewrite.
+- Tag `v0.2.0`, push, cut GitHub Release.
+
+**Scalar-name break:** mendu pre-cutover TB runs are not directly comparable to post-cutover runs (`loss` → `train/loss`, paper2-specific prefixes like `optim/per_param/...` are new). Accepted trade-off — see `docs/plan-m2.md` "Key decisions".
 
 ### Phase M3 — siblings adopt (opportunistic, no timeline)
 
