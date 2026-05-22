@@ -127,9 +127,15 @@ def main() -> int:
         model, tok = _load_model(args.model, dtype)
         n_params = sum(p.numel() for p in model.parameters())
         n_modules = sum(1 for _ in model.named_modules())
+        # Robust vocab lookup for multimodal configs (text_config nested).
+        embed = model.get_input_embeddings()
+        vocab = embed.num_embeddings if embed is not None else (
+            getattr(model.config, "vocab_size", None)
+            or getattr(getattr(model.config, "text_config", None), "vocab_size", None)
+        )
         print(f"  params:  {n_params / 1e6:.1f}M  ({n_params * dtype.itemsize / 1e9:.2f}GB)")
         print(f"  modules: {n_modules}")
-        print(f"  vocab:   {model.config.vocab_size}")
+        print(f"  vocab:   {vocab}")
         # Sample module names — helpful for understanding what regexes need to match
         all_names = [n for n, _ in model.named_modules()][:30]
         print("  first 30 named_modules:")
@@ -174,7 +180,6 @@ def main() -> int:
         print(f"  matched_modules.txt -> {filt_run / 'circuitry' / 'matched_modules.txt'}")
 
         torch.manual_seed(0)
-        vocab = model.config.vocab_size
         input_ids = torch.randint(0, vocab, (1, args.seqlen))
 
         # If --scan, save checkpoints during training so scan_run has work later.
