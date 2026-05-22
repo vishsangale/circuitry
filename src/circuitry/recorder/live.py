@@ -53,11 +53,8 @@ def _resolve_writer(writer: MetricWriter | str, run_dir: pathlib.Path) -> Metric
         "jsonl": lambda: JsonlWriter(run_dir),
         "null": lambda: NullWriter(),
     }
-    if writer == "wandb":
-        from circuitry.writers.wandb import WandbWriter
-        return WandbWriter()
     if writer not in table:
-        raise ValueError(f"unknown writer {writer!r}; known: {sorted(table) + ['wandb']}")
+        raise ValueError(f"unknown writer {writer!r}; known: {sorted(table)}")
     return table[writer]()
 
 

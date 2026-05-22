@@ -4,13 +4,12 @@
 
 Mechanistic-interpretability diagnostics for PyTorch — works across LLMs, vision (CNNs / ViTs), and recsys models with a single API, live during training or post-hoc on a checkpoint.
 
-**Status:** v0.2.0 (alpha). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md).
+**Status:** v0.3.0 (alpha). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md).
 
 ## Install
 
 ```bash
 pip install -e .          # editable, from a checkout
-pip install -e ".[wandb]" # with wandb writer
 ```
 
 ## Quickstart
@@ -22,7 +21,7 @@ recorder = Recorder(
     model,
     run_dir="runs/my_run",
     recipe="llm",            # or "vision", "two_tower"
-    writer="tensorboard",    # or "wandb", "jsonl", "null"
+    writer="tensorboard",    # or "jsonl", "null"
     every_n_steps=200,
 )
 recorder.attach()
@@ -44,7 +43,7 @@ circuitry report --run runs/my_run
 - **Primitives** (`circuitry.core.*`) — `effective_rank`, `stable_rank`, `heavy_tail_alpha`, `dead_fraction`, `kurtosis`, `participation_ratio`, `layer_norm`, ESD, rank trajectory, and more.
 - **Recorder** — attach to a training loop, write TensorBoard events every N steps, dump a markdown report at the end.
 - **Recipes** — `llm` / `vision` / `two_tower` plug the right hooks and diagnostics into your model; subclass `Recipe` or `register_recipe(...)` for custom architectures.
-- **MetricWriter protocol** — TB by default; wandb / jsonl / null adapters ship in-tree.
+- **MetricWriter protocol** — TB by default; `jsonl` (storage format for the `scan` / `report` workflow) and `null` (test plumbing) adapters ship in-tree. Bring-your-own writer is a ~50-LOC subclass of `MetricWriter`.
 
 ## Performance
 

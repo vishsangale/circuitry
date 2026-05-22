@@ -44,7 +44,7 @@ A 2026 survey of the field (TransformerLens, nnsight, captum, pyvene, SAELens, t
 | API shape | Two layers: pure primitives in `core/` + thin opinionated `Recorder` workflow above |
 | Modality strategy | Modality-agnostic core + per-modality recipes (`recipes/llm.py`, `recipes/vision.py`, `recipes/two_tower.py`) |
 | Framework support v1 | PyTorch only, single-process (rank-0 only in DDP runs; v2 path in §11) |
-| Logging | TensorBoard primary, `MetricWriter` Protocol so wandb / jsonl / null adapters are 1-file each |
+| Logging | TensorBoard primary, `MetricWriter` Protocol so jsonl / null (and any user-supplied) adapters are 1-file each |
 
 ## 3. Repository structure
 
@@ -74,7 +74,6 @@ A 2026 survey of the field (TransformerLens, nnsight, captum, pyvene, SAELens, t
 │   ├── writers/
 │   │   ├── base.py         # MetricWriter Protocol
 │   │   ├── tensorboard.py
-│   │   ├── wandb.py        # optional extra
 │   │   ├── jsonl.py
 │   │   └── null.py
 │   └── cli/
@@ -146,7 +145,7 @@ recorder = Recorder(
     model,
     run_dir="runs/my_run",
     recipe="llm",                  # str name or Recipe instance
-    writer="tensorboard",          # or "wandb", "jsonl", "null"
+    writer="tensorboard",          # or "jsonl", "null"
     every_n_steps=200,
 )
 recorder.attach()
@@ -251,7 +250,7 @@ class MetricWriter(Protocol):
 
 `add_image` is essential for vision recipes (activation maps, weight kernels visualized as heatmaps) and for matrix-as-image debug views even in LLM recipes (e.g. plotting `W_O @ W_V` per head). `dataformats` follows TB's convention.
 
-The TensorBoard adapter (default) is a thin wrapper over `torch.utils.tensorboard.SummaryWriter`. The JSONL adapter writes one JSON line per `add_scalar` call and dumps tensors / images to side files under `<run_dir>/circuitry/artifacts/` (no extra deps). The wandb adapter is gated behind `extras_require = {"wandb": ["wandb"]}`. The null adapter is a no-op for tests.
+The TensorBoard adapter (default) is a thin wrapper over `torch.utils.tensorboard.SummaryWriter`. The JSONL adapter writes one JSON line per `add_scalar` call and dumps tensors / images to side files under `<run_dir>/circuitry/artifacts/` (no extra deps); the `scan` / `report` workflow reads this format. The null adapter is a no-op for tests. Third-party loggers (wandb, mlflow, etc.) are not shipped in v0.3.0 — implement `MetricWriter` (~50 LOC) and pass the instance to `Recorder(writer=...)`.
 
 ## 5. Recipe internals — worked example
 
@@ -365,7 +364,7 @@ When `rl-recsys` / `bumblebee` / `plum` / `bonsai-*` / `gpt-2` / `llm-council` n
 | Recipe regexes match the **wrong** subset of modules silently (worse than matching nothing) | At `attach()` time the full matched-modules list per `HookPoint` is logged at INFO level and written to `<run_dir>/circuitry/matched_modules.txt`. Recipes can declare `expected_min_matches` per pattern; `strict=True` (default) raises on mismatch. Zero matches always raises. |
 | Diagnostic overhead doubles wall-clock training time | §10 sets a hard ≤10% wall-clock budget at default settings; benchmark in CI; per-diagnostic `enabled: bool` so users can drop the expensive ones; `every_n_steps` knob defaults are tuned per recipe (see §10). |
 | Public release attracts issues we don't have time for | "Low-key" release; README explicitly says "research code, no support promise." Issues triaged when convenient. |
-| TB-primary design alienates wandb-first users | `MetricWriter` protocol from day 1; wandb adapter shipped in v0.1.0 even if jsonl ships first. |
+| TB-primary design alienates wandb / mlflow-first users | `MetricWriter` protocol from day 1 keeps any third-party adapter a ~50-LOC subclass. v0.1.0 shipped a wandb adapter; v0.3.0 removed it after the cutover showed no in-house wandb consumers — trivially re-addable if demand surfaces. |
 | Single-process-only v1 ages into an architectural dead-end as users hit multi-GPU training | Multi-process design constraints baked into v1 protocol (see §11); v2 FSDP support is additive, not a rewrite. |
 
 ## 10. Performance & overhead budget
