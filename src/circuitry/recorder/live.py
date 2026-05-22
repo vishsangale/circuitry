@@ -17,6 +17,7 @@ import torch.nn as nn
 from circuitry.core import activation as _act
 from circuitry.core import gradient as _grad
 from circuitry.core import weight as _w
+from circuitry.core.inventory import ModelInventory
 from circuitry.recipes import Recipe, get_recipe
 from circuitry.recorder.hooks import StepContext, TensorSource, match_modules
 from circuitry.writers.base import MetricWriter
@@ -107,6 +108,12 @@ class Recorder:
         # name → tensor captured by hook, refreshed each emit step
         self._captured_activations: dict[str, torch.Tensor] = {}
         self._matched: dict[int, list[str]] = {}  # hp index → names
+        # Inventory-derived module-name → parameter-name resolution for
+        # WEIGHT / GRAD HookPoints. Built once at attach() time. Catches
+        # weights hidden inside wrapper Linear classes (e.g.
+        # ``Gemma4ClippableLinear`` → resolves to ``<module>.linear.weight``).
+        self._inventory: ModelInventory | None = None
+        self._param_for_module: dict[str, str] = {}
         self._noop = False
         self._current_step: int = -1
 
@@ -136,6 +143,16 @@ class Recorder:
         (self.run_dir / "circuitry").mkdir(parents=True, exist_ok=True)
         self._writer = _resolve_writer(self._writer_arg, self.run_dir)
 
+        # Inventory pass: enumerate every Parameter once. Source of truth for
+        # WEIGHT/GRAD HookPoint resolution; replaces the old
+        # ``getattr(module, "weight", None)`` heuristic that silently dropped
+        # weights hidden behind wrapper Linear classes.
+        self._inventory = ModelInventory.build(self.model)
+        (self.run_dir / "circuitry" / "inventory.json").write_text(
+            self._inventory.to_json()
+        )
+
+        name_to_mod = dict(self.model.named_modules())
         matched_lines: list[str] = []
         for idx, hp in enumerate(self.recipe.hook_points):
             names = match_modules(self.model, hp)
@@ -148,9 +165,6 @@ class Recorder:
             else:
                 label = "<selector>"
             matched_lines.append(f"# hook_point[{idx}] source={hp.source.value} target={label}")
-            for n in names:
-                matched_lines.append(n)
-            matched_lines.append("")
             logger.info("circuitry: hook_point[%d] (%s) matched %d modules: %s",
                         idx, label, len(names), names)
 
@@ -162,6 +176,7 @@ class Recorder:
                         "unmatched HookPoints with a warning)"
                     )
                 logger.warning("circuitry: %s — skipping this HookPoint", msg)
+                matched_lines.append("")
                 continue
             expected = self.recipe.expected_min_matches.get(hp.pattern or "", 0)
             if expected and len(names) < expected:
@@ -171,12 +186,47 @@ class Recorder:
                     raise RuntimeError(msg)
                 logger.warning("circuitry: %s", msg)
 
+            # For WEIGHT / GRAD HookPoints, resolve each matched module name
+            # to its primary weight Parameter via the inventory. Loud-on-fail:
+            # unresolvable matches WARN per module so wrapper-Linear classes
+            # don't silently drop diagnostics.
+            if hp.source in (TensorSource.WEIGHT, TensorSource.GRAD):
+                unresolved = 0
+                for mn in names:
+                    rec = self._inventory.find_primary_weight(mn)
+                    if rec is None:
+                        parent_cls = type(name_to_mod.get(mn, self.model)).__name__
+                        logger.warning(
+                            "circuitry: hook_point[%d] %s: module %r (%s) has no "
+                            "resolvable 2-D+ weight in its subtree — skipping",
+                            idx, hp.source.value, mn, parent_cls,
+                        )
+                        matched_lines.append(f"{mn} → UNRESOLVED ({parent_cls})")
+                        unresolved += 1
+                    else:
+                        # Don't overwrite an earlier WEIGHT mapping with a GRAD
+                        # one (they should be identical, but be explicit).
+                        self._param_for_module.setdefault(mn, rec.name)
+                        tail = rec.name[len(mn) + 1:] if mn else rec.name
+                        matched_lines.append(f"{mn} → {tail} {tuple(rec.shape)}")
+                if unresolved:
+                    logger.warning(
+                        "circuitry: hook_point[%d] (%s): %d of %d matched modules "
+                        "had no resolvable primary weight",
+                        idx, label, unresolved, len(names),
+                    )
+            else:
+                # OUTPUT / INPUT: hooks attach to the module itself; nothing
+                # to resolve.
+                for n in names:
+                    matched_lines.append(n)
+            matched_lines.append("")
+
         (self.run_dir / "circuitry" / "matched_modules.txt").write_text(
             "\n".join(matched_lines)
         )
 
         # Install hooks for INPUT / OUTPUT sources (WEIGHT/GRAD read directly at step time).
-        name_to_mod = dict(self.model.named_modules())
         for idx, hp in enumerate(self.recipe.hook_points):
             if hp.source is TensorSource.OUTPUT:
                 for n in self._matched[idx]:
@@ -186,7 +236,7 @@ class Recorder:
                 for n in self._matched[idx]:
                     handle = name_to_mod[n].register_forward_pre_hook(self._mk_pre_hook(n))
                     self._hook_handles.append(handle)
-            # WEIGHT / GRAD are pulled in step() directly from the module — no hook needed.
+            # WEIGHT / GRAD are pulled in step() directly from the inventory.
 
     def _mk_fwd_hook(self, name: str):
         # Hooks always capture (cheap detach); step() decides what to consume.
@@ -231,21 +281,29 @@ class Recorder:
         if not self._should_capture(self._current_step):
             return
 
-        # Build StepContext from currently-captured tensors + read-on-demand weights/grads.
-        name_to_mod = dict(self.model.named_modules())
+        # Build StepContext from currently-captured tensors + read-on-demand
+        # weights/grads. WEIGHT/GRAD HookPoints use the inventory-derived
+        # module→param mapping from attach() so wrapper Linear classes
+        # (e.g. ``Gemma4ClippableLinear`` → ``<module>.linear.weight``) are
+        # handled without silent drops.
+        name_to_param = dict(self.model.named_parameters())
         weights: dict[str, torch.Tensor] = {}
         gradients: dict[str, torch.Tensor] = {}
         for idx, hp in enumerate(self.recipe.hook_points):
-            if hp.source is TensorSource.WEIGHT:
-                for n in self._matched[idx]:
-                    p = getattr(name_to_mod[n], "weight", None)
-                    if isinstance(p, torch.Tensor):
-                        weights[n] = p.detach()
-            elif hp.source is TensorSource.GRAD:
-                for n in self._matched[idx]:
-                    p = getattr(name_to_mod[n], "weight", None)
-                    if isinstance(p, torch.Tensor) and p.grad is not None:
-                        gradients[n] = p.grad.detach()
+            if hp.source not in (TensorSource.WEIGHT, TensorSource.GRAD):
+                continue
+            for mod_name in self._matched[idx]:
+                param_name = self._param_for_module.get(mod_name)
+                if param_name is None:
+                    continue  # already WARNed at attach()
+                p = name_to_param.get(param_name)
+                if not isinstance(p, torch.Tensor):
+                    continue
+                if hp.source is TensorSource.WEIGHT:
+                    weights[mod_name] = p.detach()
+                else:  # GRAD
+                    if p.grad is not None:
+                        gradients[mod_name] = p.grad.detach()
 
         ctx = StepContext(
             step=self._current_step,

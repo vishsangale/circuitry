@@ -9,6 +9,8 @@ def test_public_surface():
     expected = {
         "HookPoint",
         "MetricWriter",
+        "ModelInventory",
+        "ParameterRecord",
         "Recipe",
         "Recorder",
         "StepContext",
@@ -35,7 +37,7 @@ def test_version_is_a_string():
 
 def test_v02_surface_exports():
     import circuitry
-    assert circuitry.__version__ == "0.5.0"
+    assert circuitry.__version__ == "0.6.0"
     assert hasattr(circuitry, "token_similarity")
     assert hasattr(circuitry, "update_delta")
     assert hasattr(circuitry, "direction_cosine")

@@ -99,8 +99,8 @@ The first is more flexible and lets users say `recipe=get_recipe("llm").with_pre
 Aim is a **v0.6.0** focused on "make circuitry actually see all the weights in a modern HF model, not just the easy ones."
 
 **Tier 1 — adoption blockers (must-fix for v0.6.0):**
-- **H1** Weight extraction handles wrapper Linear classes: recurse one level when `module.weight` is absent, surface a single 2-D+ Parameter child if there's exactly one. Log at INFO when this indirection fires. Add a test using a synthetic wrapper module.
-- **H2** Add `Recipe.with_prefix(prefix: str) -> Recipe` (or `Recipe(module_prefix=...)`) so the stock `llm` recipe can be scoped to `model.language_model.*` for multimodal HF models. Smoke script updates to pass `--prefix model.language_model` by default for multimodal models.
+- ~~**H1** Weight extraction handles wrapper Linear classes...~~ **Done in v0.6.0.** Implemented as a `ModelInventory` primitive (`circuitry.core.inventory`) built once at `attach()` time from `model.named_parameters()`. Recorder resolves each WEIGHT/GRAD HookPoint to a Parameter via `inv.find_primary_weight(module_name)` instead of `getattr(module, "weight")`. Re-run against `google/gemma-4-E2B`: weight-diagnostic emission went from 310 → **1080 scalar tags** (vision tower 1 → **113** modules, audio tower 0 → **36** modules). Inventory dumped to `<run_dir>/circuitry/inventory.json`; `matched_modules.txt` now shows `<module> → linear.weight (shape)` or `UNRESOLVED (<class>)` per match.
+- **H2** Add `Recipe.with_prefix(prefix: str) -> Recipe` (or `Recipe(module_prefix=...)`) so the stock `llm` recipe can be scoped to `model.language_model.*` for multimodal HF models. Smoke script updates to pass `--prefix model.language_model` by default for multimodal models. **Note:** `ModelInventory.with_prefix()` already exists as the underlying primitive (v0.6.0); only the Recipe-level integration is open.
 
 **Tier 2 — quality:**
 - Surface "the recipe matched N modules but emitted diagnostics for only K of them" as an `## Attach summary` block in the report, so silent drops are visible.

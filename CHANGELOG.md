@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-05-21
+
+### Added
+- **`circuitry.ModelInventory`** — frozen snapshot of every named `torch.nn.Parameter` in a model. Built once at `Recorder.attach()` time and persisted to `<run_dir>/circuitry/inventory.json`. Replaces the old `getattr(module, "weight", None)` heuristic for resolving `WEIGHT` / `GRAD` HookPoints. Catches weights hidden inside wrapper Linear classes (e.g. HF `Gemma4ClippableLinear`) whose `.weight` lives on a child module rather than on themselves.
+- **`circuitry.ParameterRecord`** — dataclass describing a single Parameter (name, shape, dtype, owning-module class, leaf attribute). Useful for "why didn't my regex match?" debugging.
+- `ModelInventory.with_prefix(prefix)` — modality scoping helper for multimodal models (e.g. `inv.with_prefix("model.language_model")`).
+- `ModelInventory.find_primary_weight(module_name)` — deterministic module→Parameter resolution: prefers a direct `.weight`, else returns the single 2-D+ Parameter in the subtree, else `None`.
+
+### Changed
+- **`Recorder.attach()` now logs WARN per matched module whose primary weight can't be resolved** (no direct `.weight`, ambiguous multiple 2-D children, or no 2-D Parameter in the subtree). `matched_modules.txt` shows the resolution tail per module (`q_proj → linear.weight (768, 768)`) or `UNRESOLVED (<class>)` so silent drops become visible.
+- `Recorder.step()` weight/gradient extraction uses the inventory-derived module→Parameter map instead of `getattr(module, "weight")`. Tag layout is unchanged (still keyed by module name).
+
+### Validation
+Re-running the v0.4.0 HF smoke against `google/gemma-4-E2B` (multimodal: language + vision + audio towers): weight-diagnostic emission jumps from **310** to **1080** scalar tags. Vision tower coverage: **1 → 113** modules. Audio tower coverage: **0 → 36** modules. Closes the H1 "silent skip on wrapper Linear" finding from `docs/observations/2026-05-21-gemma-smoke.md`.
+
 ## [0.5.0] — 2026-05-21
 
 ### Changed (breaking)

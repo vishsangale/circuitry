@@ -1,10 +1,11 @@
 """circuitry — mechanistic-interpretability diagnostics for PyTorch (live during training or post-hoc on a checkpoint).
 
-Public surface re-exports below are the v0.5.0 stable API. Anything not re-exported
+Public surface re-exports below are the v0.6.0 stable API. Anything not re-exported
 here is an internal implementation detail and may change without notice.
 """
 
 from circuitry.core.activation import token_similarity
+from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.weight import direction_cosine, update_delta
 from circuitry.recipes import Recipe, register_recipe
 from circuitry.recipes._discovery import discover
@@ -14,11 +15,13 @@ from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
 from circuitry.writers.base import MetricWriter
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "HookPoint",
     "MetricWriter",
+    "ModelInventory",
+    "ParameterRecord",
     "Recipe",
     "Recorder",
     "StepContext",
