@@ -370,3 +370,75 @@ def test_attach_summary_output_hookpoint_has_resolved_equals_matched(tmp_path):
     assert hp0["source"] == "output"
     assert hp0["resolved"] == hp0["matched"]
     assert hp0["unresolved"] == 0
+
+
+def test_attention_head_rank_emits_per_head_tags(tmp_path):
+    """v0.8.0: attention_head_rank emits one scalar per head when the
+    recipe requests it and the model carries usable config metadata."""
+    class _Cfg:
+        num_attention_heads = 4
+        num_key_value_heads = 4
+        head_dim = 8
+        hidden_size = 32
+
+    class _AttentionLike(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = nn.Linear(32, 32, bias=False)
+            self.o_proj = nn.Linear(32, 32, bias=False)
+
+    class _M(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = _Cfg()
+            self.layer = _AttentionLike()
+
+    register_recipe(Recipe(
+        name="head_rank_demo",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT,
+                               pattern=r"(q|o)_proj$")],
+        weight_diagnostics=["attention_head_rank"],
+    ))
+    writer = RecordingWriter()
+    rec = Recorder(_M(), run_dir=tmp_path, recipe="head_rank_demo",
+                   writer=writer, every_n_steps=1)
+    rec.attach()
+    rec.step(0)
+    rec.detach()
+
+    tags = {t for t, _, _ in writer.scalars}
+    # 4 heads × 2 modules (q_proj + o_proj) = 8 tags expected.
+    head_tags = [t for t in tags if "attention_head_rank" in t]
+    assert len(head_tags) == 8, head_tags
+    # Tag layout: weight/attention_head_rank/<module>/head_<i>
+    assert any("layer.q_proj/head_0" in t for t in head_tags)
+    assert any("layer.o_proj/head_3" in t for t in head_tags)
+
+
+def test_attention_head_rank_skips_when_no_config(tmp_path, caplog):
+    """v0.8.0: when model has no usable config, attention_head_rank
+    logs a WARN and emits nothing (rather than crashing)."""
+    import logging
+
+    class _M(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = nn.Linear(8, 8, bias=False)
+
+    register_recipe(Recipe(
+        name="no_cfg",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT,
+                               pattern=r"q_proj$")],
+        weight_diagnostics=["attention_head_rank"],
+    ))
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    writer = RecordingWriter()
+    rec = Recorder(_M(), run_dir=tmp_path, recipe="no_cfg",
+                   writer=writer, every_n_steps=1)
+    rec.attach()
+    rec.step(0)
+    rec.detach()
+
+    assert not any("attention_head_rank" in t for t, _, _ in writer.scalars)
+    assert any("attention_head_rank" in r.message and "config" in r.message.lower()
+               for r in caplog.records)

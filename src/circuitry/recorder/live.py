@@ -18,6 +18,7 @@ from circuitry.core import activation as _act
 from circuitry.core import gradient as _grad
 from circuitry.core import weight as _w
 from circuitry.core.inventory import ModelInventory
+from circuitry.core.weight import attention_head_rank as _attention_head_rank
 from circuitry.recipes import Recipe, get_recipe
 from circuitry.recorder.hooks import StepContext, TensorSource, filtered_matches
 from circuitry.writers.base import MetricWriter
@@ -42,6 +43,19 @@ _GRAD_DIAGS = {
 }
 
 _WRITERS: dict[str, Any] = {}  # name → factory; populated below
+
+
+class _AttnMeta:
+    """Resolved attention head config for attention_head_rank dispatch.
+
+    Built once at attach() time from ``model.config`` if available.
+    ``None`` means we couldn't resolve it — attention_head_rank logs WARN
+    and emits nothing for this run.
+    """
+    def __init__(self, n_heads: int, n_kv_heads: int, head_dim: int) -> None:
+        self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads
+        self.head_dim = head_dim
 
 
 def _scalarize(value: float | torch.Tensor) -> float:
@@ -114,6 +128,7 @@ class Recorder:
         # ``Gemma4ClippableLinear`` → resolves to ``<module>.linear.weight``).
         self._inventory: ModelInventory | None = None
         self._param_for_module: dict[str, str] = {}
+        self._attn_meta: _AttnMeta | None = None
         self._noop = False
         self._current_step: int = -1
 
@@ -153,6 +168,32 @@ class Recorder:
         )
 
         import json as _json
+
+        # If the recipe requests attention_head_rank, resolve head metadata
+        # from model.config once. Skip silently if config is missing or
+        # incomplete — WARN at step time on first emit so users see why.
+        if "attention_head_rank" in self.recipe.weight_diagnostics:
+            cfg = getattr(self.model, "config", None)
+            text_cfg = getattr(cfg, "text_config", None)  # multimodal HF
+            for source in (text_cfg, cfg):
+                if source is None:
+                    continue
+                n_heads = getattr(source, "num_attention_heads", None)
+                if n_heads is None:
+                    continue
+                n_kv_heads = getattr(source, "num_key_value_heads", n_heads)
+                head_dim = getattr(source, "head_dim", None)
+                if head_dim is None:
+                    hidden = getattr(source, "hidden_size", None)
+                    if hidden is None or n_heads == 0:
+                        continue
+                    head_dim = hidden // n_heads
+                self._attn_meta = _AttnMeta(
+                    n_heads=int(n_heads),
+                    n_kv_heads=int(n_kv_heads),
+                    head_dim=int(head_dim),
+                )
+                break
 
         name_to_mod = dict(self.model.named_modules())
         matched_lines: list[str] = []
@@ -364,7 +405,42 @@ class Recorder:
         for name in self.recipe.weight_diagnostics:
             if not self._enabled(name):
                 continue
-            if name == "sv_histogram":
+            if name == "attention_head_rank":
+                if self._attn_meta is None:
+                    logger.warning(
+                        "circuitry: attention_head_rank requested but model "
+                        "has no usable config (num_attention_heads / head_dim) — "
+                        "skipping"
+                    )
+                    continue
+                meta = self._attn_meta
+                for mod_name, w in ctx.weights.items():
+                    short = mod_name.rsplit(".", 1)[-1]
+                    if short in ("q_proj",):
+                        nh, axis = meta.n_heads, 0
+                    elif short in ("k_proj", "v_proj"):
+                        nh, axis = meta.n_kv_heads, 0
+                    elif short in ("o_proj",):
+                        nh, axis = meta.n_heads, 1
+                    else:
+                        continue  # not an attention projection; skip
+                    try:
+                        ranks = _attention_head_rank(
+                            w, n_heads=nh, head_dim=meta.head_dim, axis=axis,
+                        )
+                    except ValueError as e:
+                        logger.warning(
+                            "circuitry: attention_head_rank on %s failed: %s",
+                            mod_name, e,
+                        )
+                        continue
+                    for i, r in enumerate(ranks):
+                        self._writer.add_scalar(
+                            f"weight/attention_head_rank/{mod_name}/head_{i}",
+                            r, ctx.step,
+                        )
+                continue
+            elif name == "sv_histogram":
                 if ctx.weights:
                     from circuitry.core.weight import singular_values
                     for mod_name, w in ctx.weights.items():
