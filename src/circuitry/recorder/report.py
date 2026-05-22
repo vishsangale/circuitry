@@ -21,6 +21,16 @@ import json
 import pathlib
 from collections import defaultdict
 
+HERO_SECTIONS = frozenset({
+    "weight/effective_rank",
+    "weight/attention_head_rank",
+    "activation/dead_fraction",
+    "activation/gate_stats",
+    "grad/global",
+})
+
+GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
+
 
 def _group(rows: list[dict]) -> dict[str, list[tuple[int, float]]]:
     by_tag: dict[str, list[tuple[int, float]]] = defaultdict(list)
@@ -53,6 +63,70 @@ def _stats(series: list[tuple[int, float]]) -> tuple[float, float, float, float,
     vals = [v for _, v in series]
     vmin, vmax = min(vals), max(vals)
     return vals[0], vals[-1], vmin, vmax, vmax - vmin
+
+
+def _render_section(
+    name: str,
+    tags: list[str],
+    grouped: dict[str, list[tuple[int, float]]],
+) -> list[str]:
+    """Render one (section, tags) into markdown lines (table + spacer).
+
+    For ``grad/per_param``-style sections with many rows, trim to top-K
+    and bottom-K by max-magnitude with an elision label between.
+    """
+    out: list[str] = [
+        f"## {name}",
+        "",
+        "| tag | first | last | min | max | Δ |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+
+    def _key(tag: str) -> tuple[int, float, str]:
+        _, _, vmin, vmax, _ = _stats(grouped[tag])
+        return (0 if vmax > vmin else 1, -vmax, tag)
+
+    sorted_tags = sorted(tags, key=_key)
+
+    # Heuristic: grad/per_param sections are the only ones that benefit
+    # from top/bottom-K trimming; everything else renders in full.
+    if name.startswith("grad/per_param") and len(sorted_tags) > 2 * GRAD_PER_PARAM_TOP_K:
+        # Re-sort by absolute magnitude for top/bottom selection.
+        def _mag(tag: str) -> float:
+            _, _, _, vmax, _ = _stats(grouped[tag])
+            return abs(vmax)
+
+        by_mag = sorted(sorted_tags, key=_mag, reverse=True)
+        top = by_mag[:GRAD_PER_PARAM_TOP_K]
+        bot = by_mag[-GRAD_PER_PARAM_TOP_K:]
+        hidden = len(sorted_tags) - 2 * GRAD_PER_PARAM_TOP_K
+        rendered_set = set(top + bot)
+        rows_written = 0
+        for tag in by_mag:
+            if tag not in rendered_set:
+                continue
+            _, row_id = _section_and_row(tag)
+            first, last, vmin, vmax, delta = _stats(grouped[tag])
+            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
+            out.append(
+                f"| `{row_id}` | {first:.4g} | {last:.4g} | "
+                f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
+            )
+            rows_written += 1
+            if rows_written == GRAD_PER_PARAM_TOP_K and hidden > 0:
+                out.append(f"| _… {hidden} rows hidden …_ | | | | | |")
+    else:
+        for tag in sorted_tags:
+            _, row_id = _section_and_row(tag)
+            first, last, vmin, vmax, delta = _stats(grouped[tag])
+            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
+            out.append(
+                f"| `{row_id}` | {first:.4g} | {last:.4g} | "
+                f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
+            )
+
+    out.append("")
+    return out
 
 
 def build_report(
@@ -145,30 +219,25 @@ def build_report(
         )
         lines.append("")
 
-    # Group tags by (section header). Within each section, sort moving-first
-    # then alphabetical.
+    # Group tags by (section header).
     sections: dict[str, list[str]] = defaultdict(list)
     for tag in grouped:
         section, _ = _section_and_row(tag)
         sections[section].append(tag)
 
-    def _sort_key(tag: str) -> tuple[int, str]:
-        _, _, vmin, vmax, _ = _stats(grouped[tag])
-        return (0 if vmax > vmin else 1, tag)
+    hero = sorted(s for s in sections if s in HERO_SECTIONS)
+    advanced = sorted(s for s in sections if s not in HERO_SECTIONS)
 
-    for section in sorted(sections):
-        lines.append(f"## {section}")
+    for section in hero:
+        lines.extend(_render_section(section, sections[section], grouped))
+
+    if advanced:
+        lines.append("<details>")
+        lines.append("<summary>Advanced metrics</summary>")
         lines.append("")
-        lines.append("| tag | first | last | min | max | Δ |")
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
-        for tag in sorted(sections[section], key=_sort_key):
-            _, row_id = _section_and_row(tag)
-            first, last, vmin, vmax, delta = _stats(grouped[tag])
-            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
-            lines.append(
-                f"| `{row_id}` | {first:.4g} | {last:.4g} | "
-                f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
-            )
+        for section in advanced:
+            lines.extend(_render_section(section, sections[section], grouped))
+        lines.append("</details>")
         lines.append("")
 
     out_path.write_text("\n".join(lines))

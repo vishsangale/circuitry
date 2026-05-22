@@ -54,3 +54,80 @@ def test_multi_step_omits_single_step_note(tmp_path):
     ])
     out = build_report(tmp_path).read_text()
     assert "Single-step run" not in out
+
+
+HERO_DIAGS = {
+    "weight/effective_rank",
+    "weight/attention_head_rank",
+    "activation/dead_fraction",
+    "activation/gate_stats",
+}
+
+
+def _scalar(tag: str, step: int, value: float) -> dict:
+    return {"kind": "scalar", "tag": tag, "step": step, "value": value}
+
+
+def test_hero_diags_render_inline(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+        _scalar("activation/dead_fraction/bar", 0, 0.5),
+    ])
+    out = build_report(tmp_path).read_text()
+    # Hero sections appear as top-level ## headers, not inside <details>.
+    assert "## weight/effective_rank" in out
+    assert "## activation/dead_fraction" in out
+    # No <details> when only hero diagnostics present.
+    assert "<details>" not in out
+
+
+def test_advanced_diags_collapsed_in_details(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+        _scalar("weight/stable_rank/foo", 0, 0.9),
+        _scalar("activation/kurtosis/bar", 0, 3.1),
+    ])
+    out = build_report(tmp_path).read_text()
+    assert "## weight/effective_rank" in out
+    assert "<details>" in out
+    assert "<summary>Advanced metrics</summary>" in out
+    # Advanced section names appear INSIDE the details block.
+    details_start = out.index("<details>")
+    details_end = out.index("</details>", details_start)
+    block = out[details_start:details_end]
+    assert "weight/stable_rank" in block
+    assert "activation/kurtosis" in block
+
+
+def test_grad_per_param_table_trimmed_to_top_and_bottom_k(tmp_path):
+    # 25 distinct grad/per_param tags. Top-K + bottom-K = 20 should
+    # render; the middle 5 should be elided.
+    rows = []
+    for i in range(25):
+        rows.append(_scalar(f"grad/per_param/m{i:02d}/norm", 0, float(i)))
+    _write_metrics(tmp_path, rows)
+    out = build_report(tmp_path).read_text()
+    # Top 10 (largest norm): m24..m15. Bottom 10: m09..m00.
+    assert "`m24/norm`" in out
+    assert "`m00/norm`" in out
+    # Middle elided.
+    assert "`m12/norm`" not in out
+    assert "rows hidden" in out or "more rows" in out  # elision label
+
+
+def test_grad_global_total_norm_always_inline(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("grad/global/total_norm", 0, 1.5),
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+    ])
+    out = build_report(tmp_path).read_text()
+    # total_norm is hero — must NOT be in <details>.
+    if "<details>" in out:
+        details_start = out.index("<details>")
+        details_end = out.index("</details>", details_start)
+        block = out[details_start:details_end]
+        assert "## grad/global" not in block
+        assert "`total_norm`" not in block
+    # Hero section header and row are present inline.
+    assert "## grad/global" in out
+    assert "`total_norm`" in out
