@@ -4,7 +4,7 @@ Date: 2026-05-21
 Hardware: AMD Ryzen 9 9900X 12-Core Processor (24 logical CPUs), x86_64 Linux 6.17.0-23-generic; CPU-only run (no GPU)
 Steps: 20
 Model: tiny LLaMA (64-dim, 2 layers, 8-token sequence, vocab=100, bias=False throughout — mirrors RMSNorm-style LLaMA)
-circuitry: v0.2.0a0 at HEAD (see commit tagged in Step 4 of P3)
+circuitry: v0.2.0a0 at `900fcfe`
 mendu: HEAD at `f5aaa5f`
 
 ## Universal-feature scalar parity
