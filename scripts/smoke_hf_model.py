@@ -28,7 +28,7 @@ from contextlib import contextmanager
 
 import torch
 
-from circuitry import Recipe, Recorder, build_report
+from circuitry import Recipe, Recorder, build_report, scan_run
 from circuitry.recipes import get_recipe
 from circuitry.recorder.hooks import HookPoint, match_modules
 
@@ -108,6 +108,9 @@ def main() -> int:
     p.add_argument("--every-n-steps", type=int, default=2)
     p.add_argument("--dtype", default="float32",
                    choices=["float32", "bfloat16", "float16"])
+    p.add_argument("--scan", action="store_true",
+                   help="After the live run, also exercise scan_run "
+                        "on saved checkpoints.")
     args = p.parse_args()
 
     run_dir = pathlib.Path(args.run_dir).resolve()
@@ -174,6 +177,11 @@ def main() -> int:
         vocab = model.config.vocab_size
         input_ids = torch.randint(0, vocab, (1, args.seqlen))
 
+        # If --scan, save checkpoints during training so scan_run has work later.
+        ckpt_dir = filt_run / "checkpoints"
+        if args.scan:
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+
         model.train()
         opt = torch.optim.SGD(model.parameters(), lr=0.0)
         losses = []
@@ -185,6 +193,11 @@ def main() -> int:
             opt.zero_grad()
             losses.append(loss.detach().item())
             print(f"  step {step}: loss={loss.item():.4f}")
+            if args.scan and step in (0, args.steps - 1):
+                ckpt_path = ckpt_dir / f"step{step:06d}.pt"
+                torch.save(model.state_dict(), ckpt_path)
+                print(f"    saved checkpoint -> {ckpt_path.name} "
+                      f"({ckpt_path.stat().st_size / 1e9:.2f}GB)")
         rec.detach()
 
     # -------------------------------------------------------- generate report
@@ -197,6 +210,44 @@ def main() -> int:
         with report_path.open() as f:
             head = "".join(f.readlines()[:20])
         print(f"  first 20 lines:\n{head}")
+
+    # ------------------------------- Phase 6: scan_run on saved checkpoints
+    scan_result: dict = {"ran": False}
+    if args.scan:
+        with _section("Phase 6: scan_run on saved checkpoints (post-hoc workflow)"):
+            from transformers import AutoConfig, AutoModelForCausalLM
+            config = AutoConfig.from_pretrained(args.model)
+
+            def _factory() -> torch.nn.Module:
+                # Re-instantiate the model architecture from config only —
+                # avoids re-downloading weights. scan_run will fill them in
+                # from the saved checkpoints.
+                return AutoModelForCausalLM.from_config(config)
+
+            scan_out = run_dir / "scan"
+            scan_out.mkdir(parents=True, exist_ok=True)
+            print(f"  scanning {filt_run / 'checkpoints'} -> {scan_out}")
+            try:
+                scan_run(run_dir=filt_run, recipe=filtered,
+                         out_dir=scan_out, model_factory=_factory)
+                event_files = list(scan_out.rglob("events.out.tfevents.*"))
+                print(f"  scan complete; {len(event_files)} TB event file(s) written")
+                scan_result = {
+                    "ran": True,
+                    "out_dir": str(scan_out),
+                    "tb_event_files": [str(p) for p in event_files],
+                }
+                # Surface the build_report-vs-scan_run gap: scan_run only
+                # writes TB events, but build_report reads metrics.jsonl.
+                jsonl = scan_out / "metrics.jsonl"
+                if not jsonl.exists():
+                    print("  NOTE: scan output is TB-only; build_report would "
+                          "find no metrics.jsonl. To inspect numerically use "
+                          "`tensorboard --logdir {scan_out}`.")
+                    scan_result["build_report_compatible"] = False
+            except Exception as e:
+                print(f"  FAIL: {type(e).__name__}: {e}")
+                scan_result = {"ran": True, "error": f"{type(e).__name__}: {e}"}
 
     # ----------------------------------------------- dump structured findings
     findings = {
@@ -213,6 +264,7 @@ def main() -> int:
             "report": str(report_path),
             "losses": losses,
         },
+        "scan_run": scan_result,
     }
     findings_path = run_dir / "findings.json"
     findings_path.write_text(json.dumps(findings, indent=2))

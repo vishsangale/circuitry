@@ -81,8 +81,10 @@ venv/bin/python scripts/smoke_hf_model.py --model Qwen/Qwen2.5-0.5B
 **M2. Report's `## activation` section reports zero variance.**
 - Every metric is reported with `first == last == min == max`. Reason: lr=0 in the smoke script, so weights and activations don't change between emit steps. This is *expected* given the script — not a library bug — but a real session of training would want the "is this signal moving?" view to be more prominent. Worth noting that the current report format (first/last/min/max columns) is built for a longer-horizon training run.
 
-**M3. `scan_run` post-hoc workflow was not exercised.**
-- The smoke script only ran the live `Recorder` path + `build_report` from JSONL. The `scan_run(...)` programmatic API (and the in-progress `circuitry scan` CLI) is untested on HF models. Worth a follow-up smoke if we want to validate that the post-hoc-from-checkpoints flow works end-to-end.
+**M3. `scan_run` post-hoc workflow — exercised in v0.4.2 work, new gap found.**
+- `scripts/smoke_hf_model.py --scan` now drives the full post-hoc path: training-time checkpoint saves (`<run_dir>/checkpoints/step{N}.pt`) plus a `scan_run(...)` call with an `AutoConfig.from_pretrained()`-derived `model_factory` (avoids redownloading weights).
+- **Works:** scan_run completes on HF checkpoints and emits TB events under `<out_dir>/events.out.tfevents.*` plus the usual `matched_modules.txt`.
+- **New gap (M3-followup):** `scan_run` hardcodes `TensorBoardWriter` at `src/circuitry/recorder/scan.py:55`, so the scan output is **incompatible with `build_report`** (which reads `metrics.jsonl` from a `JsonlWriter`). The smoke script's findings.json now records `scan_run.build_report_compatible: false`. To inspect numerically, users must run `tensorboard --logdir <scan_out>` instead. Fix is small (pass a writer through `scan_run`'s signature, default to TB for back-compat) and is a candidate for the report-renderer rewrite in Tier 3.
 
 ### LOW
 
@@ -115,8 +117,8 @@ Aim is a **v0.4.0** focused on "make the library Just Work on a stock HuggingFac
 - Re-run the smoke after Tier 1 fixes and confirm `Recorder(recipe="llm")` attaches cleanly to Qwen2.5-0.5B without filtering. Pin the resulting numbers as a regression artifact.
 
 **Tier 3 — separate work, not blocking v0.4.0:**
-- Programmatic + CLI `scan_run` smoke test on an HF model with a saved checkpoint (M3).
-- Report renderer: switch from auto-prefix-based section split to recipe-diagnostic-list-driven grouping (L3).
+- ~~Programmatic + CLI `scan_run` smoke test on an HF model with a saved checkpoint (M3).~~ **Done** in `scripts/smoke_hf_model.py --scan` (post-v0.4.1). Surfaced a new follow-up: `scan_run` is TB-only and incompatible with `build_report`; pluggable writer fix tracked under M3-followup.
+- Report renderer: switch from auto-prefix-based section split to recipe-diagnostic-list-driven grouping (L3). Bundle with M3-followup so `scan_run` can write jsonl and `build_report` can consume it.
 - "Movement-aware" report view: highlight tags where `min != max` over the emission window (M2). A static-weight report shouldn't drown in numbers that haven't moved.
 
 **Out of scope:**
