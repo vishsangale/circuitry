@@ -126,8 +126,13 @@ def _build_tiny_llama(seed: int = 0):
             super().__init__()
             self.attention = TinyAttn(dim)
             self.feed_forward = TinyFFN(dim)
-            self.attention_norm = nn.LayerNorm(dim)
-            self.ffn_norm = nn.LayerNorm(dim)
+            # bias=False mimics LLaMA-family RMSNorm (no bias).
+            # Without this, nn.LayerNorm introduces bias parameters that mendu's
+            # total_norm counts (via named_parameters) but circuitry's GRAD hook
+            # misses (it only captures .weight, not .bias). Real LLaMA uses
+            # elementwise_affine without bias — this keeps parity meaningful.
+            self.attention_norm = nn.LayerNorm(dim, bias=False)
+            self.ffn_norm = nn.LayerNorm(dim, bias=False)
 
         def forward(self, x):
             x = x + self.attention(self.attention_norm(x))
@@ -143,7 +148,7 @@ def _build_tiny_llama(seed: int = 0):
             self.layers = nn.ModuleList(
                 [TinyLayer(dim) for _ in range(n_layers)]
             )
-            self.norm = nn.LayerNorm(dim)
+            self.norm = nn.LayerNorm(dim, bias=False)
             self.output = nn.Linear(dim, vocab, bias=False)
 
         def forward(self, ids):
@@ -185,9 +190,9 @@ def _run_mendu(mendu_root, steps: int, out_dir) -> None:
         loss.backward()
         rec.on_step_pre_optim(
             step,
-            total=loss.item(),
             lm_loss=loss.item(),
-            aux_loss=0.0,
+            aux=0.0,
+            total=loss.item(),
             lr=1e-3,
         )
         if step % 5 == 0:
@@ -198,10 +203,41 @@ def _run_mendu(mendu_root, steps: int, out_dir) -> None:
 
 
 def _run_circuitry(steps: int, out_dir) -> None:
-    """Run the tiny canonical training under circuitry's Recorder."""
+    """Run the tiny canonical training under circuitry's Recorder.
+
+    Uses a custom Recipe with LLaMA-native naming conventions (wq/wk/wv/wo,
+    w1/w2/w3) to match the TinyLLaMA model built by _build_tiny_llama().
+    The stock 'llm' recipe targets HuggingFace naming (q_proj/k_proj/...) and
+    would match 0 modules on this model.
+    """
     import torch
 
     from circuitry import Recorder  # noqa: PLC0415
+    from circuitry.recipes import Recipe, register_recipe, _clear_registry_for_tests  # noqa: PLC0415
+    from circuitry.recorder.hooks import HookPoint, TensorSource  # noqa: PLC0415
+
+    # Custom recipe matching TinyLLaMA's LLaMA-style param names.
+    # GRAD hook uses ".*" to match all modules — the recorder grabs .weight from each
+    # and skips modules without .weight (container ModuleLists, etc.). This mirrors
+    # mendu's total_norm which iterates all named_parameters() with .grad.
+    PARITY_RECIPE = Recipe(
+        name="parity_llama",
+        hook_points=[
+            # Attention weight matrices (LLaMA naming: wq/wk/wv/wo)
+            HookPoint(source=TensorSource.WEIGHT,
+                      pattern=r".*\.attention\.(wq|wk|wv|wo)$"),
+            # FFN weight matrices
+            HookPoint(source=TensorSource.WEIGHT,
+                      pattern=r".*\.feed_forward\.(w1|w2|w3)$"),
+            # Gradient hook — all modules to get global total_norm over all params,
+            # matching mendu's _flush_gradient_norms which sums all named_parameters.
+            HookPoint(source=TensorSource.GRAD, pattern=r".*"),
+        ],
+        weight_diagnostics=["effective_rank", "stable_rank", "sv_histogram"],
+        gradient_diagnostics=["norms_per_param"],
+    )
+    _clear_registry_for_tests()
+    register_recipe(PARITY_RECIPE)
 
     model = _build_tiny_llama()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -209,7 +245,7 @@ def _run_circuitry(steps: int, out_dir) -> None:
     rec = Recorder(
         model,
         run_dir=out_dir,
-        recipe="llm",
+        recipe="parity_llama",
         writer="tensorboard",
         every_n_steps=1,
     )
@@ -268,7 +304,7 @@ def main() -> int:
 
     print("Both pipelines completed. Comparing TB scalars...")
     mendu_scalars = _load_scalars(mendu_dir / "tb")  # InspectorTBWriter writes to <run_dir>/tb
-    circuitry_scalars = _load_scalars(circuitry_dir / "circuitry")  # circuitry writes to <run_dir>/circuitry
+    circuitry_scalars = _load_scalars(circuitry_dir)  # TensorBoardWriter writes events to run_dir directly
 
     failures = _compare(mendu_scalars, circuitry_scalars)
     if failures:
