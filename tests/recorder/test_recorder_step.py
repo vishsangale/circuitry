@@ -136,3 +136,42 @@ def test_activation_diagnostic_with_every_n_steps_3(tmp_path):
     act_steps = sorted({step for tag, _, step in writer.scalars
                         if "dead_fraction" in tag})
     assert act_steps == [0, 3, 6]
+
+
+def test_step_accepts_tensor_loss_without_warning(tmp_path):
+    """Recorder.step(loss=...) accepts a Tensor (incl. requires_grad=True)
+    and detaches internally before logging. Verifies no PyTorch
+    'converting tensor with requires_grad to scalar' UserWarning fires."""
+    register_recipe(Recipe(
+        name="tensor-loss",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r"^\d+$")],
+        weight_diagnostics=["effective_rank"],
+    ))
+    writer = RecordingWriter()
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="tensor-loss",
+                   writer=writer, every_n_steps=1)
+    rec.attach()
+    loss = torch.tensor(2.5, requires_grad=True)
+    components = {"aux": torch.tensor(0.5, requires_grad=True)}
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # promote any UserWarning to an error
+        rec.step(0, loss=loss, loss_components=components)
+    rec.detach()
+    assert ("train/loss", 2.5, 0) in writer.scalars
+    assert ("train/aux", 0.5, 0) in writer.scalars
+
+
+def test_step_rejects_multi_element_tensor_loss(tmp_path):
+    """Recorder.step(loss=...) requires a scalar; reject multi-element
+    tensors with a clear error rather than silently averaging."""
+    register_recipe(Recipe(
+        name="bad-loss",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r"^\d+$")],
+    ))
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="bad-loss",
+                   writer=RecordingWriter(), every_n_steps=1)
+    rec.attach()
+    with pytest.raises(ValueError, match="0-d / size-1 Tensor"):
+        rec.step(0, loss=torch.tensor([1.0, 2.0]))
+    rec.detach()

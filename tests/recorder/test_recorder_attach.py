@@ -45,6 +45,21 @@ def test_attach_writes_matched_modules_file(tmp_path):
     rec.detach()
 
 
+def test_matched_modules_label_uses_pattern_for_pattern_hookpoints(tmp_path):
+    """Regression: live.py:128 used to mis-parenthesize a ternary so every
+    HookPoint ended up labeled `<selector>` in matched_modules.txt, regardless
+    of whether it was pattern/modules/selector-based."""
+    pattern = r"^\d+$"
+    _register_demo(pattern=pattern)
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="demo",
+                   writer=RecordingWriter(), every_n_steps=1)
+    rec.attach()
+    rec.detach()
+    content = (tmp_path / "circuitry" / "matched_modules.txt").read_text()
+    assert f"target={pattern}" in content, content
+    assert "<selector>" not in content, content
+
+
 def test_attach_logs_matched_modules_at_info(tmp_path, caplog):
     _register_demo()
     caplog.set_level(logging.INFO, logger="circuitry")

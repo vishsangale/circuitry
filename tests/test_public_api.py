@@ -35,7 +35,7 @@ def test_version_is_a_string():
 
 def test_v02_surface_exports():
     import circuitry
-    assert circuitry.__version__ == "0.4.0"
+    assert circuitry.__version__ == "0.4.1"
     assert hasattr(circuitry, "token_similarity")
     assert hasattr(circuitry, "update_delta")
     assert hasattr(circuitry, "direction_cosine")

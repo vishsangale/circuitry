@@ -43,6 +43,22 @@ _GRAD_DIAGS = {
 _WRITERS: dict[str, Any] = {}  # name → factory; populated below
 
 
+def _scalarize(value: float | torch.Tensor) -> float:
+    """Coerce a Python number or 0-d Tensor to a plain Python ``float``.
+
+    Detaches Tensors before ``.item()`` so a ``requires_grad=True`` loss is
+    accepted without the PyTorch UserWarning. Non-scalar Tensors are
+    rejected explicitly.
+    """
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(
+                f"scalar metric expected a 0-d / size-1 Tensor, got shape {tuple(value.shape)}"
+            )
+        return float(value.detach().item())
+    return float(value)
+
+
 def _resolve_writer(writer: MetricWriter | str, run_dir: pathlib.Path) -> MetricWriter:
     if not isinstance(writer, str):
         return writer
@@ -125,7 +141,12 @@ class Recorder:
             names = match_modules(self.model, hp)
             self._matched[idx] = names
 
-            label = hp.pattern or "<modules>" if hp.modules is not None else "<selector>"
+            if hp.pattern is not None:
+                label = hp.pattern
+            elif hp.modules is not None:
+                label = "<modules>"
+            else:
+                label = "<selector>"
             matched_lines.append(f"# hook_point[{idx}] source={hp.source.value} target={label}")
             for n in names:
                 matched_lines.append(n)
@@ -191,19 +212,21 @@ class Recorder:
             self._writer.close()
             self._writer = None
 
-    def step(self, step: int, loss: float | None = None, *,
-             loss_components: dict[str, float] | None = None, **user: Any) -> None:
+    def step(self, step: int, loss: float | torch.Tensor | None = None, *,
+             loss_components: dict[str, float | torch.Tensor] | None = None,
+             **user: Any) -> None:
         if self._noop:
             return
         self._current_step = int(step)
         assert self._writer is not None, "Recorder.step called before attach()"
 
         if loss is not None:
-            self._writer.add_scalar("train/loss", float(loss), self._current_step)
+            self._writer.add_scalar("train/loss", _scalarize(loss), self._current_step)
 
         if loss_components is not None and self._writer is not None:
             for name, value in loss_components.items():
-                self._writer.add_scalar(f"train/{name}", float(value), self._current_step)
+                self._writer.add_scalar(f"train/{name}", _scalarize(value),
+                                        self._current_step)
 
         if not self._should_capture(self._current_step):
             return

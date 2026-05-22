@@ -47,7 +47,7 @@ def _load_model(name: str, dtype: torch.dtype):
     except ImportError:
         sys.exit("transformers not installed. Run: venv/bin/pip install transformers")
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=dtype)
+    model = AutoModelForCausalLM.from_pretrained(name, dtype=dtype)
     return model, tok
 
 
@@ -181,9 +181,9 @@ def main() -> int:
             out = model(input_ids=input_ids, labels=input_ids)
             loss = out.loss
             loss.backward()
-            rec.step(step=step, loss=float(loss))
+            rec.step(step=step, loss=loss)  # Recorder.step accepts Tensor
             opt.zero_grad()
-            losses.append(float(loss))
+            losses.append(loss.detach().item())
             print(f"  step {step}: loss={loss.item():.4f}")
         rec.detach()
 
