@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-05-22
+
+### Added
+- **`circuitry.core.weight.attention_head_rank(W, n_heads, head_dim, axis)`** — per-head `effective_rank` of an attention projection. Caller supplies the head count (GQA-friendly: pass `num_key_value_heads` for k/v_proj).
+- **`circuitry.core.activation.gate_stats(x, eps=1e-6)`** — `frac_active` / `mean_abs` / `std` on a post-gate MLP activation tensor. Captured by hooking `down_proj` INPUT.
+- Stock `llm` recipe now emits `weight/attention_head_rank/<module>/head_<i>` per q/k/v/o_proj and `activation/gate_stats/<down_proj>/{frac_active,mean_abs,std}` by default. The recipe gains one new INPUT HookPoint for `down_proj`.
+- `Recorder.attach()` discovers attention head metadata from `model.config` (or `model.config.text_config` for multimodal HF) when `attention_head_rank` is requested. Missing config → WARN + skip (no crash).
+
+### Changed
+- **`build_report` markdown layout**: hero diagnostics (`weight/effective_rank`, `weight/attention_head_rank`, `activation/dead_fraction`, `activation/gate_stats`, `grad/global/total_norm`) render inline. Everything else (`stable_rank`, `kurtosis`, `participation_ratio`, `heavy_tail_alpha`, `layer_norm`, full per-param gradient tables) is wrapped in `<details><summary>Advanced metrics</summary>`. TensorBoard / JSONL emission is unchanged — only the markdown rendering is opinionated.
+- `grad/per_param/*` tables with more than 20 rows trim to top-10 + bottom-10 by max-magnitude, with an elision row between.
+- Report header subtitled `static (1 step)` or `dynamic (N steps)`; single-step runs include a `## Summary` note that Δ is uniformly zero (closes the framing concern raised in the Gemini-pro review of v0.7.0).
+
+### Validation
+Re-ran the v0.7.0 Gemma 4 E2B smoke with the v0.8.0 stock recipe (`google/gemma-4-E2B`, bf16, 1 step, `--prefix model.language_model`, 39.6 s on CPU). Layer 0 q_proj per-head ranks span [225.7, 240.6] across 8 heads — narrow at the diagnostic step, expected to widen during training. Layer 0 `down_proj` `gate_stats.frac_active` is 0.9997 while `.mlp` `dead_fraction` is 0.4942 — the large gap surfaces SwiGLU's compute-and-discard pattern, which `dead_fraction` alone cannot distinguish from gated-off neurons. The trimmed v0.8.0 report adds two new hero sections (attention_head_rank + gate_stats) and collapses 819 lines of low-signal diagnostics behind `<details>`. The 7 Gemma 4 "full-attention" layers (4, 9, 14, 19, 24, 29, 34) emit a skip warning from `attention_head_rank` because their doubled projection size does not match the configured `n_heads × head_dim` — this is an architectural detail of Gemma 4's interleaved attention, not a bug; the primitive's caller-supplies-`n_heads` contract is doing what it advertises. Full findings in `docs/observations/2026-05-21-gemma-smoke.md`.
+
 ## [0.7.0] — 2026-05-21
 
 ### Added

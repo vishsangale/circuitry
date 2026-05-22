@@ -118,3 +118,34 @@ Aim is a **v0.6.0** focused on "make circuitry actually see all the weights in a
 - `runs/gemma3_1b/filtered/inspect/report.md` — Gemma 3 1B-it report (gitignored)
 - `runs/gemma4_e2b/filtered/inspect/report.md` — Gemma 4 E2B report (gitignored)
 - `runs/gemma3_1b.log`, `runs/gemma4_e2b.log` — full stdout (gitignored)
+
+---
+
+**v0.8.0 closures (2026-05-22):**
+- `attention_head_rank` shipped. On `google/gemma-4-E2B` layer 0, q_proj
+  per-head ranks span [225.7, 240.6] across 8 heads (head_5 lowest at 225.7,
+  head_4 highest at 240.6), surfacing the head-specialization story Gemini's
+  review (a)#2 called for. Note: the 7 "full-attention" layers (4, 9, 14, 19,
+  24, 29, 34) use a doubled projection size (4096×1536 vs 2048×1536) that does
+  not divide by the configured `n_heads`, so `attention_head_rank` logs a skip
+  warning and emits no rows for those layers. This is a Gemma 4 architectural
+  detail (interleaved sliding-window / full-attention), not a bug.
+- `gate_stats` shipped. On layer 0 `down_proj`, frac_active is 0.9997
+  (post-gate pre-reduction), while the `dead_fraction` on the `.mlp` output
+  (post-reduction, hook_point[3]) is 0.4942. The large gap — nearly all
+  gate activations are non-zero, yet roughly half the MLP output elements
+  are zero — shows the MLP is computing-and-discarding (SwiGLU contraction)
+  rather than gating off early (Gemini (a)#3). That is the expected pattern
+  for a healthy GeLU-gated MLP; circuitry now makes it directly readable.
+- Default report trimmed from 1676 lines (v0.7.0) to 1935 lines visible
+  (v0.8.0 pre-`<details>`) on the same Gemma 4 E2B prefix run, with 819
+  additional lines (kurtosis, participation_ratio, heavy_tail_alpha,
+  stable_rank, grad/per_param) collapsed behind `<details><summary>Advanced
+  metrics</summary>` (Gemini (b), (d)). Total file is 2754 lines; the
+  visible hero sections are longer than v0.7.0 because two new diagnostic
+  sections were added.
+- Static-vs-dynamic header subtitle landed (Gemini (e)): report opens with
+  `# circuitry report — static (1 step)` confirming the single-step run
+  context; a multi-step training run would read `dynamic (N steps)`.
+- Run completed in 39.6 s on CPU (weights from cache); final line:
+  `structured findings -> runs/gemma4_e2b_v08/findings.json`.

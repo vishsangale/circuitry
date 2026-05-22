@@ -107,12 +107,14 @@ weight.stable_rank(W: Tensor) -> float
 weight.condition_number(W: Tensor) -> float
 weight.singular_values(W: Tensor, k: int | None = None) -> Tensor
 weight.heavy_tail_alpha(W: Tensor) -> float
+weight.attention_head_rank(W: Tensor, n_heads: int, head_dim: int, axis: int = 0) -> Tensor
 
 # activation-space
 activation.dead_fraction(x: Tensor, threshold: float = 0.0) -> float
 activation.kurtosis(x: Tensor, dim: int | tuple = -1) -> Tensor
 activation.participation_ratio(x: Tensor) -> float
 activation.norm_stats(x: Tensor) -> NormStats   # mean, std, max, frac>k*median
+activation.gate_stats(x: Tensor, eps: float = 1e-6) -> GateStats  # frac_active, mean_abs, std
 
 # gradient-space
 gradient.layer_norm(grads: dict[str, Tensor]) -> dict[str, float]
@@ -264,11 +266,13 @@ RECIPE = Recipe(
         HookPoint(pattern=r".*\.attn$",   source=TensorSource.OUTPUT),
         HookPoint(pattern=r".*\.mlp$",    source=TensorSource.OUTPUT),
         HookPoint(pattern=r".*\.ln_[12]$",source=TensorSource.OUTPUT),
+        HookPoint(pattern=r".*\.mlp\.down_proj$", source=TensorSource.INPUT),
         HookPoint(pattern=r"embed.*",     source=TensorSource.WEIGHT),
         HookPoint(pattern=r"lm_head$",    source=TensorSource.WEIGHT),
+        HookPoint(pattern=r".*\.attn\.(q|k|v|o)_proj$", source=TensorSource.GRAD),
     ],
-    weight_diagnostics=["effective_rank", "stable_rank", "heavy_tail_alpha"],
-    activation_diagnostics=["dead_fraction", "kurtosis", "participation_ratio"],
+    weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank", "heavy_tail_alpha"],
+    activation_diagnostics=["gate_stats", "dead_fraction", "kurtosis", "participation_ratio"],
     gradient_diagnostics=["layer_norm"],
 )
 ```
