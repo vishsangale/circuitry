@@ -17,6 +17,8 @@ RECIPE = Recipe(
         HookPoint(source=TensorSource.OUTPUT,
                   pattern=r".*\.(self_attn|attn|attention)$"),
         HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.mlp$"),
+        # Down-proj input hook for gate_stats on Llama/Gemma-style MLPs.
+        HookPoint(source=TensorSource.INPUT, pattern=r".*\.down_proj$"),
         # Per-block layernorms. Covers HF (`input_layernorm`,
         # `post_attention_layernorm`), GPT-2 (`ln_1`, `ln_2`), and canonical
         # LLaMA reference (`attention_norm`, `ffn_norm`).
@@ -28,9 +30,10 @@ RECIPE = Recipe(
         HookPoint(source=TensorSource.GRAD,
                   pattern=r".*\.(q|k|v|o)_proj$"),
     ],
-    weight_diagnostics=["effective_rank", "stable_rank", "heavy_tail_alpha",
-                        "sv_histogram"],
-    activation_diagnostics=["dead_fraction", "kurtosis", "participation_ratio"],
+    weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank",
+                        "heavy_tail_alpha", "sv_histogram"],
+    activation_diagnostics=["gate_stats", "dead_fraction", "kurtosis",
+                            "participation_ratio"],
     gradient_diagnostics=["norms_per_param"],
 )
 

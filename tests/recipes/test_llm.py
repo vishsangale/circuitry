@@ -95,3 +95,25 @@ def test_llm_recipe_has_grad_hook():
     from circuitry.recorder.hooks import TensorSource
     r = get_recipe("llm")
     assert any(hp.source == TensorSource.GRAD for hp in r.hook_points)
+
+
+def test_llm_recipe_includes_attention_head_rank():
+    r = get_recipe("llm")
+    assert "attention_head_rank" in r.weight_diagnostics
+
+
+def test_llm_recipe_includes_gate_stats():
+    r = get_recipe("llm")
+    assert "gate_stats" in r.activation_diagnostics
+
+
+def test_llm_recipe_has_down_proj_input_hook():
+    from circuitry.recorder.hooks import TensorSource
+    r = get_recipe("llm")
+    matches = [
+        hp for hp in r.hook_points
+        if hp.source is TensorSource.INPUT
+        and hp.pattern is not None
+        and "down_proj" in hp.pattern
+    ]
+    assert len(matches) == 1, [hp.pattern for hp in r.hook_points]
