@@ -228,23 +228,21 @@ def main() -> int:
             scan_out.mkdir(parents=True, exist_ok=True)
             print(f"  scanning {filt_run / 'checkpoints'} -> {scan_out}")
             try:
+                # writer="jsonl" so build_report can consume the scan output.
                 scan_run(run_dir=filt_run, recipe=filtered,
-                         out_dir=scan_out, model_factory=_factory)
-                event_files = list(scan_out.rglob("events.out.tfevents.*"))
-                print(f"  scan complete; {len(event_files)} TB event file(s) written")
+                         out_dir=scan_out, model_factory=_factory,
+                         writer="jsonl")
+                jsonl = scan_out / "metrics.jsonl"
+                print(f"  scan complete; jsonl at {jsonl} "
+                      f"({jsonl.stat().st_size} bytes)")
+                scan_report_path = build_report(scan_out)
+                print(f"  scan report -> {scan_report_path}")
                 scan_result = {
                     "ran": True,
                     "out_dir": str(scan_out),
-                    "tb_event_files": [str(p) for p in event_files],
+                    "metrics_jsonl": str(jsonl),
+                    "report": str(scan_report_path),
                 }
-                # Surface the build_report-vs-scan_run gap: scan_run only
-                # writes TB events, but build_report reads metrics.jsonl.
-                jsonl = scan_out / "metrics.jsonl"
-                if not jsonl.exists():
-                    print("  NOTE: scan output is TB-only; build_report would "
-                          "find no metrics.jsonl. To inspect numerically use "
-                          "`tensorboard --logdir {scan_out}`.")
-                    scan_result["build_report_compatible"] = False
             except Exception as e:
                 print(f"  FAIL: {type(e).__name__}: {e}")
                 scan_result = {"ran": True, "error": f"{type(e).__name__}: {e}"}

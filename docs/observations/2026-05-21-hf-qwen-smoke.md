@@ -116,10 +116,11 @@ Aim is a **v0.4.0** focused on "make the library Just Work on a stock HuggingFac
 - Migrate `scripts/smoke_hf_model.py` to use `transformers`' new `dtype=` arg (L2).
 - Re-run the smoke after Tier 1 fixes and confirm `Recorder(recipe="llm")` attaches cleanly to Qwen2.5-0.5B without filtering. Pin the resulting numbers as a regression artifact.
 
-**Tier 3 — separate work, not blocking v0.4.0:**
-- ~~Programmatic + CLI `scan_run` smoke test on an HF model with a saved checkpoint (M3).~~ **Done** in `scripts/smoke_hf_model.py --scan` (post-v0.4.1). Surfaced a new follow-up: `scan_run` is TB-only and incompatible with `build_report`; pluggable writer fix tracked under M3-followup.
-- Report renderer: switch from auto-prefix-based section split to recipe-diagnostic-list-driven grouping (L3). Bundle with M3-followup so `scan_run` can write jsonl and `build_report` can consume it.
-- "Movement-aware" report view: highlight tags where `min != max` over the emission window (M2). A static-weight report shouldn't drown in numbers that haven't moved.
+**Tier 3 — separate work, not blocking v0.4.0:** _All shipped in v0.5.0._
+- ~~Programmatic + CLI `scan_run` smoke test on an HF model with a saved checkpoint (M3).~~ Done in `scripts/smoke_hf_model.py --scan` (post-v0.4.1).
+- ~~Report renderer: switch from auto-prefix-based section split to recipe-diagnostic-list-driven grouping (L3).~~ Shipped in v0.5.0: sections are now `family/diagnostic` (e.g. `weight/effective_rank`) instead of just `family` (e.g. `weight`). Distinct diagnostics within a family get distinct sections — fixes the "giant single weight section" problem.
+- ~~"Movement-aware" report view: highlight tags where `min != max` over the emission window (M2).~~ Shipped in v0.5.0: Δ column added, rows sort moving-first within each section, top-of-report Summary block counts moving/static/emit-step totals.
+- ~~M3-followup (scan_run TB-only):~~ Shipped in v0.5.0: `scan_run` takes an optional `writer` parameter (default `"tensorboard"` for back-compat). `writer="jsonl"` makes scan output `build_report`-compatible, closing the live/scan workflow asymmetry.
 
 **Out of scope:**
 - GPU re-measurement of `bench_50m.py` (already noted in README; orthogonal).

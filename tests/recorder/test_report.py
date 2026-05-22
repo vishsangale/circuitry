@@ -36,3 +36,72 @@ def test_build_report_handles_missing_jsonl(tmp_path):
     build_report(run_dir=tmp_path, out_path=out)
     assert out.exists()
     assert "no metrics found" in out.read_text().lower()
+
+
+def test_build_report_sections_use_first_two_tag_segments(tmp_path):
+    """3+ segment tags should group under `family/diagnostic`, not just
+    `family`. Distinct diagnostics within the same family get distinct
+    sections."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/A", "value": 1.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/stable_rank/A", "value": 2.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/effective_rank/B", "value": 3.0, "step": 0, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "## weight/effective_rank" in md
+    assert "## weight/stable_rank" in md
+    # Row identifier under each section is the tag tail, not the full tag.
+    er_section = md.split("## weight/effective_rank")[1].split("##")[0]
+    assert "`A`" in er_section and "`B`" in er_section
+    assert "effective_rank" not in er_section.replace(
+        "## weight/effective_rank", ""
+    ).split("|")[0]
+
+
+def test_build_report_includes_delta_column_and_moves_dynamic_first(tmp_path):
+    """A row whose value changes across steps (`min != max`) should sort
+    before static rows in its section, and the Δ column should reflect the
+    spread."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        # Static — same value at both steps.
+        {"tag": "weight/effective_rank/static", "value": 5.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/effective_rank/static", "value": 5.0, "step": 1, "kind": "scalar"},
+        # Moving — value changes.
+        {"tag": "weight/effective_rank/moving", "value": 1.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/effective_rank/moving", "value": 4.0, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "| Δ |" in md
+    # `moving` row appears before `static` row in the table.
+    section = md.split("## weight/effective_rank")[1]
+    moving_pos = section.find("`moving`")
+    static_pos = section.find("`static`")
+    assert 0 <= moving_pos < static_pos, (
+        f"moving@{moving_pos} should precede static@{static_pos}"
+    )
+    # Static row's Δ cell renders as `—`; moving row's as a number.
+    moving_row = next(line for line in section.splitlines() if "`moving`" in line)
+    static_row = next(line for line in section.splitlines() if "`static`" in line)
+    assert "—" not in moving_row.split("|")[-2]
+    assert "—" in static_row.split("|")[-2]
+
+
+def test_build_report_summary_block_counts_moving_and_static(tmp_path):
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "a/b/c", "value": 1.0, "step": 0, "kind": "scalar"},
+        {"tag": "a/b/c", "value": 2.0, "step": 1, "kind": "scalar"},  # moves
+        {"tag": "a/b/d", "value": 1.0, "step": 0, "kind": "scalar"},
+        {"tag": "a/b/d", "value": 1.0, "step": 1, "kind": "scalar"},  # static
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "## Summary" in md
+    assert "**2** scalar tags" in md
+    assert "**1** moving" in md
+    assert "**1** static" in md
+    assert "**2** emit step" in md
