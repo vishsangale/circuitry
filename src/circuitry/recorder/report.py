@@ -70,7 +70,17 @@ def build_report(
             if line.strip():
                 rows.append(json.loads(line))
 
-    lines: list[str] = ["# circuitry report", ""]
+    # Pre-compute step count so the header can be subtitled.
+    grouped = _group(rows) if rows else {}
+    step_count = len({s for series in grouped.values() for s, _ in series})
+    if step_count == 0:
+        subtitle = ""
+    elif step_count == 1:
+        subtitle = " — static (1 step)"
+    else:
+        subtitle = f" — dynamic ({step_count} steps)"
+
+    lines: list[str] = [f"# circuitry report{subtitle}", ""]
     lines.append(f"Source run: `{run_dir}`")
     lines.append("")
 
@@ -88,28 +98,29 @@ def build_report(
         out_path.write_text("\n".join(lines))
         return out_path
 
-    grouped = _group(rows)
-
     # Top-of-report summary: total / moving / static / emit-step count.
     moving = 0
     static = 0
-    all_steps: set[int] = set()
     for series in grouped.values():
         _, _, vmin, vmax, _ = _stats(series)
         if vmax > vmin:
             moving += 1
         else:
             static += 1
-        for s, _ in series:
-            all_steps.add(s)
 
     lines.append("## Summary")
     lines.append("")
     lines.append(
         f"- **{len(grouped)}** scalar tags · **{moving}** moving "
-        f"(Δ > 0) · **{static}** static · **{len(all_steps)}** emit step(s) "
+        f"(Δ > 0) · **{static}** static · **{step_count}** emit step(s) "
         f"observed."
     )
+    if step_count == 1:
+        lines.append("")
+        lines.append(
+            "> **Note:** Single-step run; Δ uniformly zero. For "
+            "training-dynamics signal, run multiple steps."
+        )
     lines.append("")
 
     # Attach summary — written by Recorder.attach(); skip silently if absent (older runs).
