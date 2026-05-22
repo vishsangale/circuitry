@@ -30,7 +30,7 @@ import torch
 
 from circuitry import Recipe, Recorder, build_report, scan_run
 from circuitry.recipes import get_recipe
-from circuitry.recorder.hooks import HookPoint, match_modules
+from circuitry.recorder.hooks import HookPoint, filtered_matches, match_modules
 
 
 @contextmanager
@@ -84,10 +84,14 @@ def _diagnose_recipe(model, recipe: Recipe) -> dict:
 def _build_safe_recipe(stock: Recipe, model) -> Recipe:
     """Filter the stock recipe's HookPoints to only those that match at least
     one module on `model`. Returns a new Recipe with the survivors and the
-    same diagnostic lists. Empty-result fallback: caller checks."""
+    same diagnostic lists. Empty-result fallback: caller checks.
+
+    Uses ``filtered_matches`` so that if ``stock.module_prefix`` is set, only
+    modules under that prefix are considered.
+    """
     survivors: list[HookPoint] = []
     for hp in stock.hook_points:
-        if match_modules(model, hp):
+        if filtered_matches(model, hp, stock):
             survivors.append(hp)
     return Recipe(
         name=f"{stock.name}_filtered",
@@ -96,6 +100,7 @@ def _build_safe_recipe(stock: Recipe, model) -> Recipe:
         activation_diagnostics=stock.activation_diagnostics,
         gradient_diagnostics=stock.gradient_diagnostics,
         custom=list(getattr(stock, "custom", [])),
+        module_prefix=stock.module_prefix,
     )
 
 
@@ -111,6 +116,10 @@ def main() -> int:
     p.add_argument("--scan", action="store_true",
                    help="After the live run, also exercise scan_run "
                         "on saved checkpoints.")
+    p.add_argument("--prefix", default=None,
+                   help="Scope the recipe to modules under this dotted prefix "
+                        "(e.g. 'model.language_model'). Passed to "
+                        "Recipe.with_prefix() after _build_safe_recipe.")
     args = p.parse_args()
 
     run_dir = pathlib.Path(args.run_dir).resolve()
@@ -121,6 +130,8 @@ def main() -> int:
 
     print(f"run_dir: {run_dir}")
     print(f"model:   {args.model}  dtype={args.dtype}")
+    if args.prefix:
+        print(f"prefix:  {args.prefix}")
 
     # ------------------------------------------------------------------ load
     with _section(f"Phase 1: load {args.model}"):
@@ -169,6 +180,9 @@ def main() -> int:
     # ----------------------------------------------------- filtered recipe run
     with _section("Phase 4: build filtered recipe + run training loop"):
         filtered = _build_safe_recipe(stock, model)
+        if args.prefix:
+            filtered = filtered.with_prefix(args.prefix)
+            print(f"  applied prefix: {args.prefix!r}")
         print(f"  filtered recipe: {len(filtered.hook_points)}/{len(stock.hook_points)} "
               f"HookPoints survive")
         filt_run = run_dir / "filtered"

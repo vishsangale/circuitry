@@ -76,3 +76,27 @@ def match_modules(model: nn.Module, hp: HookPoint) -> list[str]:
         return [mod_to_name[id(m)] for m in hp.modules if id(m) in mod_to_name]
     assert hp.selector is not None
     return list(hp.selector(model))
+
+
+def filtered_matches(model: nn.Module, hp: HookPoint, recipe: Any) -> list[str]:
+    """Like ``match_modules``, but apply ``recipe.module_prefix`` if set.
+
+    Keeps only module names that equal the prefix or start with
+    ``prefix + "."``.  When ``recipe.module_prefix`` is ``None`` the result is
+    identical to ``match_modules(model, hp)``.
+
+    Parameters
+    ----------
+    model:
+        The model to inspect.
+    hp:
+        The HookPoint whose matching rules are applied.
+    recipe:
+        The Recipe object. Must have a ``module_prefix`` attribute
+        (``str | None``).
+    """
+    names = match_modules(model, hp)
+    prefix: str | None = getattr(recipe, "module_prefix", None)
+    if prefix is None:
+        return names
+    return [n for n in names if n == prefix or n.startswith(prefix + ".")]

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-21
+
+### Added
+- **`Recipe.module_prefix`** — new field (default `None`) on `Recipe`; holds an optional dotted module-name prefix used to scope hook matching.
+- **`Recipe.with_prefix(prefix)`** — returns a new `Recipe` via `dataclasses.replace` with `module_prefix=prefix` and name renamed to `<name>@<prefix>`. Latest-wins semantics: `r.with_prefix("a").with_prefix("b")` yields `module_prefix="b"`. Docstring warns that `expected_min_matches` thresholds calibrated to whole-model counts should be lowered after scoping.
+- **`filtered_matches(model, hp, recipe)`** — new helper in `src/circuitry/recorder/hooks.py`. Wraps `match_modules` and, when `recipe.module_prefix` is set, keeps only module names that equal the prefix or start with `prefix + "."`. Used in both `Recorder.attach()` and `scripts/smoke_hf_model.py:_build_safe_recipe`.
+- **`<run_dir>/circuitry/attach_summary.json`** — written by `Recorder.attach()` after resolving all hook points. Schema: `{"hook_points": [{"idx", "source", "label", "matched", "resolved", "unresolved"}], "totals": {"matched", "resolved", "unresolved"}}`. For OUTPUT/INPUT hooks `resolved == matched` and `unresolved == 0`; for WEIGHT/GRAD, `resolved` counts modules where `inventory.find_primary_weight()` returned non-None.
+- **`## Attach summary` block in `build_report`** — rendered after `## Summary` when `attach_summary.json` is present; silently skipped for older runs. Shows a table of per-hook-point counts plus a totals row.
+- **`--prefix <PREFIX>`** flag on `scripts/smoke_hf_model.py` — applies `filtered.with_prefix(args.prefix)` after `_build_safe_recipe`; echoes `prefix: <value>` in the run header.
+
+### Changed
+- **`Recorder.attach()` now writes `attach_summary.json`** in addition to `matched_modules.txt` and `inventory.json` — non-breaking (new file, no removed files).
+- `Recorder.attach()` now routes module matching through `filtered_matches` (instead of bare `match_modules`) so that a `recipe.module_prefix` constraint is honoured at attach time.
+
+### Validation
+Re-ran the Gemma 4 E2B smoke with `--prefix model.language_model`. See `docs/observations/2026-05-21-gemma-smoke.md` for the closed H2 bullet with attach-summary numbers. Closes H2 ("stock recipe isn't modality-aware") from that observations doc.
+
 ## [0.6.0] — 2026-05-21
 
 ### Added

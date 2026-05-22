@@ -245,3 +245,128 @@ def test_recorder_noop_on_non_zero_rank(monkeypatch, tmp_path):
     rec.detach()
     assert writer.scalars == []
     assert not (tmp_path / "circuitry" / "matched_modules.txt").exists()
+
+
+# --- v0.7.0: with_prefix + attach_summary.json ----------------------------
+
+def test_attach_with_prefix_only_keeps_modules_under_prefix(tmp_path):
+    """A recipe scoped with with_prefix() should only match modules under that prefix."""
+    import torch.nn as nn
+
+    class _Scoped(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lm = nn.Sequential(nn.Linear(4, 8, bias=False), nn.Linear(8, 4, bias=False))
+            self.other = nn.Linear(4, 4, bias=False)
+
+    model = _Scoped()
+    recipe = Recipe(
+        name="scoped_test",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r".*")],
+        weight_diagnostics=["effective_rank"],
+    ).with_prefix("lm")
+
+    register_recipe(recipe)
+    rec = Recorder(model, run_dir=tmp_path, recipe=recipe,
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.step(0)
+    rec.detach()
+
+    # Only modules under "lm" prefix should be matched: "lm.0" and "lm.1" (and "lm" itself)
+    # "other" must NOT appear.
+    matched_txt = (tmp_path / "circuitry" / "matched_modules.txt").read_text()
+    assert "other" not in matched_txt
+
+
+def test_attach_writes_attach_summary_json(tmp_path):
+    """attach_summary.json is written by Recorder.attach() with correct schema."""
+    import json as _json
+
+    _register_demo()
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="demo",
+                   writer=RecordingWriter(), every_n_steps=1)
+    rec.attach()
+    rec.detach()
+
+    summary_path = tmp_path / "circuitry" / "attach_summary.json"
+    assert summary_path.exists()
+    data = _json.loads(summary_path.read_text())
+    assert "hook_points" in data
+    assert "totals" in data
+    assert isinstance(data["hook_points"], list)
+    totals = data["totals"]
+    assert "matched" in totals and "resolved" in totals and "unresolved" in totals
+    # _toy_model pattern r"^\d+$" matches modules "0" (Linear), "1" (ReLU), "2" (Linear).
+    # ReLU is unresolvable (no 2-D+ weight), both Linears resolve cleanly.
+    assert totals["matched"] == 3
+    assert totals["resolved"] == 2
+    assert totals["unresolved"] == 1
+
+
+def test_attach_summary_counts_resolved_and_unresolved(tmp_path):
+    """attach_summary.json counts resolved=1, unresolved=1 when one module resolves
+    and one is ambiguous (v0.7.0 design §3 example)."""
+    import json as _json
+
+    class _Wrap(nn.Module):
+        """Resolves — single Linear child."""
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = nn.Linear(4, 8, bias=False)
+
+    class _Ambiguous(nn.Module):
+        """Unresolvable — two Linear children, ambiguous primary."""
+        def __init__(self) -> None:
+            super().__init__()
+            self.a = nn.Linear(4, 8, bias=False)
+            self.b = nn.Linear(8, 4, bias=False)
+
+    class _M(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wrap = _Wrap()
+            self.ambig = _Ambiguous()
+
+    register_recipe(Recipe(
+        name="mixed",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r"^(wrap|ambig)$")],
+        weight_diagnostics=["effective_rank"],
+    ))
+    rec = Recorder(_M(), run_dir=tmp_path, recipe="mixed",
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.detach()
+
+    data = _json.loads((tmp_path / "circuitry" / "attach_summary.json").read_text())
+    totals = data["totals"]
+    assert totals["matched"] == 2
+    assert totals["resolved"] == 1
+    assert totals["unresolved"] == 1
+
+    # The single hook_points entry should reflect the same counts.
+    hp0 = data["hook_points"][0]
+    assert hp0["matched"] == 2
+    assert hp0["resolved"] == 1
+    assert hp0["unresolved"] == 1
+
+
+def test_attach_summary_output_hookpoint_has_resolved_equals_matched(tmp_path):
+    """For OUTPUT hooks, resolved == matched and unresolved == 0."""
+    import json as _json
+
+    register_recipe(Recipe(
+        name="output_recipe",
+        hook_points=[HookPoint(source=TensorSource.OUTPUT, pattern=r"^\d+$")],
+        activation_diagnostics=["dead_fraction"],
+    ))
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="output_recipe",
+                   writer=RecordingWriter(), every_n_steps=1)
+    rec.attach()
+    rec.detach()
+
+    data = _json.loads((tmp_path / "circuitry" / "attach_summary.json").read_text())
+    hp0 = data["hook_points"][0]
+    assert hp0["source"] == "output"
+    assert hp0["resolved"] == hp0["matched"]
+    assert hp0["unresolved"] == 0

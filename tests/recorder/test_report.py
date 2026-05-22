@@ -90,6 +90,49 @@ def test_build_report_includes_delta_column_and_moves_dynamic_first(tmp_path):
     assert "—" in static_row.split("|")[-2]
 
 
+def test_build_report_attach_summary_table_renders(tmp_path):
+    """## Attach summary table is rendered after ## Summary when attach_summary.json exists."""
+    import json as _json
+
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/0", "value": 8.0, "step": 0, "kind": "scalar"},
+    ])
+    attach_summary = {
+        "hook_points": [
+            {"idx": 0, "source": "weight", "label": r"^\d+$",
+             "matched": 2, "resolved": 2, "unresolved": 0},
+        ],
+        "totals": {"matched": 2, "resolved": 2, "unresolved": 0},
+    }
+    (tmp_path / "circuitry").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "circuitry" / "attach_summary.json").write_text(
+        _json.dumps(attach_summary)
+    )
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+
+    assert "## Attach summary" in md
+    # Table header columns present
+    assert "| hp | source | target | matched | resolved | unresolved |" in md
+    # Data row with idx=0
+    assert "| 0 | weight |" in md
+    # Totals row
+    assert "**total**" in md
+    assert "| 2 | 2 | 0 |" in md
+
+
+def test_build_report_no_attach_summary_section_when_file_absent(tmp_path):
+    """## Attach summary is silently skipped when attach_summary.json is absent."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/0", "value": 8.0, "step": 0, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Attach summary" not in md
+
+
 def test_build_report_summary_block_counts_moving_and_static(tmp_path):
     _write_jsonl(tmp_path / "metrics.jsonl", [
         {"tag": "a/b/c", "value": 1.0, "step": 0, "kind": "scalar"},

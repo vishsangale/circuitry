@@ -19,7 +19,7 @@ from circuitry.core import gradient as _grad
 from circuitry.core import weight as _w
 from circuitry.core.inventory import ModelInventory
 from circuitry.recipes import Recipe, get_recipe
-from circuitry.recorder.hooks import StepContext, TensorSource, match_modules
+from circuitry.recorder.hooks import StepContext, TensorSource, filtered_matches
 from circuitry.writers.base import MetricWriter
 
 logger = logging.getLogger("circuitry")
@@ -152,10 +152,15 @@ class Recorder:
             self._inventory.to_json()
         )
 
+        import json as _json
+
         name_to_mod = dict(self.model.named_modules())
         matched_lines: list[str] = []
+        summary_hook_points: list[dict] = []
+        totals: dict[str, int] = {"matched": 0, "resolved": 0, "unresolved": 0}
+
         for idx, hp in enumerate(self.recipe.hook_points):
-            names = match_modules(self.model, hp)
+            names = filtered_matches(self.model, hp, self.recipe)
             self._matched[idx] = names
 
             if hp.pattern is not None:
@@ -177,6 +182,14 @@ class Recorder:
                     )
                 logger.warning("circuitry: %s — skipping this HookPoint", msg)
                 matched_lines.append("")
+                summary_hook_points.append({
+                    "idx": idx,
+                    "source": hp.source.value,
+                    "label": label,
+                    "matched": 0,
+                    "resolved": 0,
+                    "unresolved": 0,
+                })
                 continue
             expected = self.recipe.expected_min_matches.get(hp.pattern or "", 0)
             if expected and len(names) < expected:
@@ -215,15 +228,39 @@ class Recorder:
                         "had no resolvable primary weight",
                         idx, label, unresolved, len(names),
                     )
+                hp_resolved = len(names) - unresolved
+                hp_unresolved = unresolved
             else:
                 # OUTPUT / INPUT: hooks attach to the module itself; nothing
                 # to resolve.
                 for n in names:
                     matched_lines.append(n)
+                hp_resolved = len(names)
+                hp_unresolved = 0
+
             matched_lines.append("")
+            summary_hook_points.append({
+                "idx": idx,
+                "source": hp.source.value,
+                "label": label,
+                "matched": len(names),
+                "resolved": hp_resolved,
+                "unresolved": hp_unresolved,
+            })
+            totals["matched"] += len(names)
+            totals["resolved"] += hp_resolved
+            totals["unresolved"] += hp_unresolved
 
         (self.run_dir / "circuitry" / "matched_modules.txt").write_text(
             "\n".join(matched_lines)
+        )
+
+        attach_summary = {
+            "hook_points": summary_hook_points,
+            "totals": totals,
+        }
+        (self.run_dir / "circuitry" / "attach_summary.json").write_text(
+            _json.dumps(attach_summary, indent=2)
         )
 
         # Install hooks for INPUT / OUTPUT sources (WEIGHT/GRAD read directly at step time).

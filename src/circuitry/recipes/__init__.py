@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -20,6 +21,27 @@ class Recipe:
     custom: list[DiagnosticFn] = field(default_factory=list)
     expected_min_matches: dict[str, int] = field(default_factory=dict)
     enabled: dict[str, bool] = field(default_factory=dict)
+    module_prefix: str | None = None
+
+    def with_prefix(self, prefix: str) -> Recipe:
+        """Return a new Recipe scoped to ``prefix``.
+
+        Matched modules will be restricted to those whose dotted name equals
+        ``prefix`` or starts with ``prefix + "."``.
+
+        **Latest-wins**: calling ``r.with_prefix("a").with_prefix("b")`` yields
+        a recipe with ``module_prefix="b"`` — prefixes are NOT concatenated.
+
+        .. note::
+            If you set ``expected_min_matches``, you'll likely want to lower it
+            after scoping — thresholds calibrated to whole-model counts won't
+            hold after a prefix filter.
+        """
+        return dataclasses.replace(
+            self,
+            module_prefix=prefix,
+            name=f"{self.name}@{prefix}",
+        )
 
 
 _REGISTRY: dict[str, Recipe] = {}

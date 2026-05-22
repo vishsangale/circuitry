@@ -112,6 +112,28 @@ def build_report(
     )
     lines.append("")
 
+    # Attach summary — written by Recorder.attach(); skip silently if absent (older runs).
+    attach_summary_path = run_dir / "circuitry" / "attach_summary.json"
+    if attach_summary_path.exists():
+        import json as _json
+        attach_data = _json.loads(attach_summary_path.read_text())
+        lines.append("## Attach summary")
+        lines.append("")
+        lines.append("| hp | source | target | matched | resolved | unresolved |")
+        lines.append("| --- | --- | --- | ---: | ---: | ---: |")
+        for entry in attach_data.get("hook_points", []):
+            hp_label = f"`{entry['label']}`"
+            lines.append(
+                f"| {entry['idx']} | {entry['source']} | {hp_label} "
+                f"| {entry['matched']} | {entry['resolved']} | {entry['unresolved']} |"
+            )
+        t = attach_data.get("totals", {})
+        lines.append(
+            f"| — | — | **total** | {t.get('matched', 0)} "
+            f"| {t.get('resolved', 0)} | {t.get('unresolved', 0)} |"
+        )
+        lines.append("")
+
     # Group tags by (section header). Within each section, sort moving-first
     # then alphabetical.
     sections: dict[str, list[str]] = defaultdict(list)

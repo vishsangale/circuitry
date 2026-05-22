@@ -179,7 +179,10 @@ class Recipe:
     gradient_diagnostics: list[str]
     custom: list[DiagnosticFn] = field(default_factory=list)
     expected_min_matches: dict[str, int] = field(default_factory=dict)  # pattern → min modules
+    module_prefix: str | None = None  # if set, only modules under this dotted prefix are matched
 ```
+
+Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e.g. `get_recipe("llm").with_prefix("model.language_model")` for multimodal HF models). Returns a new `Recipe` via `dataclasses.replace`; the original is not mutated. Latest-wins: calling `.with_prefix("a").with_prefix("b")` yields `module_prefix="b"`. If `expected_min_matches` is set, lower the thresholds after scoping — whole-model counts don't hold after a prefix filter.
 
 `HookPoint` supports three target specifications:
 
