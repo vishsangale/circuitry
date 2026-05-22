@@ -1,7 +1,7 @@
 """LiveRecorder — attach hooks per recipe, snapshot tensors at emit steps,
 run diagnostics, write scalars through a MetricWriter.
 
-See docs/design.md §4.2, §4.4, §10, §11. Single-process v1 — non-zero ranks
+See docs/design.md §4.2, §4.4, §10, §11. Single-process — non-zero ranks
 no-op in attach().
 """
 
@@ -68,7 +68,7 @@ class Recorder:
 
     On a multi-rank setup (``torch.distributed.is_initialized()`` true and
     ``get_rank() != 0``), every method is a no-op so existing scripts don't
-    crash. Multi-process support is the v0.next deliverable (design §11).
+    crash. Multi-process support is planned for a future release (design §11).
     """
 
     def __init__(

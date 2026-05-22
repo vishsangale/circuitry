@@ -1,7 +1,7 @@
 # circuitry — design spec
 
-**Date:** 2026-05-20
-**Status:** draft for implementation
+**Last updated:** 2026-05-21
+**Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
 `circuitry` is a standalone Python library providing mechanistic-interpretability diagnostics — weight / activation / gradient / spectral primitives, plus a `Recorder` workflow for live training-time capture and a `scan` workflow for post-hoc analysis on saved checkpoints. Modality-agnostic core with per-modality recipes for LLM, vision, and recsys.
@@ -30,13 +30,13 @@ The library bundles primitives that get re-implemented project-by-project (effec
 | --- | --- |
 | Library name | `circuitry` |
 | License | MIT |
-| Release target | Public open-source, low-key (clean README, no docs site, not on PyPI for v1) |
+| Release target | Public open-source, low-key (clean README, no docs site, not on PyPI for the 0.x line) |
 | Repo location | `~/workspace/circuitry/`, public GitHub `vishsangale/circuitry` |
 | In-scope | Checkpoint inspector (live + scan + report); spectral / rank / weight / activation / gradient primitives; per-modality recipes (LLM / vision / two-tower) |
 | Out-of-scope | Architecture-specific diagnostics (those live in consumer codebases via custom `Recipe`s) |
 | API shape | Two layers: pure primitives in `core/` + thin opinionated `Recorder` workflow above |
 | Modality strategy | Modality-agnostic core + per-modality recipes (`recipes/llm.py`, `recipes/vision.py`, `recipes/two_tower.py`) |
-| Framework support v1 | PyTorch only, single-process (rank-0 only in DDP runs; v2 path in §11) |
+| Framework support | PyTorch only, single-process (rank-0 only in DDP runs; multi-process path in §11) |
 | Logging | TensorBoard primary, `MetricWriter` Protocol so jsonl / null (and any user-supplied) adapters are 1-file each |
 
 ## 3. Repository structure
@@ -54,7 +54,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── activation.py
 │   │   ├── gradient.py
 │   │   ├── spectral.py
-│   │   └── lens.py         # v1 stretch
+│   │   └── lens.py         # future stretch
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
 │   │   ├── scan.py         # scan_run
@@ -88,7 +88,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 
 - `core/` MUST NOT import from `recorder/`, `recipes/`, `writers/`, or `cli/`.
 - `recipes/` MUST NOT import from `cli/`.
-- The package MUST NOT import from any consumer codebase. `circuitry` is the consumed dependency, never the consumer.
+- The package MUST NOT import from any downstream user codebase. `circuitry` is the consumed dependency, never the consumer.
 
 A simple `import-linter` config or hand-rolled AST test enforces this.
 
@@ -289,12 +289,12 @@ CI: GitHub Actions, Python 3.10 / 3.11 / 3.12, PyTorch latest stable. No GPU job
 
 See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases are tagged and announced via [GitHub Releases](https://github.com/vishsangale/circuitry/releases).
 
-## 8. Explicitly NOT in v1
+## 8. Explicitly out of scope today
 
 - SAE training (interop with SAELens later if demand surfaces).
 - Causal interventions / activation patching (pyvene, nnsight already cover this).
 - JAX / Flax support.
-- DDP / FSDP-aware reductions — v1 is single-process; non-zero ranks no-op. See §11 for the additive v2 path.
+- DDP / FSDP-aware reductions — current releases are single-process; non-zero ranks no-op. See §11 for the additive future-release path.
 - Logit lens / tuned lens beyond a stretch in `core/lens.py`.
 - Web dashboard. TB + markdown report is the UI.
 - Differentiability guarantees through diagnostics. Primitives may use non-differentiable ops (`torch.linalg.svd`).
@@ -307,8 +307,8 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 | Recipe regexes match the **wrong** subset of modules silently (worse than matching nothing) | At `attach()` time the full matched-modules list per `HookPoint` is logged at INFO level and written to `<run_dir>/circuitry/matched_modules.txt`. Recipes can declare `expected_min_matches` per pattern; `strict=True` (default) raises on mismatch. Zero matches always raises. |
 | Diagnostic overhead doubles wall-clock training time | §10 sets a hard ≤10% wall-clock budget at default settings; benchmark in CI; per-diagnostic `enabled: bool` so users can drop the expensive ones; `every_n_steps` knob defaults are tuned per recipe (see §10). |
 | Public release attracts issues we don't have time for | "Low-key" release; README explicitly says "research code, no support promise." Issues triaged when convenient. |
-| TB-primary design alienates wandb / mlflow-first users | `MetricWriter` protocol from day 1 keeps any third-party adapter a ~50-LOC subclass. v0.1.0 shipped a wandb adapter; v0.3.0 removed it after the cutover showed no in-house wandb consumers — trivially re-addable if demand surfaces. |
-| Single-process-only v1 ages into an architectural dead-end as users hit multi-GPU training | Multi-process design constraints baked into v1 protocol (see §11); v2 FSDP support is additive, not a rewrite. |
+| TB-primary design alienates wandb / mlflow-first users | `MetricWriter` protocol from day 1 keeps any third-party adapter a ~50-LOC subclass. v0.1.0 shipped a wandb adapter; v0.3.0 removed it as there were no active users — trivially re-addable if demand surfaces. |
+| Single-process-only design ages into an architectural dead-end as users hit multi-GPU training | Multi-process design constraints baked into the current protocol (see §11); a future-release FSDP upgrade is additive, not a rewrite. |
 
 ## 10. Performance & overhead budget
 
@@ -320,33 +320,33 @@ The most likely 6-month failure mode is "this is cool, but it doubled my trainin
 - **Lazy hooks:** activation hooks only run the forward pass capture on the emit step (every N steps). The hook checks `self._should_capture()` and is a no-op otherwise, avoiding per-step allocation cost.
 - **Async writer option:** `MetricWriter` adapters MAY implement non-blocking writes (a background thread draining a queue). The TB adapter does this by default; tests use the synchronous null writer.
 
-Reference benchmark workload (also v1 deliverable): a 50M-param decoder-only transformer on synthetic data, 100 steps, with and without `circuitry` attached, full LLM recipe, `every_n_steps=200`. Numbers go in the README.
+Reference benchmark workload: a 50M-param decoder-only transformer on synthetic data, 100 steps, with and without `circuitry` attached, full LLM recipe, `every_n_steps=200`. Numbers go in the README.
 
 ## 11. Multi-process (DDP / FSDP) design notes
 
-v1 is single-process. This section locks in *what v1 does today* so the v2 FSDP upgrade is additive, not a rewrite.
+Current releases are single-process. This section locks in *what circuitry does today* so a future-release FSDP upgrade is additive, not a rewrite.
 
-### v1 contract (single process, rank-0 semantics)
+### Current contract (single process, rank-0 semantics)
 
-- `Recorder.attach()` checks `torch.distributed.is_initialized()`. If True and `rank != 0`, the recorder becomes a no-op (`attach()` returns immediately, all hooks are skipped). This means existing multi-rank training scripts can import `circuitry` without crashing and without duplicate writes; they just don't get diagnostics until v2.
+- `Recorder.attach()` checks `torch.distributed.is_initialized()`. If True and `rank != 0`, the recorder becomes a no-op (`attach()` returns immediately, all hooks are skipped). This means existing multi-rank training scripts can import `circuitry` without crashing and without duplicate writes; they just don't get diagnostics until the multi-process path lands.
 - Primitives in `core/` assume **full, unsharded** tensors. They do not gather. They will silently return wrong numbers if given an FSDP-sharded parameter. The docstring and a runtime assertion (`shape sanity check against module's intended shape`) flag this.
 - Writers write to the rank-0 process's filesystem; no rank coordination.
 
-### v2 path (additive, no rewrite)
+### Future-release path (additive, no rewrite)
 
-To enable multi-process diagnostics in v2 without changing the v1 API surface:
+To enable multi-process diagnostics in a future release without changing the current API surface:
 
-- `HookPoint` already takes a `source` enum; v2 adds `TensorSource.WEIGHT_FULL` and `ACTIVATION_FULL` variants that trigger an `all_gather_into_tensor` before passing to the primitive. The pattern / modules / selector escape hatches are unchanged.
-- `core/` primitives stay single-tensor in / single-float out. v2 adds a small `core/distributed.py` with helpers (`all_gather_sharded_param(param) -> Tensor`) that the recorder calls before the primitive; primitives themselves never know about ranks.
-- `MetricWriter` v2 adds an optional `rank: int` constructor argument; the default tensorboard adapter writes from rank 0 only (current behavior). A new `DDPMetricWriter` aggregates histogram tensors across ranks before writing.
+- `HookPoint` already takes a `source` enum; the future release adds `TensorSource.WEIGHT_FULL` and `ACTIVATION_FULL` variants that trigger an `all_gather_into_tensor` before passing to the primitive. The pattern / modules / selector escape hatches are unchanged.
+- `core/` primitives stay single-tensor in / single-float out. The future release adds a small `core/distributed.py` with helpers (`all_gather_sharded_param(param) -> Tensor`) that the recorder calls before the primitive; primitives themselves never know about ranks.
+- `MetricWriter` gains an optional `rank: int` constructor argument; the default tensorboard adapter writes from rank 0 only (current behavior). A new `DDPMetricWriter` aggregates histogram tensors across ranks before writing.
 - The `StepContext.gradients` / `activations` / `weights` dicts gain a "gathered" status flag; built-in diagnostics ignore it (they only see post-gather tensors), but custom diagnostics that want raw shards can opt in.
 
-This means in v2: same recipes, same primitives, same `Recorder` constructor signature. Only the `source` enum gains values, `MetricWriter` gains an optional kwarg, and one new file (`core/distributed.py`) appears. No existing user code breaks.
+Net result: same recipes, same primitives, same `Recorder` constructor signature. Only the `source` enum gains values, `MetricWriter` gains an optional kwarg, and one new file (`core/distributed.py`) appears. No existing user code breaks.
 
-### v1 README MUST state
+### README MUST state
 
-> "v0.x supports single-process training only. In a multi-rank DDP/FSDP run, `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce incorrect diagnostics on rank 0. Multi-process support lands in v0.next; see §11 of the design spec for the upgrade path."
+> "v0.x supports single-process training only. In a multi-rank DDP/FSDP run, `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce incorrect diagnostics on rank 0. Multi-process support is planned for a future release; see §11 of the design spec for the upgrade path."
 
 ## 12. Open questions
 
-None blocking implementation. Resolved during brainstorming + Gemini Pro review: name, license, release target, layering, modality strategy, framework support, logging strategy, scope of extractions, hook escape hatches, custom-diagnostic API, multi-process v2 path.
+None blocking implementation. Resolved during brainstorming + Gemini Pro review: name, license, release target, layering, modality strategy, framework support, logging strategy, hook escape hatches, custom-diagnostic API, multi-process upgrade path.

@@ -9,7 +9,7 @@
 - §3 — Repository structure and CI-enforced layering rules.
 - §4 — Public API (primitives, Recorder, Recipe escape hatches, MetricWriter protocol).
 - §10 — Performance budget (≤10% wall-clock at default settings).
-- §11 — Multi-process design notes (v1 single-process; v2 additive path).
+- §11 — Multi-process design notes (current releases single-process; future-release path is additive).
 
 `CHANGELOG.md` is the release log. Active implementation plans, when in flight, live under `docs/` (e.g. `docs/plan-m3.md` for any future milestone). Historical plans are kept in git history rather than the working tree.
 
@@ -33,7 +33,7 @@ These are non-negotiable; don't propose changes without amending `docs/design.md
 
 1. **`core/` MUST NOT import from `recorder/`, `recipes/`, `writers/`, or `cli/`.** Primitives are pure functions with no I/O.
 2. **`recipes/` MUST NOT import from `cli/`.**
-3. **The package MUST NOT import from any consumer codebase.** Reverse-dependency rule — circuitry is the consumed dep, never the consumer. `tests/test_layering.py` enforces this with an explicit forbidden-imports list.
+3. **The package MUST NOT import from any downstream user codebase.** Reverse-dependency rule — circuitry is the consumed dep, never the consumer. `tests/test_layering.py` enforces this with an allowlist of approved root packages (`circuitry`, `torch`, `numpy`, `tensorboard`, stdlib); any other import fails the test.
 4. **No hidden `.cuda()` calls in `core/`.** Primitives stay device-deterministic.
 
 ## Environment

@@ -49,7 +49,7 @@ circuitry report --run runs/my_run
 
 Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer (see `docs/design.md` §10).
 
-**Measured (v0.2.0a0)**, 88M-param decoder, 100 steps, `every_n_steps=200`, CPU on a 16-core consumer machine (`scripts/bench_50m.py --n-layers 8 --d-model 768`):
+**Measured at v0.2.0a0** (the v0.3.0 wandb removal does not touch perf-sensitive code paths, so these numbers remain representative). 88M-param decoder, 100 steps, `every_n_steps=200`, CPU on a 16-core consumer machine (`scripts/bench_50m.py --n-layers 8 --d-model 768`):
 
 | run | baseline | instrumented | overhead |
 | --- | -------: | -----------: | -------: |
@@ -64,9 +64,9 @@ Run the harness yourself:
 venv/bin/python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
 ```
 
-## v0.1.0 limits
+## Known limits
 
-- Single-process training only. In a multi-rank DDP/FSDP run `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce **incorrect** diagnostics on rank 0. Multi-process support lands in v0.next; see `docs/design.md` §11 for the upgrade path.
+- Single-process training only. In a multi-rank DDP/FSDP run `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce **incorrect** diagnostics on rank 0. Multi-process support is planned for a future release; see `docs/design.md` §11 for the upgrade path.
 
 ## License
 

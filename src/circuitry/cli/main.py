@@ -24,8 +24,8 @@ def _cmd_report(args: argparse.Namespace) -> int:
 def _cmd_scan(args: argparse.Namespace) -> int:
     # scan_run needs a model_factory which the CLI cannot conjure without a
     # user-supplied import path. Surface a clear error pointing to the
-    # programmatic API. v0.1.0 ships the CLI command shape; the
-    # `--model-factory dotted.path:fn` flag lands in v0.next.
+    # programmatic API. The `--model-factory dotted.path:fn` flag is planned
+    # for a future release.
     print(
         "circuitry scan: requires a model factory not yet exposed via the CLI.\n"
         "  Use circuitry.recorder.scan.scan_run(...) programmatically for now.\n"

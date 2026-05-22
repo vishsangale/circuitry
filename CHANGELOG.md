@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file. The format 
 ## [0.3.0] — 2026-05-21
 
 ### Removed
-- `circuitry.writers.wandb` and the `[wandb]` extras-gated dependency. No in-house consumers used it. `MetricWriter` protocol keeps any third-party logger a ~50-LOC subclass — re-addable if demand surfaces.
+- `circuitry.writers.wandb` and the `[wandb]` extras-gated dependency. The adapter had no known consumers. `MetricWriter` protocol keeps any third-party logger a ~50-LOC subclass — re-addable if demand surfaces.
 
 ### Changed
 - `Recorder(writer="wandb")` now raises `ValueError`. Allowed string values: `"tensorboard"`, `"jsonl"`, `"null"`. Pass a `MetricWriter` instance for anything else.
