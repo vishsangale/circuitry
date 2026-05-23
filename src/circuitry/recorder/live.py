@@ -606,16 +606,45 @@ class Recorder:
                 if self._lens_meta is None:
                     continue
                 from circuitry.core.lens import logit_lens_kl as _llk
-                # Sorted by block name to keep ordering deterministic.
-                block_outputs = sorted(ctx.activations.items())
+                # Derive d_model from the unembed weight. HF convention is
+                # (vocab, d_model) so d_model is the smaller dim; for the
+                # unusual square case we fall back to dim 1.
+                _W_raw = self._lens_meta.unembed
+                d_model_unembed = (
+                    _W_raw.shape[-1]
+                    if _W_raw.shape[0] >= _W_raw.shape[-1]
+                    else _W_raw.shape[0]
+                )
+                # Filter ctx.activations to those whose last dim matches
+                # d_model_unembed. This excludes gate inputs, attention
+                # patterns, and any other hook captures with non-residual
+                # dimensions (e.g. 6144-dim gate activations on Gemma 4).
+                # Sort by numeric layer index (not lexicographic) so that
+                # block_outputs[-1] is the true last layer regardless of
+                # digit count (e.g. layer 9 must not sort after layer 34).
+                import re as _re
+                def _layer_idx(_n: str) -> int:
+                    _m = _re.search(r'\.layers\.(\d+)(?:\.|$)', _n)
+                    return int(_m.group(1)) if _m else -1
+                block_outputs = sorted(
+                    ((k, v) for k, v in ctx.activations.items()
+                     if v.shape[-1] == d_model_unembed),
+                    key=lambda kv: (_layer_idx(kv[0]), kv[0]),
+                )
                 if not block_outputs:
+                    logger.warning(
+                        "circuitry: logit_lens_kl found no activations with "
+                        "last-dim matching unembed d_model=%d — skipping.",
+                        d_model_unembed,
+                    )
+                    self._lens_meta = None
                     continue
                 _last_name, last_x = block_outputs[-1]
                 with torch.inference_mode():
                     last_f32 = last_x.detach().to(torch.float32)
                     ln = self._lens_meta.layer_norm
                     last_normed = ln(last_f32) if ln is not None else last_f32
-                    W = self._lens_meta.unembed.to(torch.float32)
+                    W = _W_raw.to(torch.float32)
                     # unembed for HF is (vocab, d_model); transpose if needed.
                     if W.shape[-1] == last_normed.shape[-1]:
                         final_logits = last_normed @ W.t()

@@ -19,9 +19,9 @@ All notable changes to this project will be documented in this file. The format 
 - New hard dependency: `sae-lens >= 4.0.0`.
 
 ### Validation
-- Gemma 4 E2B on CPU with `--prefix model.language_model` (1 step): _wall-clock TBD by Task 14_; default recipe (no SAE) expected to land under 45 s vs v0.8's 39.6 s.
-- Gemma 2 2B with `google/gemma-scope-2b-pt-res` width-16k SAE at layer 8 (SAE opt-in): _delta TBD by Task 14_.
-- Test count: 157 (v0.8) → ~190 (v0.9 measured so far).
+- Gemma 4 E2B on CPU with `--prefix model.language_model` (1 step): **92.74 s** Phase-4 wall-clock (vs v0.8's 39.6 s; +134% due to `logit_lens_kl` + `induction_score` probe pass). Layer 0 logit_lens_kl = 0.299 nats; layer 34 = 3.894 nats; peak at layer 29 = 8.813 nats. `induction_score` and `attention_pattern_entropy` not captured: Gemma 4 uses SDPA attention which does not return per-head attention weights. Two fixes landed: (1) `logit_lens_kl` dispatcher filters activations by d_model to handle multimodal architectures (Gemma 4's gate tensors are wider than the residual stream); (2) layer sort order changed from lexicographic to numeric to ensure the reference distribution comes from the true final layer. Full findings in `docs/observations/2026-05-23-v0.9-gemma-validation.md`.
+- Gemma 2 2B with `gemma-scope-2b-pt-res` width-16k SAE at layer 8 (SAE opt-in): **71.86 s** vs **72.35 s** without SAE — overhead ≈ 0% (within noise) for one step on a 2B model. SAE recon_mse = 3130 on a 4-token sequence (non-representative input; l0 = 1293 vs expected ~71 at scale).
+- Test count: 157 (v0.8) → 194 (v0.9).
 
 ## [0.8.0] — 2026-05-22
 
