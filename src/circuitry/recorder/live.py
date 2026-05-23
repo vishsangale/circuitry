@@ -58,6 +58,17 @@ class _AttnMeta:
         self.head_dim = head_dim
 
 
+class _LensMeta:
+    """Resolved unembed + final-LN for logit_lens_kl dispatch.
+
+    Built once at attach() time. ``None`` means we couldn't resolve it.
+    """
+    def __init__(self, unembed: torch.Tensor,
+                 layer_norm: nn.Module | None) -> None:
+        self.unembed = unembed
+        self.layer_norm = layer_norm
+
+
 def _scalarize(value: float | torch.Tensor) -> float:
     """Coerce a Python number or 0-d Tensor to a plain Python ``float``.
 
@@ -129,6 +140,7 @@ class Recorder:
         self._inventory: ModelInventory | None = None
         self._param_for_module: dict[str, str] = {}
         self._attn_meta: _AttnMeta | None = None
+        self._lens_meta: _LensMeta | None = None
         self._noop = False
         self._current_step: int = -1
 
@@ -194,6 +206,28 @@ class Recorder:
                     head_dim=int(head_dim),
                 )
                 break
+
+        if "logit_lens_kl" in self.recipe.activation_diagnostics:
+            try:
+                emb = self.model.get_output_embeddings()
+            except (AttributeError, NotImplementedError):
+                emb = None
+            unembed_w = getattr(emb, "weight", None) if emb is not None else None
+            if isinstance(unembed_w, torch.Tensor):
+                ln = (
+                    getattr(getattr(self.model, "model", None), "norm", None)
+                    or getattr(getattr(self.model, "transformer", None), "ln_f", None)
+                    or getattr(self.model, "norm", None)
+                    or getattr(self.model, "ln_f", None)
+                )
+                self._lens_meta = _LensMeta(unembed=unembed_w.detach(),
+                                            layer_norm=ln)
+            else:
+                logger.warning(
+                    "circuitry: logit_lens_kl requested but model has no "
+                    "resolvable output embedding (get_output_embeddings or "
+                    ".lm_head) — skipping"
+                )
 
         name_to_mod = dict(self.model.named_modules())
         matched_lines: list[str] = []
@@ -466,6 +500,34 @@ class Recorder:
                             f"activation/gate_stats/{mod_name}/{sub}",
                             val, ctx.step,
                         )
+                continue
+            if name == "logit_lens_kl":
+                if self._lens_meta is None:
+                    continue
+                from circuitry.core.lens import logit_lens_kl as _llk
+                # Sorted by block name to keep ordering deterministic.
+                block_outputs = sorted(ctx.activations.items())
+                if not block_outputs:
+                    continue
+                _last_name, last_x = block_outputs[-1]
+                with torch.inference_mode():
+                    last_f32 = last_x.detach().to(torch.float32)
+                    ln = self._lens_meta.layer_norm
+                    last_normed = ln(last_f32) if ln is not None else last_f32
+                    W = self._lens_meta.unembed.to(torch.float32)
+                    # unembed for HF is (vocab, d_model); transpose if needed.
+                    if W.shape[-1] == last_normed.shape[-1]:
+                        final_logits = last_normed @ W.t()
+                    else:
+                        final_logits = last_normed @ W
+                for mod_name, x in block_outputs:
+                    kl = _llk(
+                        x, self._lens_meta.unembed, final_logits,
+                        layer_norm=self._lens_meta.layer_norm,
+                    )
+                    self._writer.add_scalar(
+                        f"activation/logit_lens_kl/{mod_name}", kl, ctx.step,
+                    )
                 continue
             fn = _ACT_DIAGS.get(name)
             if fn is None:

@@ -486,3 +486,57 @@ def test_gate_stats_emits_three_subscalars_per_module(tmp_path):
     assert any("activation/gate_stats/mlp.down_proj/frac_active" in t for t in tags)
     assert any("activation/gate_stats/mlp.down_proj/mean_abs" in t for t in tags)
     assert any("activation/gate_stats/mlp.down_proj/std" in t for t in tags)
+
+
+def test_logit_lens_kl_is_dispatched_per_block(tmp_path):
+    """Recorder wires logit_lens_kl: tags like
+    activation/logit_lens_kl/<block_name> appear in the JSONL output."""
+    import torch
+    import torch.nn as nn
+
+    from circuitry import HookPoint, Recipe, Recorder, TensorSource
+
+    d_model, vocab = 8, 16
+    n_blocks = 2
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lin = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x):
+            return x + self.lin(x)
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layers = nn.ModuleList([_Block() for _ in range(n_blocks)])
+            self.ln_f = nn.LayerNorm(d_model)
+            self.lm_head = nn.Linear(d_model, vocab, bias=False)
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+        def forward(self, x):
+            for b in self.layers:
+                x = b(x)
+            return self.lm_head(self.ln_f(x))
+
+    model = _Tiny()
+    recipe = Recipe(
+        name="lens_only",
+        hook_points=[
+            HookPoint(source=TensorSource.OUTPUT, pattern=r"layers\.\d+$"),
+        ],
+        activation_diagnostics=["logit_lens_kl"],
+    )
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl", every_n_steps=1, strict=False)
+    rec.attach()
+    inp = torch.randn(1, 3, d_model)
+    model(inp)  # populate captured activations
+    rec.step(0)
+    rec.detach()
+
+    out = (tmp_path / "metrics.jsonl").read_text()
+    assert "activation/logit_lens_kl/layers.0" in out
+    assert "activation/logit_lens_kl/layers.1" in out
