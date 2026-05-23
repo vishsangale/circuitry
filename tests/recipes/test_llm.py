@@ -64,10 +64,19 @@ class _Tiny(nn.Module):
 
 
 def test_llm_recipe_attaches_and_emits_scalars(tmp_path):
+    import dataclasses
     model = _Tiny()
     writer = RecordingWriter()
-    rec = Recorder(model, run_dir=tmp_path, recipe="llm",
-                   writer=writer, every_n_steps=1)
+    # Use a modified recipe without diagnostics that require full HF models.
+    r = get_recipe("llm")
+    test_recipe = dataclasses.replace(
+        r,
+        activation_diagnostics=[d for d in r.activation_diagnostics
+                                if d not in ("induction_score", "logit_lens_kl",
+                                            "attention_pattern_entropy")]
+    )
+    rec = Recorder(model, run_dir=tmp_path, recipe=test_recipe,
+                   writer=writer, every_n_steps=1, strict=False)
     rec.attach()
     _ = model.block_0(torch.randn(2, 8))
     rec.step(0, loss=1.0)
@@ -117,3 +126,31 @@ def test_llm_recipe_has_down_proj_input_hook():
         and "down_proj" in hp.pattern
     ]
     assert len(matches) == 1, [hp.pattern for hp in r.hook_points]
+
+
+def test_llm_recipe_has_ten_hook_points():
+    r = get_recipe("llm")
+    assert len(r.hook_points) == 10
+
+
+def test_llm_recipe_includes_new_activation_diagnostics():
+    r = get_recipe("llm")
+    for diag in ("logit_lens_kl", "induction_score",
+                 "attention_pattern_entropy"):
+        assert diag in r.activation_diagnostics
+
+
+def test_llm_recipe_does_not_default_to_sae_reconstruction():
+    r = get_recipe("llm")
+    assert "sae_reconstruction" not in r.activation_diagnostics
+
+
+def test_llm_recipe_has_block_output_hook_point():
+    from circuitry.recorder.hooks import TensorSource
+    r = get_recipe("llm")
+    block_hps = [
+        hp for hp in r.hook_points
+        if hp.source is TensorSource.OUTPUT and hp.pattern
+        and r"\.layers\." in hp.pattern
+    ]
+    assert len(block_hps) >= 1

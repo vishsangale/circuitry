@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 
 import torch
 import torch.nn as nn
 
 from circuitry import Recorder, build_report, scan_run
+from circuitry.recipes import get_recipe
 from circuitry.writers.jsonl import JsonlWriter
 
 
@@ -74,8 +76,17 @@ def test_e2e_pipeline(tmp_path: pathlib.Path):
     ckpts = tmp_path / "checkpoints"
     ckpts.mkdir()
 
-    rec = Recorder(model, run_dir=tmp_path, recipe="llm",
-                   writer=JsonlWriter(tmp_path), every_n_steps=2)
+    # Use a modified recipe without diagnostics that require full HF models.
+    r = get_recipe("llm")
+    test_recipe = dataclasses.replace(
+        r,
+        activation_diagnostics=[d for d in r.activation_diagnostics
+                                if d not in ("induction_score", "logit_lens_kl",
+                                            "attention_pattern_entropy")]
+    )
+
+    rec = Recorder(model, run_dir=tmp_path, recipe=test_recipe,
+                   writer=JsonlWriter(tmp_path), every_n_steps=2, strict=False)
     rec.attach()
     for step in range(6):
         tokens = torch.randint(0, 50, (4, 8))
@@ -89,9 +100,9 @@ def test_e2e_pipeline(tmp_path: pathlib.Path):
             torch.save(model.state_dict(), ckpts / f"step{step:09d}.pt")
     rec.detach()
 
-    scan_run(run_dir=tmp_path, recipe="llm",
+    scan_run(run_dir=tmp_path, recipe=test_recipe,
              out_dir=tmp_path / "tb_retro",
-             model_factory=lambda: _Tiny())
+             model_factory=lambda: _Tiny(), strict=False)
 
     out = build_report(run_dir=tmp_path, out_path=tmp_path / "inspect" / "report.md")
     md = out.read_text()

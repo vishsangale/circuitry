@@ -3,6 +3,7 @@ so it runs in seconds on CI. The 50M-param run is opt-in via the script."""
 
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import pytest
@@ -10,6 +11,7 @@ import torch
 import torch.nn as nn
 
 from circuitry import Recorder
+from circuitry.recipes import get_recipe
 
 
 class _Attn(nn.Module):
@@ -96,8 +98,18 @@ def test_overhead_under_2x(tmp_path, benchmark):
     scripts/bench_50m.py, not enforceable on tiny tests."""
     model = _Small()
     baseline = _train(_Small(), 20, rec=None)
-    rec = Recorder(model, run_dir=tmp_path, recipe="llm",
-                   writer="null", every_n_steps=5)
+
+    # Use a modified recipe without diagnostics that require full HF models.
+    r = get_recipe("llm")
+    test_recipe = dataclasses.replace(
+        r,
+        activation_diagnostics=[d for d in r.activation_diagnostics
+                                if d not in ("induction_score", "logit_lens_kl",
+                                            "attention_pattern_entropy")]
+    )
+
+    rec = Recorder(model, run_dir=tmp_path, recipe=test_recipe,
+                   writer="null", every_n_steps=5, strict=False)
     instrumented = benchmark(_train, model, 20, rec)
     assert instrumented < baseline * 5.0, (
         f"overhead {instrumented/baseline:.2f}x — investigate"

@@ -36,6 +36,7 @@ def scan_run(
     out_dir: str | pathlib.Path,
     model_factory: Callable[[], nn.Module],
     writer: MetricWriter | str = "tensorboard",
+    strict: bool = True,
 ) -> None:
     """Replay each checkpoint through the recipe's weight diagnostics.
 
@@ -46,6 +47,9 @@ def scan_run(
     ``writer`` defaults to TensorBoard for back-compatibility; pass
     ``"jsonl"`` (or a custom ``MetricWriter`` instance) to make the scan
     output consumable by ``build_report``.
+
+    ``strict`` controls whether unmatched HookPoints cause an error; see
+    ``Recorder`` for details.
     """
     run_dir = pathlib.Path(run_dir)
     out_dir = pathlib.Path(out_dir)
@@ -59,7 +63,7 @@ def scan_run(
     model = model_factory()
     resolved_writer = _resolve_writer(writer, out_dir)
     rec = Recorder(model, run_dir=out_dir, recipe=recipe,
-                   writer=resolved_writer, every_n_steps=1)
+                   writer=resolved_writer, every_n_steps=1, strict=strict)
     rec.attach()
     try:
         for step, ckpt_path in ckpts:
