@@ -131,3 +131,63 @@ def test_grad_global_total_norm_always_inline(tmp_path):
     # Hero section header and row are present inline.
     assert "## grad/global" in out
     assert "`total_norm`" in out
+
+
+def test_logit_lens_kl_is_hero_section(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+        _scalar("activation/logit_lens_kl/layers.0", 0, 0.5),
+        _scalar("weight/kurtosis/bar", 0, 3.0),
+    ])
+    out = build_report(tmp_path).read_text()
+    assert "## activation/logit_lens_kl" in out
+    if "<details>" in out:
+        details_start = out.index("<details>")
+        details_end = out.index("</details>", details_start)
+        block = out[details_start:details_end]
+        assert "activation/logit_lens_kl" not in block
+
+
+def test_induction_score_is_hero_section(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+        _scalar("activation/induction_score/layers.0.self_attn/head_0", 0, 0.8),
+        _scalar("weight/kurtosis/bar", 0, 3.0),
+    ])
+    out = build_report(tmp_path).read_text()
+    assert "## activation/induction_score" in out
+    if "<details>" in out:
+        details_start = out.index("<details>")
+        details_end = out.index("</details>", details_start)
+        block = out[details_start:details_end]
+        assert "activation/induction_score" not in block
+
+
+def test_attention_pattern_entropy_is_hero_section(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+        _scalar("activation/attention_pattern_entropy/layers.0.self_attn/head_0", 0, 1.2),
+        _scalar("weight/kurtosis/bar", 0, 3.0),
+    ])
+    out = build_report(tmp_path).read_text()
+    assert "## activation/attention_pattern_entropy" in out
+    if "<details>" in out:
+        details_start = out.index("<details>")
+        details_end = out.index("</details>", details_start)
+        block = out[details_start:details_end]
+        assert "activation/attention_pattern_entropy" not in block
+
+
+def test_sae_is_hero_section(tmp_path):
+    _write_metrics(tmp_path, [
+        _scalar("weight/effective_rank/foo", 0, 1.0),
+        _scalar("activation/sae/layers.8.mlp/recon_mse", 0, 0.05),
+        _scalar("weight/kurtosis/bar", 0, 3.0),
+    ])
+    out = build_report(tmp_path).read_text()
+    assert "## activation/sae" in out
+    if "<details>" in out:
+        details_start = out.index("<details>")
+        details_end = out.index("</details>", details_start)
+        block = out[details_start:details_end]
+        assert "activation/sae" not in block

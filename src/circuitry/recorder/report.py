@@ -27,6 +27,11 @@ HERO_SECTIONS = frozenset({
     "activation/dead_fraction",
     "activation/gate_stats",
     "grad/global",
+    # v0.9 additions:
+    "activation/logit_lens_kl",
+    "activation/induction_score",
+    "activation/attention_pattern_entropy",
+    "activation/sae",
 })
 
 GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
