@@ -175,3 +175,106 @@ def test_step_rejects_multi_element_tensor_loss(tmp_path):
     with pytest.raises(ValueError, match="0-d / size-1 Tensor"):
         rec.step(0, loss=torch.tensor([1.0, 2.0]))
     rec.detach()
+
+
+def test_attention_pattern_entropy_uses_main_pass_not_probe(tmp_path):
+    """Spec §5: attention_pattern_entropy must source from the user's main
+    forward pass (real data), not the induction-score probe.
+
+    We assert this by checking that the entropy value matches what the
+    user's forward pass produces — not what a synthetic probe produces."""
+    import json
+
+    import pytest
+    import torch
+    import torch.nn as nn
+
+    from circuitry import HookPoint, Recipe, Recorder, TensorSource
+
+    d_model = 8
+    n_heads = 2
+
+    class _Attn(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = nn.Linear(d_model, d_model, bias=False)
+            self.k_proj = nn.Linear(d_model, d_model, bias=False)
+            self.v_proj = nn.Linear(d_model, d_model, bias=False)
+            self.o_proj = nn.Linear(d_model, d_model, bias=False)
+            self.last_attn: torch.Tensor | None = None
+
+        def forward(self, x, output_attentions: bool = False):
+            B, T, D = x.shape
+            H = n_heads
+            HD = D // H
+            q = self.q_proj(x).view(B, T, H, HD).transpose(1, 2)
+            k = self.k_proj(x).view(B, T, H, HD).transpose(1, 2)
+            v = self.v_proj(x).view(B, T, H, HD).transpose(1, 2)
+            scores = (q @ k.transpose(-2, -1)) / (HD ** 0.5)
+            attn = scores.softmax(dim=-1)
+            self.last_attn = attn.detach().clone()
+            out = self.o_proj((attn @ v).transpose(1, 2).reshape(B, T, D))
+            if output_attentions:
+                return out, attn
+            return out
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.self_attn = _Attn()
+
+        def forward(self, x, output_attentions: bool = False):
+            return self.self_attn(x, output_attentions=output_attentions)
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tok_embed = nn.Embedding(100, d_model)
+            self.layers = nn.ModuleList([_Block()])
+
+        def get_output_embeddings(self):
+            return None
+
+        def forward(self, input_ids, output_attentions: bool = False):
+            x = self.tok_embed(input_ids)
+            for layer in self.layers:
+                x = layer(x, output_attentions=output_attentions)
+            return x
+
+    model = _Tiny()
+    recipe = Recipe(
+        name="entropy_only",
+        hook_points=[
+            HookPoint(source=TensorSource.OUTPUT, pattern=r"layers\.\d+\.self_attn$"),
+        ],
+        activation_diagnostics=["attention_pattern_entropy"],
+    )
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl", every_n_steps=1, strict=False)
+    rec.attach()
+
+    # Distinctive real-data input so we can recognise its attention pattern.
+    torch.manual_seed(42)
+    real_input = torch.randint(0, 100, (1, 7), dtype=torch.long)
+    model(real_input)
+    real_attn_snapshot = model.layers[0].self_attn.last_attn.clone()
+
+    rec.step(0)
+    rec.detach()
+
+    # The entropy logged should match the entropy of the captured real-data
+    # attention, NOT the entropy of any synthetic probe sequence.
+    from circuitry.core.attention import attention_pattern_entropy
+    expected_entropies = attention_pattern_entropy(real_attn_snapshot)
+
+    out = (tmp_path / "metrics.jsonl").read_text()
+    head_vals: dict[int, float] = {}
+    for line in out.splitlines():
+        rec_dict = json.loads(line)
+        tag = rec_dict.get("tag", "")
+        if "attention_pattern_entropy/layers.0.self_attn/head_" in tag:
+            idx = int(tag.rsplit("_", 1)[-1])
+            head_vals[idx] = rec_dict["value"]
+
+    assert set(head_vals) == {0, 1}
+    for i in (0, 1):
+        assert head_vals[i] == pytest.approx(expected_entropies[i], abs=1e-4)

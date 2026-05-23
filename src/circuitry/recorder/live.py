@@ -142,6 +142,7 @@ class Recorder:
         self._attn_meta: _AttnMeta | None = None
         self._lens_meta: _LensMeta | None = None
         self._induction_probe: torch.Tensor | None = None
+        self._main_pass_attn: dict[str, torch.Tensor] = {}
         self._noop = False
         self._current_step: int = -1
 
@@ -382,6 +383,45 @@ class Recorder:
                     handle = name_to_mod[n].register_forward_pre_hook(self._mk_pre_hook(n))
                     self._hook_handles.append(handle)
             # WEIGHT / GRAD are pulled in step() directly from the inventory.
+
+        # If attention_pattern_entropy is requested, install a forward-pre-hook
+        # on the model that injects output_attentions=True into kwargs (HF
+        # idiom) so each self_attn returns (out, attn_weights, ...). We then
+        # capture attn_weights from matched self_attn modules into
+        # self._main_pass_attn.
+        if "attention_pattern_entropy" in self.recipe.activation_diagnostics:
+            def _inject_kwargs(_mod, args, kwargs):
+                if "output_attentions" not in kwargs:
+                    kwargs["output_attentions"] = True
+                return args, kwargs
+            handle = self.model.register_forward_pre_hook(
+                _inject_kwargs, with_kwargs=True,
+            )
+            self._hook_handles.append(handle)
+
+            attn_modules: list[str] = []
+            for idx, hp in enumerate(self.recipe.hook_points):
+                if hp.source is not TensorSource.OUTPUT:
+                    continue
+                for mn in self._matched[idx]:
+                    short = mn.rsplit(".", 1)[-1]
+                    if short in ("self_attn", "attn", "attention"):
+                        attn_modules.append(mn)
+
+            def _mk_attn_capture(mn: str, _store=self._main_pass_attn):
+                def _h(_mod, _inp, out):
+                    if isinstance(out, tuple) and len(out) >= 2 and isinstance(
+                        out[1], torch.Tensor
+                    ):
+                        _store[mn] = out[1].detach()
+                return _h
+
+            for mn in attn_modules:
+                mod = name_to_mod.get(mn)
+                if mod is None:
+                    continue
+                handle = mod.register_forward_hook(_mk_attn_capture(mn))
+                self._hook_handles.append(handle)
 
     def _mk_fwd_hook(self, name: str):
         # Hooks always capture (cheap detach); step() decides what to consume.
@@ -626,6 +666,18 @@ class Recorder:
                             s, ctx.step,
                         )
                 continue
+            if name == "attention_pattern_entropy":
+                from circuitry.core.attention import (
+                    attention_pattern_entropy as _ape,
+                )
+                for mn, attn in self._main_pass_attn.items():
+                    ents = _ape(attn)
+                    for i, e in enumerate(ents):
+                        self._writer.add_scalar(
+                            f"activation/attention_pattern_entropy/{mn}/head_{i}",
+                            e, ctx.step,
+                        )
+                continue
             fn = _ACT_DIAGS.get(name)
             if fn is None:
                 logger.warning("circuitry: unknown activation diagnostic %r — skipping", name)
@@ -660,3 +712,4 @@ class Recorder:
                         self._writer.add_histogram(f"custom/{tag}", val, ctx.step)
                 else:
                     self._writer.add_scalar(f"custom/{tag}", float(val), ctx.step)
+        self._main_pass_attn.clear()
