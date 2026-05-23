@@ -8,14 +8,12 @@
 
 from __future__ import annotations
 
-import dataclasses
 import pathlib
 
 import torch
 import torch.nn as nn
 
 from circuitry import Recorder, build_report, scan_run
-from circuitry.recipes import get_recipe
 from circuitry.writers.jsonl import JsonlWriter
 
 
@@ -69,21 +67,15 @@ class _Mlp(nn.Module):
         return self.down_proj(self.gate_proj(x) * self.up_proj(x))
 
 
-def test_e2e_pipeline(tmp_path: pathlib.Path):
+def test_e2e_pipeline(tmp_path: pathlib.Path, llm_recipe_no_hf_diagnostics):
     torch.manual_seed(0)
     model = _Tiny()
     opt = torch.optim.Adam(model.parameters(), lr=1e-2)
     ckpts = tmp_path / "checkpoints"
     ckpts.mkdir()
 
-    # Use a modified recipe without diagnostics that require full HF models.
-    r = get_recipe("llm")
-    test_recipe = dataclasses.replace(
-        r,
-        activation_diagnostics=[d for d in r.activation_diagnostics
-                                if d not in ("induction_score", "logit_lens_kl",
-                                            "attention_pattern_entropy")]
-    )
+    # Tiny stand-in model: use the llm recipe minus HF-only diagnostics.
+    test_recipe = llm_recipe_no_hf_diagnostics
 
     rec = Recorder(model, run_dir=tmp_path, recipe=test_recipe,
                    writer=JsonlWriter(tmp_path), every_n_steps=2, strict=False)

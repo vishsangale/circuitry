@@ -16,8 +16,9 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
   self_attn / mlp / layernorm outputs, not just block outputs). Should filter by
   HookPoint `source` so only block (residual-stream) outputs feed the lens.
   Today the d_model filter masks crashes but still does wasted work and may mix sources.
-- [ ] **[debt] Test-filter DRY violation.** The filtered 3-diagnostic list is duplicated
-  across e2e and perf tests. Factor into a shared fixture/constant.
+- [x] **[debt] Test-filter DRY violation.** Done — extracted to a shared
+  `llm_recipe_no_hf_diagnostics` fixture + `HF_ONLY_ACTIVATION_DIAGNOSTICS` constant in
+  new `tests/conftest.py`; e2e + perf tests consume the fixture. 194 tests pass, ruff clean.
 - [ ] **[bug] SDPA silently emits zero induction/entropy tags.** On SDPA-default HF models
   (Gemma 2/4 and most production models) `induction_score` and `attention_pattern_entropy`
   emit zero tags because SDPA doesn't return per-head weights. Workaround is
