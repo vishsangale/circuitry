@@ -141,6 +141,7 @@ class Recorder:
         self._param_for_module: dict[str, str] = {}
         self._attn_meta: _AttnMeta | None = None
         self._lens_meta: _LensMeta | None = None
+        self._induction_probe: torch.Tensor | None = None
         self._noop = False
         self._current_step: int = -1
 
@@ -228,6 +229,38 @@ class Recorder:
                     "resolvable output embedding (get_output_embeddings or "
                     ".lm_head) — skipping"
                 )
+
+        if "induction_score" in self.recipe.activation_diagnostics:
+            cfg = getattr(self.model, "config", None)
+            text_cfg = getattr(cfg, "text_config", None)
+            vocab = None
+            for source in (text_cfg, cfg):
+                if source is None:
+                    continue
+                vocab = getattr(source, "vocab_size", None)
+                if vocab is not None:
+                    break
+            if vocab is None:
+                emb = self.model.get_input_embeddings() if hasattr(
+                    self.model, "get_input_embeddings") else None
+                if emb is not None:
+                    vocab = int(emb.num_embeddings)
+            if vocab is None:
+                # Last resort: find any Embedding in named_modules (covers
+                # models that don't implement get_input_embeddings).
+                for _mn, _mod in self.model.named_modules():
+                    if isinstance(_mod, nn.Embedding):
+                        vocab = int(_mod.num_embeddings)
+                        break
+            if vocab is None:
+                logger.warning(
+                    "circuitry: induction_score requested but cannot resolve "
+                    "vocab_size — skipping"
+                )
+            else:
+                n = self.recipe.induction_probe_seq_len
+                half = torch.randint(0, vocab, (1, n), dtype=torch.long)
+                self._induction_probe = torch.cat([half, half], dim=1)
 
         name_to_mod = dict(self.model.named_modules())
         matched_lines: list[str] = []
@@ -528,6 +561,70 @@ class Recorder:
                     self._writer.add_scalar(
                         f"activation/logit_lens_kl/{mod_name}", kl, ctx.step,
                     )
+                continue
+            if name == "induction_score":
+                if self._induction_probe is None:
+                    continue
+                from circuitry.core.attention import induction_score as _is
+                # Find matched self_attn modules from the hook points.
+                self_attn_modules: dict[str, nn.Module] = {}
+                name_to_mod = dict(self.model.named_modules())
+                for idx, hp in enumerate(self.recipe.hook_points):
+                    if hp.source is not TensorSource.OUTPUT:
+                        continue
+                    for mn in self._matched[idx]:
+                        mod = name_to_mod.get(mn)
+                        if mod is None:
+                            continue
+                        short = mn.rsplit(".", 1)[-1]
+                        if short in ("self_attn", "attn", "attention"):
+                            self_attn_modules[mn] = mod
+                if not self_attn_modules:
+                    continue
+                # Capture attn_weights from each self_attn during probe pass.
+                captured: dict[str, torch.Tensor] = {}
+
+                def _mk_capture(mn: str, _cap: dict[str, torch.Tensor] = captured):
+                    def _h(_mod, _inp, hook_out):
+                        if (
+                            isinstance(hook_out, tuple)
+                            and len(hook_out) >= 2
+                            and isinstance(hook_out[1], torch.Tensor)
+                        ):
+                            _cap[mn] = hook_out[1].detach()
+                    return _h
+
+                handles = [
+                    mod.register_forward_hook(_mk_capture(mn))
+                    for mn, mod in self_attn_modules.items()
+                ]
+                try:
+                    probe_dev = next(self.model.parameters()).device
+                    probe = self._induction_probe.to(probe_dev)
+                    with torch.inference_mode():
+                        try:
+                            self.model(probe, output_attentions=True)
+                        except TypeError:
+                            self.model(probe)
+                finally:
+                    for h in handles:
+                        h.remove()
+                for mn, attn in captured.items():
+                    try:
+                        scores = _is(
+                            attn,
+                            seq_len_repeat=self.recipe.induction_probe_seq_len,
+                        )
+                    except ValueError as e:
+                        logger.warning(
+                            "circuitry: induction_score on %s failed: %s", mn, e,
+                        )
+                        continue
+                    for i, s in enumerate(scores):
+                        self._writer.add_scalar(
+                            f"activation/induction_score/{mn}/head_{i}",
+                            s, ctx.step,
+                        )
                 continue
             fn = _ACT_DIAGS.get(name)
             if fn is None:

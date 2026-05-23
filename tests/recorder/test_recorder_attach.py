@@ -540,3 +540,77 @@ def test_logit_lens_kl_is_dispatched_per_block(tmp_path):
     out = (tmp_path / "metrics.jsonl").read_text()
     assert "activation/logit_lens_kl/layers.0" in out
     assert "activation/logit_lens_kl/layers.1" in out
+
+
+def test_induction_score_runs_synthetic_probe_pass(tmp_path):
+    """Recorder wires induction_score: tags
+    activation/induction_score/<block_name>/head_<i> appear in JSONL."""
+    import torch.nn as nn
+
+    from circuitry import HookPoint, Recipe, Recorder, TensorSource
+
+    d_model = 8
+    n_heads = 2
+
+    class _Attn(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = nn.Linear(d_model, d_model, bias=False)
+            self.k_proj = nn.Linear(d_model, d_model, bias=False)
+            self.v_proj = nn.Linear(d_model, d_model, bias=False)
+            self.o_proj = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x, output_attentions: bool = False):
+            B, T, D = x.shape
+            H = n_heads
+            HD = D // H
+            q = self.q_proj(x).view(B, T, H, HD).transpose(1, 2)
+            k = self.k_proj(x).view(B, T, H, HD).transpose(1, 2)
+            v = self.v_proj(x).view(B, T, H, HD).transpose(1, 2)
+            scores = (q @ k.transpose(-2, -1)) / (HD ** 0.5)
+            attn = scores.softmax(dim=-1)
+            out = self.o_proj((attn @ v).transpose(1, 2).reshape(B, T, D))
+            if output_attentions:
+                return out, attn
+            return out
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.self_attn = _Attn()
+
+        def forward(self, x, output_attentions: bool = False):
+            return self.self_attn(x, output_attentions=output_attentions)
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tok_embed = nn.Embedding(100, d_model)
+            self.layers = nn.ModuleList([_Block()])
+
+        def get_output_embeddings(self):
+            return None  # no lens here
+
+        def forward(self, input_ids, output_attentions: bool = False):
+            x = self.tok_embed(input_ids)
+            for layer in self.layers:
+                x = layer(x, output_attentions=output_attentions)
+            return x
+
+    model = _Tiny()
+    recipe = Recipe(
+        name="induct_only",
+        hook_points=[
+            HookPoint(source=TensorSource.OUTPUT, pattern=r"layers\.\d+\.self_attn$"),
+        ],
+        activation_diagnostics=["induction_score"],
+        induction_probe_seq_len=25,
+    )
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl", every_n_steps=1, strict=False)
+    rec.attach()
+    rec.step(0)
+    rec.detach()
+
+    out = (tmp_path / "metrics.jsonl").read_text()
+    assert "activation/induction_score/layers.0.self_attn/head_0" in out
+    assert "activation/induction_score/layers.0.self_attn/head_1" in out
