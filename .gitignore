@@ -36,6 +36,9 @@ htmlcov/
 .vscode/
 *.iml
 
+# Claude Code local tooling
+.claude/
+
 # Scratch
 scratch/
 tmp/
