@@ -69,4 +69,5 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
   artifacts in `docs/v0.9-research/` are retained.
 - [ ] **[hygiene] Decide fate of `latent-superpowers-inspect` archival branch.** Lives on
   `feat/inspect-checkpoint-skill`, not main; `pre-circuitry-extraction` tag preserves rollback.
-  User-discretionary merge or delete.
+  **Deferred by decision (2026-05-23): leave as-is, revisit later** — out of scope for circuitry
+  repo work; the tag already preserves rollback.
