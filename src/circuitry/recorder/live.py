@@ -143,6 +143,7 @@ class Recorder:
         self._lens_meta: _LensMeta | None = None
         self._induction_probe: torch.Tensor | None = None
         self._main_pass_attn: dict[str, torch.Tensor] = {}
+        self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
 
@@ -423,6 +424,33 @@ class Recorder:
                 handle = mod.register_forward_hook(_mk_attn_capture(mn))
                 self._hook_handles.append(handle)
 
+        # Load SAEs declared in recipe.sae_checkpoints. Loading is cheap
+        # (one HF download per checkpoint, cached afterwards); the per-step
+        # encode+decode cost is what's gated by adding "sae_reconstruction"
+        # to activation_diagnostics.
+        sae_ckpts = self.recipe.sae_checkpoints or {}
+        if sae_ckpts:
+            import re
+
+            from circuitry.sae.loader import load_sae
+            module_names: list[str] = []
+            for idx, hp in enumerate(self.recipe.hook_points):
+                if hp.source is TensorSource.OUTPUT:
+                    module_names.extend(self._matched[idx])
+            device = str(next(self.model.parameters()).device)
+            for pat, (release, sae_id) in sae_ckpts.items():
+                rx = re.compile(pat)
+                matched = [mn for mn in module_names if rx.fullmatch(mn)]
+                if not matched:
+                    logger.warning(
+                        "circuitry: sae_checkpoints pattern %r matched 0 "
+                        "hooked OUTPUT modules", pat,
+                    )
+                    continue
+                sae = load_sae(release, sae_id, device=device)
+                for mn in matched:
+                    self._saes[mn] = sae
+
     def _mk_fwd_hook(self, name: str):
         # Hooks always capture (cheap detach); step() decides what to consume.
         # Gating the hook itself on `_current_step` is broken: forward runs
@@ -676,6 +704,20 @@ class Recorder:
                         self._writer.add_scalar(
                             f"activation/attention_pattern_entropy/{mn}/head_{i}",
                             e, ctx.step,
+                        )
+                continue
+            if name == "sae_reconstruction":
+                if not self._saes:
+                    continue
+                from circuitry.sae.metrics import sae_reconstruction_error
+                for mn, x in ctx.activations.items():
+                    sae = self._saes.get(mn)
+                    if sae is None:
+                        continue
+                    out = sae_reconstruction_error(x, sae)
+                    for sub, val in out.items():
+                        self._writer.add_scalar(
+                            f"activation/sae/{mn}/{sub}", val, ctx.step,
                         )
                 continue
             fn = _ACT_DIAGS.get(name)

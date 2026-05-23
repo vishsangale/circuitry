@@ -614,3 +614,70 @@ def test_induction_score_runs_synthetic_probe_pass(tmp_path):
     out = (tmp_path / "metrics.jsonl").read_text()
     assert "activation/induction_score/layers.0.self_attn/head_0" in out
     assert "activation/induction_score/layers.0.self_attn/head_1" in out
+
+
+def test_sae_reconstruction_dispatcher_emits_five_keys(tmp_path):
+    """Spec §5: 'sae_reconstruction' dispatch emits 5 scalars per hooked
+    module under activation/sae/<name>/{recon_mse,l0,l1,frac_alive,ce_recovered_proxy}."""
+    from unittest.mock import patch
+
+    import torch
+    import torch.nn as nn
+
+    from circuitry import HookPoint, Recipe, Recorder, TensorSource  # noqa: F401
+
+    d_model = 8
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mlp = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x):
+            return self.mlp(x)
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layers = nn.ModuleList([_Block()])
+
+        def get_output_embeddings(self):
+            return None
+
+        def forward(self, x):
+            return self.layers[0](x)
+
+    class _FakeSAE:
+        device = torch.device("cpu")
+        dtype = torch.float32
+
+        def encode(self, x):
+            return x  # identity features
+
+        def decode(self, feats):
+            return feats
+
+    fake = _FakeSAE()
+
+    with patch("circuitry.sae.loader.sae_lens") as mock_sae_lens:
+        mock_sae_lens.SAE.from_pretrained.return_value = (fake, {}, None)
+        model = _Tiny()
+        recipe = Recipe(
+            name="sae_only",
+            hook_points=[
+                HookPoint(source=TensorSource.OUTPUT, pattern=r"layers\.\d+\.mlp$"),
+            ],
+            activation_diagnostics=["sae_reconstruction"],
+            sae_checkpoints={r"layers\.\d+\.mlp$": ("rel-x", "id-y")},
+        )
+        rec = Recorder(model, tmp_path, recipe, writer="jsonl",
+                       every_n_steps=1, strict=False)
+        rec.attach()
+        model(torch.randn(1, 3, d_model))
+        rec.step(0)
+        rec.detach()
+
+    out = (tmp_path / "metrics.jsonl").read_text()
+    base = "activation/sae/layers.0.mlp"
+    for sub in ("recon_mse", "l0", "l1", "frac_alive", "ce_recovered_proxy"):
+        assert f"{base}/{sub}" in out, f"missing {sub} in {out!r}"
