@@ -22,6 +22,8 @@ class Recipe:
     expected_min_matches: dict[str, int] = field(default_factory=dict)
     enabled: dict[str, bool] = field(default_factory=dict)
     module_prefix: str | None = None
+    sae_checkpoints: dict[str, tuple[str, str]] | None = None
+    induction_probe_seq_len: int = 25
 
     def with_prefix(self, prefix: str) -> Recipe:
         """Return a new Recipe scoped to ``prefix``.
@@ -42,6 +44,29 @@ class Recipe:
             module_prefix=prefix,
             name=f"{self.name}@{prefix}",
         )
+
+    def with_sae(
+        self,
+        mapping: dict[str, tuple[str, str]],
+    ) -> Recipe:
+        """Return a new Recipe with sae_checkpoints replaced (latest-wins).
+
+        Mapping keys are regex patterns matched against resolved
+        fully-qualified module names (e.g. r".*\\.layers\\.8$"). Values are
+        (sae_lens_release, sae_id) pairs forwarded to load_sae(...).
+
+        **Does NOT modify activation_diagnostics.** Loading SAEs is cheap;
+        running them every step is not (an SAE encode+decode is two large
+        matmuls). Users must explicitly add "sae_reconstruction" to
+        ``activation_diagnostics`` to actually pay that cost.
+
+        **Interaction with `.with_prefix()`:** patterns in `mapping` are
+        matched against fully-qualified module names *after* any prefix
+        from `.with_prefix()` has been applied. Always call
+        `.with_prefix()` *before* `.with_sae()` so patterns are written
+        against the final module paths.
+        """
+        return dataclasses.replace(self, sae_checkpoints=mapping)
 
 
 _REGISTRY: dict[str, Recipe] = {}
