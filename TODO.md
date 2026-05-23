@@ -63,10 +63,10 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
 ## Repo hygiene
 
 - [x] **[hygiene] Add `.claude/` to `.gitignore`.** Done — `.claude/` ignored, no longer in `git status`.
-- [ ] **[hygiene] Resolve stale working-tree plans.** `docs/plan-v0.8.md` and
-  `docs/v0.9-research/.plan-mech-interp-tooling-2024-2026.md` (its ledger still shows all 6
-  questions "pending" though half shipped). Per CLAUDE.md, historical plans live in git history,
-  not the working tree — delete, or update the research ledger to reflect what shipped.
+- [x] **[hygiene] Resolve stale working-tree plans.** Done — deleted `docs/plan-v0.8.md`
+  (shipped v0.8 scaffolding) and `docs/v0.9-research/.plan-mech-interp-tooling-2024-2026.md`
+  (stale ledger). Both were untracked. The cited `lit-review.md` / `lit-review-provenance.md`
+  artifacts in `docs/v0.9-research/` are retained.
 - [ ] **[hygiene] Decide fate of `latent-superpowers-inspect` archival branch.** Lives on
   `feat/inspect-checkpoint-skill`, not main; `pre-circuitry-extraction` tag preserves rollback.
   User-discretionary merge or delete.
