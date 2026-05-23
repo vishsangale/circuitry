@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-05-23
+
+### Added
+- `circuitry.core.lens.logit_lens_kl(residual, unembed, final_logits, *, layer_norm=None)` — per-layer KL between the logit-lens projection of the residual stream and the model's final logits. Nostalgebraist 2020 logit lens.
+- `circuitry.core.attention.induction_score(attn_pattern, *, seq_len_repeat)` — Olsson et al. 2022 prefix-matching probability on a repeated-random-token probe, per head.
+- `circuitry.core.attention.attention_pattern_entropy(attn_pattern)` — per-head Shannon entropy (nats) of the attention distribution over keys.
+- `circuitry.sae` submodule: `load_sae(release, sae_id, device)` (thin wrapper over `sae_lens.SAE.from_pretrained`) + `sae_reconstruction_error(x, sae)` returning `{recon_mse, l0, l1, frac_alive, ce_recovered_proxy}`.
+- `Recipe.sae_checkpoints: dict[str, tuple[str, str]] | None` field, `Recipe.induction_probe_seq_len: int = 25` field, `Recipe.with_sae(mapping)` builder method.
+- Recorder dispatchers for `logit_lens_kl`, `induction_score`, `attention_pattern_entropy`, `sae_reconstruction`. `attention_pattern_entropy` sources from the user's main forward pass via `output_attentions=True` injection; `induction_score` uses a synthetic probe pass that runs exactly once per step shared across all hooked self_attn modules.
+- Report-renderer HERO_SECTIONS: `activation/logit_lens_kl`, `activation/induction_score`, `activation/attention_pattern_entropy`, `activation/sae`.
+- `scan_run` gains a `strict: bool = True` parameter (backwards-compatible) for consistency with `Recorder`.
+
+### Changed
+- Stock `llm` recipe grows from 9 to 10 HookPoints (adds block-output) and from 4 to 7 default activation diagnostics (adds logit_lens_kl, induction_score, attention_pattern_entropy). SAE remains opt-in: `Recipe.with_sae(...)` loads checkpoints but does NOT auto-append `"sae_reconstruction"` — user adds it to `activation_diagnostics` explicitly to incur per-step encode+decode cost.
+- New hard dependency: `sae-lens >= 4.0.0`.
+
+### Validation
+- Gemma 4 E2B on CPU with `--prefix model.language_model` (1 step): _wall-clock TBD by Task 14_; default recipe (no SAE) expected to land under 45 s vs v0.8's 39.6 s.
+- Gemma 2 2B with `google/gemma-scope-2b-pt-res` width-16k SAE at layer 8 (SAE opt-in): _delta TBD by Task 14_.
+- Test count: 157 (v0.8) → ~190 (v0.9 measured so far).
+
 ## [0.8.0] — 2026-05-22
 
 ### Added

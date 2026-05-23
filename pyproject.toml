@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "circuitry"
-version = "0.8.0"
+version = "0.9.0"
 description = "Mechanistic-interpretability diagnostics for PyTorch — live during training or post-hoc on a checkpoint (LLM / vision / recsys)."
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,7 @@ dependencies = [
     "torch>=2.1",
     "numpy>=1.24",
     "tensorboard>=2.14",
+    "sae-lens>=4.0.0",
 ]
 
 [project.optional-dependencies]

@@ -54,7 +54,11 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── activation.py
 │   │   ├── gradient.py
 │   │   ├── spectral.py
-│   │   └── lens.py         # future stretch
+│   │   ├── lens.py         # logit_lens_kl
+│   │   └── attention.py    # induction_score, attention_pattern_entropy
+│   ├── sae/                # v0.9: SAELens-backed SAE workflow
+│   │   ├── loader.py       # load_sae
+│   │   └── metrics.py      # sae_reconstruction_error
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
 │   │   ├── scan.py         # scan_run
@@ -123,6 +127,20 @@ gradient.signal_propagation_depth(grads_by_depth: list[Tensor]) -> int
 # spectral
 spectral.esd(W: Tensor, bins: int = 100) -> tuple[Tensor, Tensor]
 spectral.rank_trajectory(state_dicts: list[dict]) -> dict[str, list[float]]
+
+# lens (v0.9)
+from circuitry.core import lens
+lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, layer_norm=None) -> float
+
+# attention screening (v0.9)
+from circuitry.core import attention
+attention.induction_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]
+attention.attention_pattern_entropy(attn_pattern: Tensor) -> list[float]
+
+# SAE workflow (v0.9)
+from circuitry import sae
+sae.load_sae(release: str, sae_id: str, device: str = "cpu")
+sae.sae_reconstruction_error(x: Tensor, sae) -> dict[str, float]
 ```
 
 Invariants for everything in `core/`:
@@ -185,6 +203,8 @@ class Recipe:
 ```
 
 Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e.g. `get_recipe("llm").with_prefix("model.language_model")` for multimodal HF models). Returns a new `Recipe` via `dataclasses.replace`; the original is not mutated. Latest-wins: calling `.with_prefix("a").with_prefix("b")` yields `module_prefix="b"`. If `expected_min_matches` is set, lower the thresholds after scoping — whole-model counts don't hold after a prefix filter.
+
+Use `Recipe.with_sae(mapping)` (v0.9) to attach SAE checkpoints: `mapping` is a `dict[str, tuple[str, str]]` of `module_name → (release, sae_id)`. Returns a new `Recipe` with `sae_checkpoints` populated. SAE checkpoints are loaded lazily at `attach()` time; the user must also add `"sae_reconstruction"` to `activation_diagnostics` to incur per-step encode+decode cost.
 
 `HookPoint` supports three target specifications:
 
