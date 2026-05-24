@@ -122,6 +122,7 @@ activation.gate_stats(x: Tensor, eps: float = 1e-6) -> GateStats  # frac_active,
 
 # gradient-space
 gradient.grad_norm_per_module(grads: dict[str, Tensor]) -> dict[str, float]
+gradient.total_grad_norm(per_module_norms: dict[str, float]) -> float  # sqrt(sum of squares)
 gradient.signal_propagation_depth(grads_by_depth: list[Tensor]) -> int
 
 # spectral

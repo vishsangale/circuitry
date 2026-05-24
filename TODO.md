@@ -27,11 +27,10 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
   `grad_norm_per_module` (core primitive + diagnostic key + `gradient/grad_norm_per_module/<m>`
   tag); `vision` / `two_tower` recipes updated; design.md + CHANGELOG updated. Breaking
   tag-namespace change. 194 tests pass.
-- [ ] **[debt] Promote `norms_per_param`'s per-module compute into a core primitive.** Today
-  `grad_norm_per_module` is a pure `core/` primitive, but `norms_per_param`'s per-module-norm +
-  global-total logic is inlined in `recorder/live.py` (cuts against design.md's core-primitive
-  layering). Extract the pure compute into `core/gradient.py` and have the recorder call it;
-  consider unifying the two grad-norm diagnostics. (Split out from the rename above.)
+- [x] **[debt] Promote `norms_per_param`'s per-module compute into a core primitive.** Done —
+  added `core.gradient.total_grad_norm(per_module_norms)`; `norms_per_param` now composes
+  `grad_norm_per_module` + `total_grad_norm` instead of inlining the loop. `grad_norm_per_module`
+  also gained float32 precision. Emitted tags unchanged. +5 tests (203 total).
 
 ## v0.9.x — validation / benchmarking debt
 

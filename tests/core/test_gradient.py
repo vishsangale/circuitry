@@ -24,6 +24,34 @@ def test_grad_norm_per_module_empty_dict():
     assert gradient.grad_norm_per_module({}) == {}
 
 
+def test_grad_norm_per_module_skips_none():
+    out = gradient.grad_norm_per_module({"a": torch.ones(2, 2), "b": None})
+    assert set(out) == {"a"}
+    assert out["a"] == pytest.approx(2.0)
+
+
+def test_grad_norm_per_module_computes_in_float32():
+    # bf16 gradient: float32 reduction is more accurate than a bf16 reduction.
+    g = torch.ones(256, 256, dtype=torch.bfloat16)
+    out = gradient.grad_norm_per_module({"w": g})
+    assert out["w"] == pytest.approx(256.0, rel=1e-3)  # sqrt(256*256) = 256
+
+
+def test_total_grad_norm_sqrt_sum_of_squares():
+    assert gradient.total_grad_norm({"a": 3.0, "b": 4.0}) == pytest.approx(5.0)
+
+
+def test_total_grad_norm_empty():
+    assert gradient.total_grad_norm({}) == 0.0
+
+
+def test_total_grad_norm_composes_with_per_module():
+    grads = {"x.weight": torch.ones(3, 3), "y.weight": torch.full((4,), 2.0)}
+    per = gradient.grad_norm_per_module(grads)
+    # ||ones(3,3)|| = 3, ||[2,2,2,2]|| = 4 → total = 5
+    assert gradient.total_grad_norm(per) == pytest.approx(5.0)
+
+
 def test_signal_propagation_depth_all_alive():
     # Norms decreasing but all above eps → reaches max depth.
     grads = [torch.full((4,), v) for v in (1.0, 0.5, 0.25, 0.1)]
