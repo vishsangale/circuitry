@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.1] — 2026-05-23
 
 ### Fixed
 - **GPU device-correctness in three `core/` primitives.** `weight.singular_values` (and thus `effective_rank` / `stable_rank` / `sv_histogram` / `heavy_tail_alpha`) built its `max_dim` subsample index with a CPU `torch.randperm` and `index_select`-ed a CUDA matrix — a hard crash on GPU weights wider than `max_dim`. `attention.induction_score` indexed a CUDA attention tensor with CPU `arange` indices. `spectral.esd` returned CPU `linspace` edges alongside CUDA `histc` counts. All fixed by propagating the input tensor's `.device` (no `.cuda()` calls — invariant #4 preserved). Surfaced bringing up the GPU benchmark; CPU paths were unaffected.
