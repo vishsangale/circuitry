@@ -41,3 +41,13 @@ def test_cli_scan_and_report(tmp_path):
         capture_output=True, text=True, check=True,
     )
     assert (tmp_path / "inspect" / "report.md").exists()
+
+
+def test_cli_version_flag_prints_version_and_exits_zero():
+    from circuitry import __version__
+    out = subprocess.run(
+        [sys.executable, "-m", "circuitry.cli.main", "--version"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert __version__ in out
+    assert out.strip().startswith("circuitry ")

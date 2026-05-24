@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from circuitry import __version__
 from circuitry.recipes import list_recipes
 from circuitry.recorder.report import build_report
 
@@ -37,6 +38,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="circuitry")
+    parser.add_argument(
+        "--version", action="version", version=f"circuitry {__version__}",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_list = sub.add_parser("list-recipes", help="list registered recipes")
