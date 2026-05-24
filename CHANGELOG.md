@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Activation patching — core intervention primitive** (v1.0 patching pillar, sub-spec 1).
+  New `circuitry.patching` subsystem, the library's first *interventional* (not
+  observation-only) capability:
+  - `Site` — node-level intervention points (`resid_pre/post`, `attn_head_out`, `mlp_out`,
+    `mlp_neuron`, optional position slice).
+  - `patch_site()` — context manager that replaces a site's activation for one forward pass,
+    guaranteeing restore-on-exit (hook removed, eval/train mode and param `requires_grad`
+    restored, param values untouched) even on exception. Frozen-model, activation-grad-only.
+  - `PatchRunner` — clean/corrupted prompt-pair runner (denoise / noise), tensor-or-dict
+    model inputs, position-alignment validation.
+  - Dual-path site resolution: `HFSiteResolver` (config-declared layout; per-head needs eager
+    attention, per-neuron Llama-family-first) and `TLSiteResolver` (TransformerLens hook names,
+    lazy `transformer_lens` import).
+  - Pure metrics in `circuitry.core.patching`: `logit_diff`, `kl_divergence` (chunked), `ce_loss`.
+  - `docs/design.md` §4.6 adds the sanctioned intervention-mode contract; `transformer_lens`
+    is an approved optional dependency (lazy import — circuitry runs without it).
+  Attribution methods (EAP, AtP\*, ACDC) build on this primitive in follow-on sub-specs.
+
 ## [0.9.2] — 2026-05-23
 
 ### Fixed

@@ -123,11 +123,21 @@ grouping is a proposal, not yet decided.
   trade-off), or compute singular values via eigvalsh on the smaller Gram matrix (W^T W). Only
   needed if the ≤10% §10 budget must hold at aggressive cadences on fast GPUs.
 
-## v1.0 — major
+## v1.0 — major: causal / activation-attribution patching pillar
 
-- [ ] **[feat] Causal / activation-attribution patching pillar.** (Research Q2: IOI, ACDC,
-  AtP*, EAP, sparse-feature-circuits.) Deferred from v0.9 because patching crosses
-  `docs/design.md`'s observation-only contract — requires a design amendment before work.
+Release banner spanning sequential sub-spec cycles (each its own spec→plan→implement).
+Specs + plans live under `docs/superpowers/`.
+
+- [x] **Sub-spec 1 — core intervention primitive.** Done (2026-05-24, on `main`, unreleased).
+  `circuitry.patching` (`Site` / `patch_site` / `PatchRunner` / `HFSiteResolver` + `TLSiteResolver`)
+  + `core/patching.py` metrics (`logit_diff` / `kl_divergence` / `ce_loss`) + `docs/design.md` §4.6
+  intervention-mode contract amendment. 276 tests, Gemini-reviewed.
+- [ ] **Sub-spec 2 — EAP** (edge attribution patching). Introduces the residual-stream edge graph
+  (derived from node sites — the core primitive deliberately left edges to per-method).
+- [ ] **Sub-spec 3 — AtP\*** (attribution patching + corrections). Uses activation gradients
+  (`patch_site(..., enable_activation_grad=True)` already supports this).
+- [ ] **Sub-spec 4 — ACDC** (iterative circuit pruning). Reuses EAP's edge graph.
+- [ ] **later — SAE-feature circuits** (intervention site = SAE feature; builds on the SAE primitive).
 
 ## Future research / features (from `docs/v0.9-research` ledger)
 
