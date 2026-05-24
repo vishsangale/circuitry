@@ -148,6 +148,7 @@ class Recorder:
         self._induction_probe: torch.Tensor | None = None
         self._main_pass_attn: dict[str, torch.Tensor] = {}
         self._warned_unnormalized_attn = False
+        self._output_attentions_restore: list[tuple[Any, Any]] = []
         self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
@@ -420,21 +421,13 @@ class Recorder:
                     self._hook_handles.append(handle)
             # WEIGHT / GRAD are pulled in step() directly from the inventory.
 
-        # If attention_pattern_entropy is requested, install a forward-pre-hook
-        # on the model that injects output_attentions=True into kwargs (HF
-        # idiom) so each self_attn returns (out, attn_weights, ...). We then
-        # capture attn_weights from matched self_attn modules into
-        # self._main_pass_attn.
+        # If attention_pattern_entropy is requested, capture attn_weights from
+        # matched self_attn modules during the main forward. Per-head weights
+        # are enabled via config.output_attentions (set at the END of attach;
+        # see _set_output_attentions_true) rather than by injecting an
+        # output_attentions=True forward kwarg — the kwarg path raises TypeError
+        # on wrapper models whose forward() lacks **kwargs.
         if "attention_pattern_entropy" in self.recipe.activation_diagnostics:
-            def _inject_kwargs(_mod, args, kwargs):
-                if "output_attentions" not in kwargs:
-                    kwargs["output_attentions"] = True
-                return args, kwargs
-            handle = self.model.register_forward_pre_hook(
-                _inject_kwargs, with_kwargs=True,
-            )
-            self._hook_handles.append(handle)
-
             attn_modules: list[str] = []
             for idx, hp in enumerate(self.recipe.hook_points):
                 if hp.source is not TensorSource.OUTPUT:
@@ -486,6 +479,11 @@ class Recorder:
                 for mn in matched:
                     self._saes[mn] = sae
 
+        # Set last: attach() runs no forward, so nothing above needs the flag;
+        # putting it last guarantees a failed attach never mutates user config.
+        if "attention_pattern_entropy" in self.recipe.activation_diagnostics:
+            self._set_output_attentions_true()
+
     def _mk_fwd_hook(self, name: str):
         # Hooks always capture (cheap detach); step() decides what to consume.
         # Gating the hook itself on `_current_step` is broken: forward runs
@@ -501,10 +499,31 @@ class Recorder:
             self._captured_activations[name] = t.detach()
         return _hook
 
+    def _set_output_attentions_true(self) -> None:
+        """Enable per-head attention output via the HF config (not a forward
+        kwarg, which breaks wrappers whose forward lacks **kwargs). Records the
+        original value(s) so detach() can restore exactly. Call LAST in attach()
+        so a failed attach never leaves the config mutated."""
+        cfg = getattr(self.model, "config", None)
+        text_cfg = getattr(cfg, "text_config", None)
+        for source in (cfg, text_cfg):
+            if source is None:
+                continue
+            self._output_attentions_restore.append(
+                (source, getattr(source, "output_attentions", False))
+            )
+            source.output_attentions = True
+
+    def _restore_output_attentions(self) -> None:
+        for source, original in self._output_attentions_restore:
+            source.output_attentions = original
+        self._output_attentions_restore.clear()
+
     def detach(self) -> None:
         for h in self._hook_handles:
             h.remove()
         self._hook_handles.clear()
+        self._restore_output_attentions()
         if self._writer is not None:
             self._writer.flush()
             self._writer.close()

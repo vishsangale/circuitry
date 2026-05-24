@@ -828,3 +828,120 @@ def test_sae_reconstruction_dispatcher_emits_five_keys(tmp_path):
     base = "activation/sae/layers.0.mlp"
     for sub in ("recon_mse", "l0", "l1", "frac_alive", "ce_recovered_proxy"):
         assert f"{base}/{sub}" in out, f"missing {sub} in {out!r}"
+
+
+def _attn_entropy_model(output_attentions_default=False):
+    """HF-like model whose forward() has NO **kwargs and reads
+    config.output_attentions (not a forward kwarg) — exactly the wrapper shape
+    that broke the old kwarg-injection."""
+    import types
+    import torch
+
+    d_model, n_heads = 8, 2
+
+    class _Attn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x, output_attentions: bool = False):
+            B, T, D = x.shape
+            q = self.q_proj(x).view(B, T, n_heads, D // n_heads).transpose(1, 2)
+            attn = (q @ q.transpose(-2, -1)).softmax(dim=-1)
+            out = (attn @ q).transpose(1, 2).reshape(B, T, D)
+            if output_attentions:
+                return out, attn
+            return out
+
+    class _Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _Attn()
+
+        def forward(self, x, output_attentions: bool = False):
+            return self.self_attn(x, output_attentions=output_attentions)
+
+    class _M(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(
+                output_attentions=output_attentions_default,
+                _attn_implementation="eager")
+            self.layers = nn.ModuleList([_Block()])
+
+        def forward(self, x):  # NO **kwargs, NO output_attentions param
+            oa = self.config.output_attentions
+            for b in self.layers:
+                x = b(x, output_attentions=oa)
+            return x
+
+    return _M(), d_model
+
+
+def _entropy_recipe(name):
+    return Recipe(
+        name=name,
+        hook_points=[HookPoint(source=TensorSource.OUTPUT,
+                               pattern=r"layers\.\d+\.self_attn$")],
+        activation_diagnostics=["attention_pattern_entropy"],
+    )
+
+
+def test_attach_does_not_break_kwargless_wrapper_forward(tmp_path):
+    """Old behavior injected output_attentions=True into forward kwargs, raising
+    TypeError on a forward() without **kwargs. The config approach must let a
+    normal forward run cleanly and still capture attention."""
+    import torch
+    model, d_model = _attn_entropy_model()
+    rec = Recorder(model, run_dir=tmp_path, recipe=_entropy_recipe("w1"),
+                   writer="jsonl", every_n_steps=1, strict=False)
+    rec.attach()
+    model(torch.randn(1, 4, d_model))  # must NOT raise TypeError
+    rec.step(0)
+    rec.detach()
+    out = (tmp_path / "metrics.jsonl").read_text()
+    assert "activation/attention_pattern_entropy/layers.0.self_attn/head_0" in out
+
+
+def test_output_attentions_restored_on_detach_from_false(tmp_path):
+    model, _ = _attn_entropy_model(output_attentions_default=False)
+    rec = Recorder(model, run_dir=tmp_path, recipe=_entropy_recipe("w2"),
+                   writer="jsonl", every_n_steps=1, strict=False)
+    rec.attach()
+    assert model.config.output_attentions is True
+    rec.detach()
+    assert model.config.output_attentions is False
+
+
+def test_output_attentions_restored_on_detach_from_true(tmp_path):
+    model, _ = _attn_entropy_model(output_attentions_default=True)
+    rec = Recorder(model, run_dir=tmp_path, recipe=_entropy_recipe("w3"),
+                   writer="jsonl", every_n_steps=1, strict=False)
+    rec.attach()
+    assert model.config.output_attentions is True
+    rec.detach()
+    assert model.config.output_attentions is True  # original preserved
+
+
+def test_failed_attach_never_mutates_config(tmp_path, monkeypatch):
+    """Config is set as the final attach() step, so a failure earlier (here, a
+    failing SAE load) must leave config.output_attentions untouched."""
+    import circuitry.sae.loader as sae_loader
+
+    def boom(*a, **k):
+        raise RuntimeError("sae load failed")
+
+    monkeypatch.setattr(sae_loader, "load_sae", boom)
+    model, _ = _attn_entropy_model(output_attentions_default=False)
+    recipe = Recipe(
+        name="w4",
+        hook_points=[HookPoint(source=TensorSource.OUTPUT,
+                               pattern=r"layers\.\d+\.self_attn$")],
+        activation_diagnostics=["attention_pattern_entropy"],
+        sae_checkpoints={r"layers\.\d+\.self_attn$": ("rel", "id")},
+    )
+    rec = Recorder(model, run_dir=tmp_path, recipe=recipe,
+                   writer="jsonl", every_n_steps=1, strict=False)
+    with pytest.raises(RuntimeError, match="sae load failed"):
+        rec.attach()
+    assert model.config.output_attentions is False  # never mutated

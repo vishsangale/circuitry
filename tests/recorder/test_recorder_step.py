@@ -229,16 +229,20 @@ def test_attention_pattern_entropy_uses_main_pass_not_probe(tmp_path):
     class _Tiny(nn.Module):
         def __init__(self) -> None:
             super().__init__()
+            import types
+            self.config = types.SimpleNamespace(
+                output_attentions=False, _attn_implementation="eager")
             self.tok_embed = nn.Embedding(100, d_model)
             self.layers = nn.ModuleList([_Block()])
 
         def get_output_embeddings(self):
             return None
 
-        def forward(self, input_ids, output_attentions: bool = False):
+        def forward(self, input_ids):
+            oa = self.config.output_attentions
             x = self.tok_embed(input_ids)
             for layer in self.layers:
-                x = layer(x, output_attentions=output_attentions)
+                x = layer(x, output_attentions=oa)
             return x
 
     model = _Tiny()
