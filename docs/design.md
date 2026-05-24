@@ -121,7 +121,7 @@ activation.norm_stats(x: Tensor) -> NormStats   # mean, std, max, frac>k*median
 activation.gate_stats(x: Tensor, eps: float = 1e-6) -> GateStats  # frac_active, mean_abs, std
 
 # gradient-space
-gradient.layer_norm(grads: dict[str, Tensor]) -> dict[str, float]
+gradient.grad_norm_per_module(grads: dict[str, Tensor]) -> dict[str, float]
 gradient.signal_propagation_depth(grads_by_depth: list[Tensor]) -> int
 
 # spectral
@@ -293,7 +293,7 @@ RECIPE = Recipe(
     ],
     weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank", "heavy_tail_alpha"],
     activation_diagnostics=["gate_stats", "dead_fraction", "kurtosis", "participation_ratio"],
-    gradient_diagnostics=["layer_norm"],
+    gradient_diagnostics=["grad_norm_per_module"],
 )
 ```
 

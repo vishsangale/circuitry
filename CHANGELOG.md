@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Renamed the `layer_norm` gradient diagnostic to `grad_norm_per_module`.** The old name was misleading — it computes a per-module gradient Frobenius/L2 norm, with no relation to the `LayerNorm` module. The core primitive `circuitry.core.gradient.layer_norm` is now `grad_norm_per_module`, the recipe diagnostic key `"layer_norm"` is now `"grad_norm_per_module"`, and the emitted tag prefix `gradient/layer_norm/<module>` is now `gradient/grad_norm_per_module/<module>`. **Breaking** for anyone selecting `"layer_norm"` in `gradient_diagnostics` or reading the old tag namespace (the stock `vision` and `two_tower` recipes are updated; `llm` was already on `norms_per_param`).
+
 ## [0.9.0] — 2026-05-23
 
 ### Added

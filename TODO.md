@@ -24,9 +24,15 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
   emit zero tags because SDPA doesn't return per-head weights. Workaround is
   `attn_implementation="eager"`. Add a WARN at attach time when these diagnostics are
   requested but the model uses SDPA, pointing at the eager workaround.
-- [ ] **[debt] `layer_norm` gradient diagnostic naming is misleading.** Produces identical
-  numbers to `norms_per_param` under a different tag prefix (noted in v0.4.0 CHANGELOG).
-  Still used by `vision` / `two_tower` recipes — candidate for rename or removal.
+- [x] **[debt] `layer_norm` gradient diagnostic naming is misleading.** Done — renamed to
+  `grad_norm_per_module` (core primitive + diagnostic key + `gradient/grad_norm_per_module/<m>`
+  tag); `vision` / `two_tower` recipes updated; design.md + CHANGELOG updated. Breaking
+  tag-namespace change. 194 tests pass.
+- [ ] **[debt] Promote `norms_per_param`'s per-module compute into a core primitive.** Today
+  `grad_norm_per_module` is a pure `core/` primitive, but `norms_per_param`'s per-module-norm +
+  global-total logic is inlined in `recorder/live.py` (cuts against design.md's core-primitive
+  layering). Extract the pure compute into `core/gradient.py` and have the recorder call it;
+  consider unifying the two grad-norm diagnostics. (Split out from the rename above.)
 
 ## v0.9.x — validation / benchmarking debt
 

@@ -8,20 +8,20 @@ import torch
 from circuitry.core import gradient
 
 
-def test_layer_norm_returns_dict_of_floats():
+def test_grad_norm_per_module_returns_dict_of_floats():
     grads = {
         "layer0.weight": torch.ones(3, 3),
         "layer1.weight": torch.zeros(3, 3),
     }
-    out = gradient.layer_norm(grads)
+    out = gradient.grad_norm_per_module(grads)
     assert set(out) == {"layer0.weight", "layer1.weight"}
     assert all(isinstance(v, float) for v in out.values())
     assert out["layer0.weight"] == pytest.approx(3.0)  # frobenius norm of ones(3,3)
     assert out["layer1.weight"] == pytest.approx(0.0)
 
 
-def test_layer_norm_empty_dict():
-    assert gradient.layer_norm({}) == {}
+def test_grad_norm_per_module_empty_dict():
+    assert gradient.grad_norm_per_module({}) == {}
 
 
 def test_signal_propagation_depth_all_alive():

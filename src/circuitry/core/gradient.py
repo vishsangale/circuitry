@@ -10,8 +10,8 @@ from collections.abc import Mapping, Sequence
 import torch
 
 
-def layer_norm(grads: Mapping[str, torch.Tensor]) -> dict[str, float]:
-    """Frobenius norm per layer. ``None`` values are skipped."""
+def grad_norm_per_module(grads: Mapping[str, torch.Tensor]) -> dict[str, float]:
+    """Frobenius (L2) norm of each module's gradient tensor. ``None`` values are skipped."""
     out: dict[str, float] = {}
     for name, g in grads.items():
         if g is None:

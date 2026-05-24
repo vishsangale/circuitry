@@ -39,7 +39,7 @@ _ACT_DIAGS = {
 }
 
 _GRAD_DIAGS = {
-    "layer_norm": _grad.layer_norm,  # dict in, dict out
+    "grad_norm_per_module": _grad.grad_norm_per_module,  # dict in, dict out
 }
 
 _WRITERS: dict[str, Any] = {}  # name → factory; populated below
@@ -759,9 +759,9 @@ class Recorder:
         for name in self.recipe.gradient_diagnostics:
             if not self._enabled(name):
                 continue
-            if name == "layer_norm":
-                for mod_name, val in _grad.layer_norm(ctx.gradients).items():
-                    self._writer.add_scalar(f"gradient/layer_norm/{mod_name}", val, ctx.step)
+            if name == "grad_norm_per_module":
+                for mod_name, val in _grad.grad_norm_per_module(ctx.gradients).items():
+                    self._writer.add_scalar(f"gradient/grad_norm_per_module/{mod_name}", val, ctx.step)
             elif name == "norms_per_param":
                 if ctx.gradients:
                     global_sq = 0.0

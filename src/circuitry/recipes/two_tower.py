@@ -41,7 +41,7 @@ RECIPE = Recipe(
     ],
     weight_diagnostics=["effective_rank", "stable_rank"],
     activation_diagnostics=["dead_fraction", "participation_ratio"],
-    gradient_diagnostics=["layer_norm"],
+    gradient_diagnostics=["grad_norm_per_module"],
     custom=[embedding_alignment],
 )
 
