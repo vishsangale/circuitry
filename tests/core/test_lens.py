@@ -69,3 +69,17 @@ def test_warns_when_dmodel_equals_vocab(caplog):
     with caplog.at_level(logging.WARNING, logger="circuitry.core.lens"):
         logit_lens_kl(residual, W, final_logits)
     assert any("d_model == vocab" in r.getMessage() for r in caplog.records)
+
+
+def test_chunking_matches_single_shot():
+    """Token-chunked KL equals the single-shot result within allclose (sum
+    reduction is reordered, not bit-for-bit)."""
+    torch.manual_seed(5)
+    d_model, vocab = 8, 32
+    residual = torch.randn(2, 9, d_model)
+    W = torch.randn(d_model, vocab)
+    final_logits = torch.randn(2, 9, vocab)
+    ref = logit_lens_kl(residual, W, final_logits, chunk_size=100_000)
+    for cs in (1, 3, 7, 18, 1000):
+        got = logit_lens_kl(residual, W, final_logits, chunk_size=cs)
+        assert got == pytest.approx(ref, abs=1e-5), f"chunk_size={cs}"

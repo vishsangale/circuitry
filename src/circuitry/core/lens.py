@@ -29,6 +29,7 @@ def logit_lens_kl(
     final_logits: Any,
     *,
     layer_norm: Callable[[Tensor], Tensor] | None = None,
+    chunk_size: int = 256,
 ) -> float:
     """KL(softmax(layer_norm(residual) @ unembed) || softmax(final_logits)),
     mean over leading (batch, seq) dims.
@@ -69,10 +70,21 @@ def logit_lens_kl(
     W_f32 = proj_W.detach().to(torch.float32)
     fl_f32 = fl.detach().to(torch.float32)
 
-    lens_logits = res_f32 @ W_f32
-    log_q = torch.log_softmax(lens_logits, dim=-1)  # lens distribution
-    log_p = torch.log_softmax(fl_f32, dim=-1)        # final distribution
-    q = log_q.exp()
-    # KL(Q || P) = sum q * (log_q - log_p)
-    kl_per_token = (q * (log_q - log_p)).sum(dim=-1)
-    return float(kl_per_token.mean().item())
+    # Chunk over the flattened token axis so the (tokens, vocab) lens-logits
+    # transient never materializes for the whole batch at once. Exact up to
+    # float accumulation order. Stays on the input's device (no .cuda()).
+    res_flat = res_f32.reshape(-1, res_f32.shape[-1])  # (N, d_model)
+    fl_flat = fl_f32.reshape(-1, fl_f32.shape[-1])      # (N, vocab)
+    n = res_flat.shape[0]
+    if n == 0:
+        return 0.0
+    kl_sum = res_flat.new_zeros(())
+    for start in range(0, n, max(1, chunk_size)):
+        r = res_flat[start:start + chunk_size]
+        f = fl_flat[start:start + chunk_size]
+        lens_logits = r @ W_f32
+        log_q = torch.log_softmax(lens_logits, dim=-1)  # lens distribution
+        log_p = torch.log_softmax(f, dim=-1)             # final distribution
+        q = log_q.exp()
+        kl_sum = kl_sum + (q * (log_q - log_p)).sum(dim=-1).sum()
+    return float((kl_sum / n).item())
