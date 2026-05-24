@@ -232,6 +232,36 @@ class Recorder:
                     ".lm_head) — skipping"
                 )
 
+        # SDPA / flash-attention silently drop per-head attention weights even
+        # when output_attentions=True is injected, so induction_score and
+        # attention_pattern_entropy would emit zero tags with no other signal.
+        # Warn once at attach time and point at the eager workaround. Only warn
+        # when a non-eager implementation is positively detected — stay quiet
+        # when the implementation can't be determined (non-HF models).
+        _attn_diags = [
+            d for d in ("induction_score", "attention_pattern_entropy")
+            if d in self.recipe.activation_diagnostics
+        ]
+        if _attn_diags:
+            cfg = getattr(self.model, "config", None)
+            text_cfg = getattr(cfg, "text_config", None)
+            impl = None
+            for source in (text_cfg, cfg):
+                if source is None:
+                    continue
+                impl = getattr(source, "_attn_implementation", None)
+                if impl is not None:
+                    break
+            if impl is not None and impl != "eager":
+                logger.warning(
+                    "circuitry: %s requested but the model uses "
+                    "attn_implementation=%r, which does not return per-head "
+                    "attention weights — these diagnostics will emit no tags. "
+                    'Reload the model with attn_implementation="eager" to '
+                    "capture them.",
+                    " / ".join(_attn_diags), impl,
+                )
+
         if "induction_score" in self.recipe.activation_diagnostics:
             cfg = getattr(self.model, "config", None)
             text_cfg = getattr(cfg, "text_config", None)

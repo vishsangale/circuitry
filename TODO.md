@@ -19,11 +19,11 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
 - [x] **[debt] Test-filter DRY violation.** Done — extracted to a shared
   `llm_recipe_no_hf_diagnostics` fixture + `HF_ONLY_ACTIVATION_DIAGNOSTICS` constant in
   new `tests/conftest.py`; e2e + perf tests consume the fixture. 194 tests pass, ruff clean.
-- [ ] **[bug] SDPA silently emits zero induction/entropy tags.** On SDPA-default HF models
-  (Gemma 2/4 and most production models) `induction_score` and `attention_pattern_entropy`
-  emit zero tags because SDPA doesn't return per-head weights. Workaround is
-  `attn_implementation="eager"`. Add a WARN at attach time when these diagnostics are
-  requested but the model uses SDPA, pointing at the eager workaround.
+- [x] **[bug] SDPA silently emits zero induction/entropy tags.** Done — `Recorder.attach()`
+  now WARNs when `induction_score`/`attention_pattern_entropy` is requested but the resolved
+  `config._attn_implementation` (or `text_config`) is non-eager, pointing at the
+  `attn_implementation="eager"` workaround. Only fires on positive detection; non-HF models
+  stay quiet. +3 tests (197 total).
 - [x] **[debt] `layer_norm` gradient diagnostic naming is misleading.** Done — renamed to
   `grad_norm_per_module` (core primitive + diagnostic key + `gradient/grad_norm_per_module/<m>`
   tag); `vision` / `two_tower` recipes updated; design.md + CHANGELOG updated. Breaking

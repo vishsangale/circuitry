@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import types
 
 import pytest
 import torch.nn as nn
@@ -231,6 +232,56 @@ def test_detach_removes_all_hooks(tmp_path):
                + len(m._backward_hooks) for m in model.modules())
     assert post == 0
     # We don't assert pre > 0 — pure-weight recipes may not install hooks.
+
+
+def _register_attn_entropy_recipe(name: str) -> None:
+    register_recipe(Recipe(
+        name=name,
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r"^\d+$")],
+        weight_diagnostics=["effective_rank"],
+        activation_diagnostics=["attention_pattern_entropy"],
+        expected_min_matches={r"^\d+$": 0},
+    ))
+
+
+def test_attach_warns_on_sdpa_for_attention_diagnostics(tmp_path, caplog):
+    """SDPA returns no per-head attention weights, so attention_pattern_entropy
+    / induction_score silently emit nothing — attach() must warn and point at
+    the eager workaround."""
+    _register_attn_entropy_recipe("attn_sdpa")
+    model = _toy_model()
+    model.config = types.SimpleNamespace(_attn_implementation="sdpa")
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    rec = Recorder(model, run_dir=tmp_path, recipe="attn_sdpa",
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.detach()
+    assert any("attn_implementation" in r.message and "eager" in r.message
+               for r in caplog.records), [r.message for r in caplog.records]
+
+
+def test_attach_no_sdpa_warning_for_eager(tmp_path, caplog):
+    """Eager attention does return per-head weights — no warning expected."""
+    _register_attn_entropy_recipe("attn_eager")
+    model = _toy_model()
+    model.config = types.SimpleNamespace(_attn_implementation="eager")
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    rec = Recorder(model, run_dir=tmp_path, recipe="attn_eager",
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.detach()
+    assert not any("attn_implementation" in r.message for r in caplog.records)
+
+
+def test_attach_no_attn_impl_warning_without_config(tmp_path, caplog):
+    """Non-HF model (no .config) must not trigger a spurious SDPA warning."""
+    _register_attn_entropy_recipe("attn_noconfig")
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    rec = Recorder(_toy_model(), run_dir=tmp_path, recipe="attn_noconfig",
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.detach()
+    assert not any("attn_implementation" in r.message for r in caplog.records)
 
 
 def test_recorder_noop_on_non_zero_rank(monkeypatch, tmp_path):
