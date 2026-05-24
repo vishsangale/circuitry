@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] — 2026-05-23
+
+### Fixed
+- **`attention_pattern_entropy` is now normalization-invariant.** Each query row
+  is divided by its key-axis sum before the entropy, so the metric is comparable
+  across attention variants (softmax / sigmoid / linear). Softmax rows sum to 1,
+  so existing values are unchanged within fp tolerance; fully-masked rows yield 0.
+  The Recorder warns once when captured rows don't sum to 1.
+- **`logit_lens_kl` no longer OOMs the run.** The KL is computed in token chunks
+  (`chunk_size`, default 256) so the `(tokens, vocab)` lens-logits transient stays
+  bounded; a per-layer OOM now empties the cache, warns, skips that emission, and
+  keeps training alive instead of crashing. New `Recipe.lens_max_tokens` caps each
+  sequence to its first N positions as a cost lever (`None` = all tokens = exact).
+- **`output_attentions` capture no longer breaks wrapped models.** Per-head
+  attention weights are enabled via `config.output_attentions` instead of a
+  forward-kwarg injection that raised `TypeError` on wrappers whose `forward()`
+  lacks `**kwargs`. Set as the final `attach()` step (a failed attach never mutates
+  the config) and restored on `detach()`.
+
+### Added
+- **`circuitry --version`** prints the installed version and exits.
+
+### Docs
+- Clarified that `circuitry report` runs on a live `metrics.jsonl` (no `scan`)
+  as well as on a retrospective `findings.json`.
+
 ## [0.9.1] — 2026-05-23
 
 ### Fixed
