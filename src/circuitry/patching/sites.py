@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch.nn as nn
 from torch import Tensor
@@ -47,6 +47,12 @@ class ResolvedSite:
     is_input_hook: bool
     extract: Callable[[Tensor], Tensor]
     inject: Callable[[Tensor, Tensor], Tensor]
+
+
+class SiteResolver(Protocol):
+    """Structural type for site resolvers (HFSiteResolver, TLSiteResolver)."""
+
+    def resolve(self, model: nn.Module, site: Site) -> ResolvedSite: ...
 
 
 # --------------- position helpers ---------------

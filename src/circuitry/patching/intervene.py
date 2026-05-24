@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import torch.nn as nn
 from torch import Tensor
 
-from circuitry.patching.sites import ResolvedSite, Site
+from circuitry.patching.sites import ResolvedSite, Site, SiteResolver
 
 
 @dataclass
@@ -28,7 +28,7 @@ def patch_site(
     model: nn.Module,
     site: Site,
     value: Tensor,
-    resolver: object,
+    resolver: SiteResolver,
     *,
     enable_activation_grad: bool = False,
 ) -> Generator[PatchHandle, None, None]:
@@ -40,17 +40,18 @@ def patch_site(
     - All param requires_grad are set to False, restored on exit.
     - Param values are never modified.
     """
-    resolved: ResolvedSite = resolver.resolve(model, site)  # type: ignore[attr-defined]
+    resolved: ResolvedSite = resolver.resolve(model, site)
     handle = PatchHandle()
     hook_handle = None
     was_training = model.training
     original_requires_grad: dict[str, bool] = {}
 
-    for name, p in model.named_parameters():
-        original_requires_grad[name] = p.requires_grad
-        p.requires_grad_(False)
-
     try:
+        # Freeze params inside the try so a partial freeze (e.g. a raising
+        # named_parameters iterator) is still restored by the finally block.
+        for name, p in model.named_parameters():
+            original_requires_grad[name] = p.requires_grad
+            p.requires_grad_(False)
         model.eval()
 
         def _attach_grad_hook(modified: Tensor) -> Tensor:

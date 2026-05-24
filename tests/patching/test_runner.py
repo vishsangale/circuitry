@@ -123,3 +123,42 @@ def test_model_clean_after_runner(toy_model, resolver):
 
     after = toy_model(clean)
     assert torch.equal(before, after)
+
+
+def test_dict_inputs_called_with_kwargs(toy_model, resolver):
+    """Dict inputs are forwarded as model(**inputs) — HF-style models.
+
+    ToyPatchModel.forward(self, x): passing {"x": tensor} exercises the
+    kwargs-dispatch path.
+    """
+    clean = {"x": torch.tensor([[1.0, 0.0, 0.0, 0.0]])}
+    corrupted = {"x": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
+    site = Site(component="resid_post", layer=0)
+
+    runner = PatchRunner(toy_model, resolver)
+    result = runner.run_patching(
+        clean_inputs=clean,
+        corrupted_inputs=corrupted,
+        sites=[site],
+        metric=lambda logits: logit_diff(logits, correct=0, incorrect=3),
+        direction="denoise",
+    )
+
+    clean_metric = logit_diff(toy_model(clean["x"]), correct=0, incorrect=3)
+    assert result.metric_values[site] == pytest.approx(clean_metric, abs=1e-5)
+
+
+def test_mismatched_seq_length_raises(toy_model, resolver):
+    """Position misalignment (different dim-1 lengths) raises a clear error."""
+    clean = torch.randn(1, 4)
+    corrupted = torch.randn(1, 6)
+    runner = PatchRunner(toy_model, resolver)
+
+    with pytest.raises(ValueError, match="position-aligned"):
+        runner.run_patching(
+            clean_inputs=clean,
+            corrupted_inputs=corrupted,
+            sites=[Site(component="resid_post", layer=0)],
+            metric=lambda logits: float(logits.sum().item()),
+            direction="denoise",
+        )
