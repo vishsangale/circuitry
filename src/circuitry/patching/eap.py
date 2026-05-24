@@ -164,31 +164,67 @@ class EAPRunner:
             handles.append(block.mlp.down_proj.register_forward_hook(_down_proj_writer_hook))
 
         # ---- reader pre-hooks on up_proj (mlp_in) and lm_head (logits_in) ----
-        # Strategy: detach the residual stream entering each mlp's up_proj so
-        # that tensor becomes a leaf node; backward() then deposits the gradient
-        # in .grad.  We must NOT detach the lm_head input — if we did, gradients
-        # could not propagate upstream through it to reach the detached mlp leaves.
-        # Instead we capture the lm_head input gradient via register_hook on the
-        # non-leaf tensor.
+        # Goal: capture grad_v = d(metric)/d(residual_stream_at_v) for each reader v,
+        # treating the residual at v as a fully independent variable.  This gradient
+        # captures ALL downstream effects: through v's MLP AND through the bypass path
+        # where the residual flows directly to subsequent layers.
+        #
+        # Implementation:
+        #   For non-leaf residuals (layers > 0, already requires_grad=True):
+        #     Call retain_grad() on x and return args unchanged.  Autograd fills x.grad.
+        #
+        #   For the frozen-param embed output (layer 0, requires_grad=False):
+        #     We must make the tensor a leaf *and* ensure the bypass path also flows
+        #     through the leaf.  Strategy:
+        #       1. up_proj pre-hook: create x_leaf = x.detach().clone().requires_grad_(True)
+        #          and return (x_leaf,) so up_proj uses it.
+        #       2. down_proj post-hook: add (x_leaf - x_original) to down_proj's output.
+        #          Since x_leaf and x_original have the same numeric values, this adds
+        #          nothing numerically, but it routes the residual-bypass gradient path
+        #          through x_leaf in the computation graph.  After this, the expression
+        #          x_original + down_proj_out + (x_leaf - x_original) = x_leaf + mlp_out,
+        #          so backward accumulates d(metric)/d(x_leaf) from both the MLP path
+        #          and the bypass path — which is the correct total gradient.
         for L, block in enumerate(self.model.layers):
             mlp_reader_node = Node("mlp", L)
+            _hook_state: dict[str, Tensor] = {}  # shared between pre- and post-hook
 
             def _up_proj_reader_pre_hook(
                 module: nn.Module, args: tuple,
                 _n: Node = mlp_reader_node,
+                _state: dict[str, Tensor] = _hook_state,
             ) -> tuple:
                 x = args[0]
-                x_intercepted = x.detach().requires_grad_(True)
-                reader_input_tensors[_n] = x_intercepted
-                return (x_intercepted,) + args[1:]
+                if x.requires_grad:
+                    # Non-leaf (layer ≥ 1): retain_grad so autograd deposits .grad.
+                    x.retain_grad()
+                    reader_input_tensors[_n] = x
+                    return args  # pass through unchanged
+                else:
+                    # Leaf without grad (embed output at layer 0): create a leaf that
+                    # captures the full gradient including the bypass.
+                    x_leaf = x.detach().clone().requires_grad_(True)
+                    _state["x_leaf"] = x_leaf
+                    _state["x_orig"] = x
+                    reader_input_tensors[_n] = x_leaf
+                    return (x_leaf,) + args[1:]
+
+            def _down_proj_bypass_grad_hook(
+                module: nn.Module, inputs: tuple, output: Tensor,
+                _state: dict[str, Tensor] = _hook_state,
+            ) -> Tensor | None:
+                if "x_leaf" in _state:
+                    # Add the bypass term so backward sees the residual path too.
+                    bypass = _state["x_leaf"] - _state["x_orig"]
+                    _state.clear()
+                    return output + bypass
+                return None  # no-op if the pre-hook didn't populate state
 
             handles.append(block.mlp.up_proj.register_forward_pre_hook(_up_proj_reader_pre_hook))
+            handles.append(block.mlp.down_proj.register_forward_hook(_down_proj_bypass_grad_hook))
 
         def _lm_head_reader_pre_hook(module: nn.Module, args: tuple) -> tuple:
             x = args[0]
-            # Do NOT detach — leaving x connected lets gradients propagate back
-            # through it to the detached mlp-reader leaf tensors above.
-            # We capture the gradient here via a tensor hook.
             def _save_logits_grad(g: Tensor) -> None:
                 reader_grads[logits_node] = g.detach()
 
@@ -212,9 +248,11 @@ class EAPRunner:
             for h in handles:
                 h.remove()
 
-        # Collect mlp reader grads from leaf tensors (populated by autograd via .grad)
+        # Collect mlp reader grads (.grad is populated for leaf tensors and tensors
+        # for which retain_grad() was called; guard the access to suppress PyTorch's
+        # "non-leaf .grad won't be populated" warning).
         for node, t in reader_input_tensors.items():
-            if t.is_leaf and t.grad is not None:
+            if (t.is_leaf or t.retains_grad) and t.grad is not None:
                 reader_grads[node] = t.grad.detach()
         # logits_node grad was already saved via register_hook above
 
@@ -266,56 +304,100 @@ class EAPRunner:
         finally:
             self._restore(was_training, orig_rg)
 
-    def bruteforce_node_scores(
+    def bruteforce_edge_scores(
         self,
         clean_inputs: Tensor,
         corrupted_inputs: Tensor,
         metric: Callable[[Tensor], float],
-    ) -> dict[Node, float]:
-        """Brute-force node patching: for each writer node u, patch u's residual
-        contribution from clean to corrupted and measure the metric delta.
+    ) -> dict[Edge, float]:
+        """Exact per-edge brute force.  For each edge (u -> v, slot): add
+        delta_act_u = act_corrupted_u - act_clean_u to v's residual input
+        (the same hook point used for reader-gradient capture in ``run``),
+        measure metric(patched) - metric(clean).
 
-        Returns {node: metric(patched) - metric(clean)} for all writer nodes.
+        On a fully linear model this must equal the analytic EAP score to
+        floating-point precision because EAP's first-order approximation is
+        exact when there are no nonlinearities.
         """
         was_training, orig_rg = self._freeze_eval()
         try:
             with torch.no_grad():
-                # Baseline: clean metric
+                # Baseline clean metric (no hooks)
                 clean_logits = self.model(clean_inputs)
                 clean_metric = metric(clean_logits)
 
-                # Cache corrupted writer activations
+                # Cache corrupted writer activations (same as run() step 1)
                 _, acts_corrupted = self._collect_writer_acts(corrupted_inputs)
 
-            deltas: dict[Node, float] = {}
+                # Cache clean writer activations so we can compute delta
+                _, acts_clean = self._collect_writer_acts(clean_inputs)
 
-            for writer_node in self.graph.writers:
-                corr_act = acts_corrupted[writer_node]  # (b, s, d)
+            # delta per writer node: (b, s, d)
+            delta: dict[Node, Tensor] = {
+                n: acts_corrupted[n] - acts_clean[n] for n in self.graph.writers
+            }
+
+            scores: dict[Edge, float] = {}
+
+            for edge in self.graph.edges:
+                writer_node = edge.writer
+                reader_node = edge.reader
+                slot = edge.slot
+                d_act = delta[writer_node]  # (b, s, d)
                 handles: list[Any] = []
 
-                if writer_node.kind == "embed":
-                    def _embed_patch_hook(
-                        module: nn.Module, inputs: tuple, output: Tensor,
-                        _val: Tensor = corr_act,
-                    ) -> Tensor:
-                        return _val
-
-                    handles.append(
-                        self.model.embed_tokens.register_forward_hook(_embed_patch_hook)
-                    )
-                elif writer_node.kind == "mlp":
-                    L = writer_node.layer
+                if slot == "mlp_in":
+                    # Reader is mlp(L).  Physically, the edge (u → mlp_L) represents
+                    # the contribution of writer u to the FULL residual stream entering
+                    # layer L.  In the residual-stream forward:
+                    #
+                    #   x_after_L = x_before_L + down_proj_L(up_proj_L(x_before_L))
+                    #
+                    # Adding delta to x_before_L affects BOTH the MLP computation
+                    # (up_proj receives x_before + delta) AND the residual bypass
+                    # (x_after_L gains an extra delta).  To simulate this with hooks
+                    # we must hook two points:
+                    #   1. up_proj pre-hook: add delta to the up_proj argument.
+                    #   2. down_proj post-hook: add delta to down_proj's output.
+                    # Together these produce x_after = (x + delta) + mlp_out(x + delta),
+                    # matching the true residual-stream patch.  The gradient at
+                    # x_before_L = d(metric)/d(residual at that point), which also
+                    # sees both paths, so analytic == brute-force on a linear model.
+                    L = reader_node.layer
                     block = self.model.layers[L]
 
-                    def _down_proj_patch_hook(
-                        module: nn.Module, inputs: tuple, output: Tensor,
-                        _val: Tensor = corr_act,
-                    ) -> Tensor:
-                        return _val
+                    def _up_proj_add_hook(
+                        module: nn.Module, args: tuple,
+                        _d: Tensor = d_act,
+                    ) -> tuple:
+                        x = args[0] + _d
+                        return (x,) + args[1:]
 
-                    # Patch down_proj output = the mlp residual contribution
+                    def _down_proj_bypass_hook(
+                        module: nn.Module, inputs: tuple, output: Tensor,
+                        _d: Tensor = d_act,
+                    ) -> Tensor:
+                        return output + _d
+
                     handles.append(
-                        block.mlp.down_proj.register_forward_hook(_down_proj_patch_hook)
+                        block.mlp.up_proj.register_forward_pre_hook(_up_proj_add_hook)
+                    )
+                    handles.append(
+                        block.mlp.down_proj.register_forward_hook(_down_proj_bypass_hook)
+                    )
+
+                elif slot == "logits_in":
+                    # Reader is logits; hook point is lm_head forward pre-hook —
+                    # identical to _collect_reader_grads.
+                    def _lm_head_add_hook(
+                        module: nn.Module, args: tuple,
+                        _d: Tensor = d_act,
+                    ) -> tuple:
+                        x = args[0] + _d
+                        return (x,) + args[1:]
+
+                    handles.append(
+                        self.model.lm_head.register_forward_pre_hook(_lm_head_add_hook)
                     )
 
                 try:
@@ -326,8 +408,8 @@ class EAPRunner:
                     for h in handles:
                         h.remove()
 
-                deltas[writer_node] = patched_metric - clean_metric
+                scores[edge] = patched_metric - clean_metric
 
-            return deltas
+            return scores
         finally:
             self._restore(was_training, orig_rg)
