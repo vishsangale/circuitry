@@ -11,11 +11,10 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
 
 ## v0.9.1 — near-term (tech debt surfaced during v0.9 validation)
 
-- [ ] **[bug] Lens dispatcher over-iterates activation sources.** `logit_lens_kl` iterates
-  ALL d_model-shaped activations (175 entries on Gemma 4 = 35 layers × 5 sources:
-  self_attn / mlp / layernorm outputs, not just block outputs). Should filter by
-  HookPoint `source` so only block (residual-stream) outputs feed the lens.
-  Today the d_model filter masks crashes but still does wasted work and may mix sources.
+- [x] **[bug] Lens dispatcher over-iterates activation sources.** Done — the `logit_lens_kl`
+  dispatcher now keeps only activations whose module name ends in `.layers.N` (residual-stream
+  block boundary), not every d_model-shaped capture (175 → 35 on Gemma 4). d_model retained as
+  a secondary guard; +1 regression test (198 total).
 - [x] **[debt] Test-filter DRY violation.** Done — extracted to a shared
   `llm_recipe_no_hf_diagnostics` fixture + `HF_ONLY_ACTIVATION_DIAGNOSTICS` constant in
   new `tests/conftest.py`; e2e + perf tests consume the fixture. 194 tests pass, ruff clean.

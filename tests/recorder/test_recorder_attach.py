@@ -593,6 +593,68 @@ def test_logit_lens_kl_is_dispatched_per_block(tmp_path):
     assert "activation/logit_lens_kl/layers.1" in out
 
 
+def test_logit_lens_kl_skips_same_dmodel_submodules(tmp_path):
+    """Regression: the lens must run once per residual-stream block output,
+    not on every d_model-shaped capture. Hooking a submodule (`.lin`) that
+    emits a d_model-wide tensor must NOT produce a logit_lens_kl tag — only
+    the block outputs `layers.N` should. (Pre-fix the dispatcher iterated all
+    d_model-shaped activations: 175 on Gemma 4 instead of 35.)"""
+    import torch
+    import torch.nn as nn
+
+    from circuitry import HookPoint, Recipe, Recorder, TensorSource
+
+    d_model, vocab = 8, 16
+    n_blocks = 2
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lin = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x):
+            return x + self.lin(x)
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layers = nn.ModuleList([_Block() for _ in range(n_blocks)])
+            self.ln_f = nn.LayerNorm(d_model)
+            self.lm_head = nn.Linear(d_model, vocab, bias=False)
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+        def forward(self, x):
+            for b in self.layers:
+                x = b(x)
+            return self.lm_head(self.ln_f(x))
+
+    model = _Tiny()
+    recipe = Recipe(
+        name="lens_submod",
+        hook_points=[
+            HookPoint(source=TensorSource.OUTPUT, pattern=r".*layers\.\d+$"),
+            # Submodule output, same d_model — must be excluded by the lens.
+            HookPoint(source=TensorSource.OUTPUT, pattern=r".*\.lin$"),
+        ],
+        activation_diagnostics=["logit_lens_kl"],
+    )
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl",
+                   every_n_steps=1, strict=False)
+    rec.attach()
+    model(torch.randn(1, 3, d_model))
+    rec.step(0)
+    rec.detach()
+
+    out = (tmp_path / "metrics.jsonl").read_text()
+    assert "activation/logit_lens_kl/layers.0" in out
+    assert "activation/logit_lens_kl/layers.1" in out
+    # The same-d_model submodule captures must NOT be lensed.
+    assert "logit_lens_kl/layers.0.lin" not in out
+    assert "logit_lens_kl/layers.1.lin" not in out
+
+
 def test_induction_score_runs_synthetic_probe_pass(tmp_path):
     """Recorder wires induction_score: tags
     activation/induction_score/<block_name>/head_<i> appear in JSONL."""

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+- `logit_lens_kl` dispatcher now runs once per residual-stream block output instead of once per d_model-shaped activation. It previously kept every captured activation whose last dim matched the unembed `d_model` — on Gemma 4 that was 175 entries (35 layers × 5 sources: self_attn / mlp / layernorm / block outputs) rather than the intended 35 block outputs. The dispatcher now keeps only activations whose module name ends in `.layers.N` (the residual-stream block boundary); the `d_model` check is retained as a secondary guard.
+
 ### Added
 - `Recorder.attach()` now logs a WARN when `induction_score` or `attention_pattern_entropy` is requested but the model's resolved attention implementation (`config._attn_implementation`, or `text_config._attn_implementation` for multimodal) is not `"eager"`. SDPA / flash-attention silently drop per-head attention weights even with `output_attentions=True`, so these diagnostics would otherwise emit zero tags with no explanation; the warning points at the `attn_implementation="eager"` workaround. Only fires when a non-eager implementation is positively detected — non-HF models (no `.config`) stay quiet.
 

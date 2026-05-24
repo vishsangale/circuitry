@@ -645,21 +645,24 @@ class Recorder:
                     if _W_raw.shape[0] >= _W_raw.shape[-1]
                     else _W_raw.shape[0]
                 )
-                # Filter ctx.activations to those whose last dim matches
-                # d_model_unembed. This excludes gate inputs, attention
-                # patterns, and any other hook captures with non-residual
-                # dimensions (e.g. 6144-dim gate activations on Gemma 4).
-                # Sort by numeric layer index (not lexicographic) so that
-                # block_outputs[-1] is the true last layer regardless of
-                # digit count (e.g. layer 9 must not sort after layer 34).
+                # Keep only residual-stream block outputs: activations whose
+                # module name ends in `.layers.N` (or is exactly `layers.N`).
+                # Sub-module outputs (self_attn / mlp / layernorm) and the
+                # down_proj INPUT capture are excluded even though several share
+                # d_model — otherwise the lens runs once per d_model-shaped
+                # activation (175 on Gemma 4) instead of once per layer (35).
+                # The d_model check is a secondary guard. Sort by numeric layer
+                # index so block_outputs[-1] is the true final layer regardless
+                # of digit count (layer 9 must not sort after layer 34).
                 import re as _re
-                def _layer_idx(_n: str) -> int:
-                    _m = _re.search(r'\.layers\.(\d+)(?:\.|$)', _n)
-                    return int(_m.group(1)) if _m else -1
+                def _block_layer_idx(_n: str) -> int | None:
+                    _m = _re.search(r'(?:^|\.)layers\.(\d+)$', _n)
+                    return int(_m.group(1)) if _m else None
                 block_outputs = sorted(
                     ((k, v) for k, v in ctx.activations.items()
-                     if v.shape[-1] == d_model_unembed),
-                    key=lambda kv: (_layer_idx(kv[0]), kv[0]),
+                     if _block_layer_idx(k) is not None
+                     and v.shape[-1] == d_model_unembed),
+                    key=lambda kv: _block_layer_idx(kv[0]),
                 )
                 if not block_outputs:
                     logger.warning(
