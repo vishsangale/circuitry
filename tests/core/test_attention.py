@@ -90,3 +90,26 @@ def test_induction_score_on_cuda():
     scores = induction_score(attn, seq_len_repeat=25)
     assert len(scores) == 4
     assert all(isinstance(x, float) for x in scores)
+
+
+def test_entropy_normalizes_unnormalized_rows():
+    """Rows that don't sum to 1 (sigmoid / linear attention) must be normalized
+    before entropy, so uniform-but-unnormalized weights give ln(seq), not a
+    value inflated by the total mass."""
+    seq, n_heads = 8, 2
+    # Every key weighted 0.5 -> each row sums to 4.0, not 1.0.
+    attn = torch.full((1, n_heads, seq, seq), 0.5)
+    ents = attention_pattern_entropy(attn)
+    for e in ents:
+        assert e == pytest.approx(math.log(seq), abs=1e-5)
+
+
+def test_entropy_handles_fully_masked_zero_rows_without_nan():
+    """A fully-masked query row (all zeros, sums to 0) must not produce NaN;
+    the eps-clamped divide leaves it all-zero -> entropy 0."""
+    seq, n_heads = 5, 1
+    attn = torch.zeros(1, n_heads, seq, seq)
+    attn[0, 0, 0, 0] = 1.0  # row 0 valid (one-hot), rows 1..4 fully masked
+    ents = attention_pattern_entropy(attn)
+    assert not math.isnan(ents[0])
+    assert ents[0] == pytest.approx(0.0, abs=1e-6)

@@ -56,7 +56,15 @@ def induction_score(attn_pattern: Any, *, seq_len_repeat: int) -> list[float]:
 def attention_pattern_entropy(attn_pattern: Any) -> list[float]:
     """Per-head mean Shannon entropy (nats). See spec §4.2 docstring."""
     t = _ensure_4d(_as_tensor(attn_pattern)).detach().to(torch.float32)
+    # Normalize each query row to a probability distribution before computing
+    # entropy. Softmax rows already sum to 1 (no-op within fp tolerance); for
+    # sigmoid / linear attention whose weights don't sum to 1 this makes the
+    # entropy normalization-invariant (a pure concentration measure) so it is
+    # comparable across attention variants. A fully-masked row (sums to 0) stays
+    # all-zero after the eps-clamped divide, and xlogy(0, 0) = 0 -> entropy 0.
+    row_sum = t.sum(dim=-1, keepdim=True)
+    p = t / row_sum.clamp_min(torch.finfo(t.dtype).eps)
     # xlogy(p, p) = p * log(p), and xlogy(0, 0) = 0 (no NaN).
-    plogp = torch.special.xlogy(t, t)
+    plogp = torch.special.xlogy(p, p)
     entropy = -plogp.sum(dim=-1)  # (batch, n_heads, seq)
     return entropy.mean(dim=(0, 2)).tolist()
