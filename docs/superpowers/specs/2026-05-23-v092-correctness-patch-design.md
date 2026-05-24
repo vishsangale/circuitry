@@ -128,11 +128,12 @@ Recorder the inner `LlamaForCausalLM`).
     (it may already be `True`) into an instance attribute and restore exactly that value on
     detach — never blindly `False`.
   - **Restore on partial attach (load-bearing):** `attach()` is long and has fallible steps
-    after this point (e.g. the strict module-resolution check). Guard the post-mutation body so
-    that if `attach()` raises *after* setting `config.output_attentions`, the original value is
-    restored before the exception propagates — a failed attach must never leave the user's
-    `config` mutated. Implementation: a single restore helper called from both the detach path
-    and the attach-failure path (`try/except: restore; raise`), so the two paths can't diverge.
+    (strict module-resolution, SAE checkpoint loading). To guarantee a failed attach never
+    leaves the user's `config` mutated, set `config.output_attentions` as the **final statement
+    of `attach()`**, after all fallible work — `attach()` runs no forward pass, so nothing
+    downstream needs the flag set earlier. Any failure therefore occurs *before* the mutation
+    and cannot pollute the config. `detach()` restores the captured original via a shared
+    `_restore_output_attentions()` helper.
   - If no HF config is reachable (truly non-HF model), **skip silently** rather than inject —
     a model without an HF config won't honor the attribute or the kwarg meaningfully, and
     skipping avoids the `TypeError`.
@@ -145,8 +146,10 @@ Recorder the inner `LlamaForCausalLM`).
   previously raised on attach — now attaches cleanly and captures attention under eager.
 - The config's `output_attentions` is restored to its original value after `detach()`
   (test both original-`False` and original-`True`).
-- Restore-on-partial-attach: force `attach()` to raise after the config mutation (e.g. an
-  unresolvable strict hook) and assert `config.output_attentions` is back to its original value.
+- Restore-on-partial-attach: force `attach()` to raise (e.g. a failing SAE checkpoint load on a
+  recipe that also requests `attention_pattern_entropy`) and assert `config.output_attentions`
+  was **never** set to `True` (stays at its original value) — the mutation-last ordering means a
+  failed attach never touches the config.
 
 ---
 
