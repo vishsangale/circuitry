@@ -1,7 +1,7 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through v0.9.1 (2026-05-23);
-all tags + GitHub Releases v0.1.0 → v0.9.1 are published. The design contract is
+Tracking doc for open work and future improvements. Released through v0.9.2 (2026-05-23);
+all tags + GitHub Releases v0.1.0 → v0.9.2 are published. The design contract is
 `docs/design.md` — any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
@@ -16,9 +16,11 @@ Field report from a user running circuitry to compare softmax vs sigmoid attenti
 `main` (HEAD `e1bfbd5`); line references and staleness notes are mine. Suggested release
 grouping is a proposal, not yet decided.
 
-**Correctness / robustness (candidate v0.9.2 patch):**
+**Correctness / robustness (✅ SHIPPED in v0.9.2):**
 
-- [ ] **[bug] `attention_pattern_entropy` is not normalization-invariant.** `core/attention.py:56-62`
+- [x] **[bug] `attention_pattern_entropy` is not normalization-invariant.** Done (v0.9.2) — rows are
+  normalized (eps-clamped) before entropy; Recorder warns once on non-normalized rows. Original detail:
+  `core/attention.py:56-62`
   computes raw `-Σ xlogy(p,p)` over the key axis. Valid for softmax (rows sum to 1), but for
   attention whose weights don't sum to 1 (sigmoid / some linear attention) it conflates
   *concentration* with *total attention mass* — the number isn't a true entropy and
@@ -26,14 +28,19 @@ grouping is a proposal, not yet decided.
   (their highest-value item). Fix: normalize rows by their sum before entropy, or emit a separate
   normalization-invariant concentration metric; warn when row-sums deviate from 1. Confirmed
   accurate against current code.
-- [ ] **[bug] `logit_lens_kl` OOMs at modest scale and takes down the whole run.** `core/lens.py:72`
+- [x] **[bug] `logit_lens_kl` OOMs at modest scale and takes down the whole run.** Done (v0.9.2) —
+  token-chunked (`chunk_size=256`); per-layer OOM warns + skips + keeps the run alive; new
+  `Recipe.lens_max_tokens` cost lever. (`lens_layers` intentionally deferred.) Original detail: `core/lens.py:72`
   materializes a full `(batch, seq, vocab)` logits tensor, upcast to float32 (lines 66/69 — doubles
   the footprint vs bf16); the Recorder calls it once per layer, so cost accumulates across layers
   (~1.5 GB/layer at seq 512, vocab 47k → OOM on a 16 GB GPU at 10M params). Fix: chunk over
   layers/seq and free between; subsample positions/layers; run in model dtype; degrade gracefully
   (skip + warn) on OOM instead of crashing the run. Expose `lens_layers` / `lens_max_tokens` knobs.
   Confirmed accurate.
-- [ ] **[bug] `output_attentions=True` kwarg injection breaks on wrapped models.** `recorder/live.py:427-435`
+- [x] **[bug] `output_attentions=True` kwarg injection breaks on wrapped models.** Done (v0.9.2) —
+  enabled via `config.output_attentions` (set as the final `attach()` step, restored on `detach()`)
+  instead of forward-kwarg injection; no more `TypeError` on `**kwargs`-less wrappers. Original detail:
+  `recorder/live.py:427-435`
   installs a forward-pre-hook on the passed model that injects `output_attentions=True` into kwargs;
   a thin wrapper whose `forward(input_ids, labels)` lacks `**kwargs` raises `TypeError` (the reporter
   had to hand it the inner `LlamaForCausalLM`). Fix: prefer `config._attn_implementation="eager"` /
@@ -52,12 +59,11 @@ grouping is a proposal, not yet decided.
   `circuitry compare run_a run_b` (per-family deltas, seed aggregation) — otherwise every comparison
   user re-writes a jsonl parser, as the reporter did.
 
-**Trivial / docs (quick wins):**
+**Trivial / docs (✅ SHIPPED in v0.9.2):**
 
-- [ ] **[feat] No `circuitry --version`.** Confirmed — `cli/main.py` argparse exposes no `--version`
-  flag (forces an `importlib.metadata` workaround). Easy add to the top-level parser.
-- [ ] **[docs] Clarify `scan` vs. live `report`.** `report` works directly on a live `metrics.jsonl`
-  (no `findings.json` needed), but that path isn't documented next to the checkpoint-scan →
+- [x] **[feat] No `circuitry --version`.** Done (v0.9.2) — added to the top-level parser.
+- [x] **[docs] Clarify `scan` vs. live `report`.** Done (v0.9.2) — README + design.md now document both
+  the live `metrics.jsonl` path and the checkpoint-scan →
   `findings.json` → `report` flow.
 
 **Already addressed in current `main` (no action — reporter's item #4):**
