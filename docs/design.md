@@ -131,12 +131,12 @@ spectral.rank_trajectory(state_dicts: list[dict]) -> dict[str, list[float]]
 
 # lens (v0.9)
 from circuitry.core import lens
-lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, layer_norm=None) -> float
+lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # chunk_size bounds the (tokens, vocab) transient (v0.9.2)
 
 # attention screening (v0.9)
 from circuitry.core import attention
 attention.induction_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]
-attention.attention_pattern_entropy(attn_pattern: Tensor) -> list[float]
+attention.attention_pattern_entropy(attn_pattern: Tensor) -> list[float]  # normalizes each query row before entropy → comparable across attention variants (v0.9.2)
 
 # SAE workflow (v0.9)
 from circuitry import sae
