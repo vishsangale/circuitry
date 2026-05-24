@@ -15,17 +15,7 @@
 
 ## Agent delegation strategy
 
-Claude (Opus) orchestrates, implementation goes to Haiku/Sonnet subagents, large-context reads and reviews go to Gemini.
-
-| Task | Agent | Tool / model |
-|------|-------|---------------|
-| Implement a plan task (write files, run tests) | **Claude subagent** | `Agent` with `subagent_type: "claude"`, `model: "haiku"` for well-specified tasks, `"sonnet"` for tasks that need judgment |
-| Read + summarize large code sections | **Gemini** | `mcp__gemini-bridge__consult_gemini_with_files` |
-| Spec / code review | **Gemini** | `mcp__gemini-bridge__consult_gemini_with_files`, `model="flash"` for quick, `"pro"` for deep |
-| Locate code by symbol / pattern | **Explore agent** | `Agent` with `subagent_type: "Explore"` |
-| Orchestration, planning, user dialog | **Claude (this session)** | direct |
-
-Use the `superpowers:subagent-driven-development` skill for plan execution.
+See the user-global `~/.claude/CLAUDE.md`: Opus orchestrates; implementation -> Haiku/Sonnet subagents (`Agent`, `subagent_type:"claude"`); large-context reads/reviews -> Gemini bridge; code-location -> Explore agent; plan execution via `superpowers:subagent-driven-development`.
 
 ## Library invariants (CI-enforced)
 
