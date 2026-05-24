@@ -188,6 +188,8 @@ circuitry report --run runs/my_run
 circuitry list-recipes
 ```
 
+`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `findings.json` produced by `scan`.
+
 ### 4.4 `Recipe` and hook escape hatches
 
 ```python

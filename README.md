@@ -38,6 +38,13 @@ circuitry scan   --run runs/my_run --recipe llm
 circuitry report --run runs/my_run
 ```
 
+`circuitry report` has two entry points:
+
+- **Live run** — the `Recorder` writes `metrics.jsonl` during training; run
+  `circuitry report --run <dir>` directly on it. No `scan`, no `findings.json`.
+- **Retrospective** — `circuitry scan` reads saved checkpoints and writes
+  `findings.json`, which `circuitry report` then renders.
+
 ## What you get
 
 - **Primitives** (`circuitry.core.*`) — `effective_rank`, `stable_rank`, `heavy_tail_alpha`, `dead_fraction`, `kurtosis`, `participation_ratio`, `layer_norm`, ESD, rank trajectory, and more.
