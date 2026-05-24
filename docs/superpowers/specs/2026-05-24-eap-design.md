@@ -221,6 +221,38 @@ score = Σ_d_model ( corrupted_act[writer] − clean_act[writer] ) ⊙ grad[read
 - **EAP-IG:** replace `grad[reader, slot]` with the activation-interpolated
   average (§3).
 
+### 5.1 The metric must be differentiable
+
+EAP's gradient requires a metric that returns a **differentiable 0-d tensor**,
+not a Python float. The core float-returning metrics (`logit_diff`,
+`kl_divergence`, `ce_loss`) call `.detach()` and so **cannot** drive the EAP
+backward pass. Therefore:
+
+- `EAPRunner.run(metric=...)` takes `metric: Callable[[Tensor], Tensor]`.
+- `core/patching.py` gains tensor-returning siblings — `logit_diff_t`,
+  `kl_divergence_t`, `ce_loss_t` — identical math, **no `.detach()`**, returning
+  a grad-carrying scalar. The float versions stay for `PatchRunner` and tests.
+- The brute-force cross-check `.item()`s the metric at the measurement boundary.
+
+Spec example: `metric=lambda logits: logit_diff_t(logits, correct=tok_a, incorrect=tok_b)`.
+
+### 5.2 Reader-input isolation (component-read-only edges)
+
+Each reader's gradient must be **component-only**: `grad[mlp(L), mlp_in]` is the
+gradient w.r.t. *the MLP's read of the residual*, not the residual variable
+(which is shared with the bypass and with downstream readers). On a raw
+PyTorch model the residual tensor feeds many consumers, so EAP must split it:
+a forward-pre-hook on the reader's projection (`up_proj` for `mlp_in`;
+`q_proj`/`k_proj`/`v_proj` for attn slots; `lm_head` for `logits_in`) returns a
+**distinct clone** `x.clone().requires_grad_(True)` whose `.grad` (via
+`retain_grad`) is the component-only gradient. The bypass keeps using the
+original residual. **A full-residual `mlp_in` gradient is a bug** — it
+double-counts the bypass paths, which are already represented as separate edges
+(`u → logits`, `u → mlp_{L+1}`, …). The brute-force per-edge patch adds `Δact_u`
+to that *same clone* (the projection input only) — never via a `down_proj`
+post-hook on the residual. The clone pattern (`_split_reader_input`) is reused
+across all reader slots in Tasks 4–5.
+
 ---
 
 ## 6. Module layout
@@ -233,7 +265,9 @@ patching/
   sites.py     EXTEND — reader-slot resolution (q/k/v/mlp_in/logits_in →
                      module + per-head back-map metadata) for HF and TL,
                      alongside the existing writer-side resolvers.
-core/patching.py  REUSE — logit_diff / kl_divergence / ce_loss as metrics.
+core/patching.py  EXTEND — add tensor-returning metric siblings logit_diff_t /
+                     kl_divergence_t / ce_loss_t (no .detach(); for EAP's
+                     differentiable backward). Float versions unchanged.
 ```
 
 **Layering:** unchanged invariants — `patching/` imports `core/` + `recipes/`,
@@ -296,13 +330,13 @@ ACDC (sub-spec 4) prunes.
 ```python
 from circuitry.patching.eap import EAPRunner
 from circuitry.patching.sites import HFSiteResolver
-from circuitry.core.patching import logit_diff
+from circuitry.core.patching import logit_diff_t   # tensor-returning (differentiable)
 
 runner = EAPRunner(model, HFSiteResolver.from_config(model.config))
 result = runner.run(
     clean_inputs=clean_ids,
     corrupted_inputs=corrupted_ids,
-    metric=lambda logits: logit_diff(logits, correct=tok_a, incorrect=tok_b),
+    metric=lambda logits: logit_diff_t(logits, correct=tok_a, incorrect=tok_b),
     ig_steps=1,            # 1 = vanilla EAP; N>1 = EAP-IG
 )
 circuit = result.threshold(0.01)   # list[Edge]
