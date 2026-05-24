@@ -8,18 +8,21 @@ import ast
 import pathlib
 import sys
 
+import pytest
+
 SRC = pathlib.Path(__file__).parent.parent / "src" / "circuitry"
 
 FORBIDDEN = {
-    "core": ("circuitry.recorder", "circuitry.recipes", "circuitry.writers", "circuitry.cli"),
+    "core": ("circuitry.recorder", "circuitry.recipes", "circuitry.writers", "circuitry.cli", "circuitry.patching"),
     "recipes": ("circuitry.cli",),
+    "patching": ("circuitry.cli",),
 }
 
 # Allowlist for the reverse-dependency rule (§3): `circuitry` may only import
 # from itself, the standard library, or its declared third-party deps. Any
 # other root package implies an unauthorized dependency on a consumer codebase
 # or an undeclared third-party — both should fail this test.
-ALLOWED_ROOTS = frozenset({"circuitry", "torch", "numpy", "tensorboard", "sae_lens"}) | sys.stdlib_module_names
+ALLOWED_ROOTS = frozenset({"circuitry", "torch", "numpy", "tensorboard", "sae_lens", "transformer_lens"}) | sys.stdlib_module_names
 
 
 def _imports(path: pathlib.Path) -> set[str]:
@@ -69,3 +72,16 @@ def test_only_approved_root_packages_imported():
                 f"new third-party dep that needs declaring in pyproject.toml "
                 f"and added to ALLOWED_ROOTS in this test."
             )
+
+
+def test_patching_does_not_import_cli():
+    patching_dir = SRC / "patching"
+    if not patching_dir.exists():
+        pytest.skip("patching/ not yet created")
+    for py in patching_dir.rglob("*.py"):
+        for imp in _imports(py):
+            for forbidden in FORBIDDEN["patching"]:
+                assert not imp.startswith(forbidden), (
+                    f"patching/{py.relative_to(patching_dir)} imports {imp}, "
+                    f"violating layering rule"
+                )

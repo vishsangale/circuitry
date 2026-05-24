@@ -224,3 +224,76 @@ class HFSiteResolver:
             )
 
         raise ValueError(f"Unresolved component: {site.component}")
+
+
+# --------------- TL site resolver ---------------
+
+_TL_HOOK_MAP = {
+    "resid_pre": "blocks.{L}.hook_resid_pre",
+    "resid_post": "blocks.{L}.hook_resid_post",
+    "attn_head_out": "blocks.{L}.attn.hook_z",
+    "mlp_out": "blocks.{L}.mlp.hook_post",
+    "mlp_neuron": "blocks.{L}.mlp.hook_post",
+}
+
+
+class TLSiteResolver:
+    """Resolve Sites to TransformerLens hook names. Lazy transformer_lens import."""
+
+    def hook_name(self, site: Site) -> str:
+        template = _TL_HOOK_MAP.get(site.component)
+        if template is None:
+            raise ValueError(f"No TL hook mapping for {site.component}")
+        return template.replace("{L}", str(site.layer))
+
+    def resolve(self, model: nn.Module, site: Site) -> ResolvedSite:
+        try:
+            import transformer_lens  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "transformer_lens is required for TLSiteResolver.resolve(). "
+                "Install it with: pip install transformer_lens"
+            ) from None
+
+        hook_name = self.hook_name(site)
+        hook_point = model.hook_dict[hook_name]  # type: ignore[attr-defined]
+        pos = site.position
+
+        if site.component == "attn_head_out":
+            head = site.head
+            return ResolvedSite(
+                module=hook_point,
+                is_input_hook=False,
+                extract=lambda x, _h=head, _pos=pos: (
+                    _pos_extract(x[:, :, _h, :], _pos) if x.ndim == 4
+                    else _pos_extract(x, _pos)
+                ),
+                inject=lambda full, val, _h=head, _pos=pos: _inject_tl_head(full, val, _h, _pos),
+            )
+
+        if site.component == "mlp_neuron":
+            neuron = site.neuron
+            return ResolvedSite(
+                module=hook_point,
+                is_input_hook=False,
+                extract=lambda x, _n=neuron, _pos=pos: _extract_neuron(x, _n, _pos),
+                inject=lambda full, val, _n=neuron, _pos=pos: _inject_neuron(full, val, _n, _pos),
+            )
+
+        return ResolvedSite(
+            module=hook_point,
+            is_input_hook=False,
+            extract=lambda x, _pos=pos: _pos_extract(x, _pos),
+            inject=lambda full, val, _pos=pos: _pos_inject(full, val, _pos),
+        )
+
+
+def _inject_tl_head(
+    full: Tensor, val: Tensor, head: int, pos: int | slice | None,
+) -> Tensor:
+    out = full.clone()
+    if pos is None:
+        out[:, :, head, :] = val
+    else:
+        out[:, pos, head, :] = val
+    return out
