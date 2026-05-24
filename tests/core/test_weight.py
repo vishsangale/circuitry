@@ -138,3 +138,13 @@ def test_direction_cosine_opposite_updates():
     sd_n = {"w": torch.zeros(2, 2)}  # update reverses
     out = weight.direction_cosine(sd_n, sd_p, sd_pp)
     assert abs(out["w"] - (-1.0)) < 1e-6
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_singular_values_on_cuda():
+    # Regression (v0.9.1): the max_dim subsample built a CPU randperm index and
+    # index_select'd a CUDA matrix → device mismatch. 768 > max_dim 512 triggers it.
+    W = torch.randn(768, 768, device="cuda")
+    s = weight.singular_values(W)
+    assert s.numel() > 0
+    assert torch.isfinite(s).all()

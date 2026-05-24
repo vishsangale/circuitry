@@ -24,11 +24,12 @@ def esd(W: ArrayLike, bins: int = 100) -> tuple[torch.Tensor, torch.Tensor]:
     """
     s = weight.singular_values(W)
     if s.numel() == 0:
-        edges = torch.linspace(0.0, 1.0, bins + 1)
-        counts = torch.zeros(bins)
+        edges = torch.linspace(0.0, 1.0, bins + 1, device=s.device)
+        counts = torch.zeros(bins, device=s.device)
         return edges, counts
     counts = torch.histc(s, bins=bins, min=float(s.min().item()), max=float(s.max().item()))
-    edges = torch.linspace(float(s.min().item()), float(s.max().item()), bins + 1)
+    edges = torch.linspace(float(s.min().item()), float(s.max().item()), bins + 1,
+                           device=s.device)
     if counts.sum() == 0:  # degenerate (all values identical)
         counts[0] = s.numel()
     return edges, counts

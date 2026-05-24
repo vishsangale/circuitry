@@ -36,3 +36,12 @@ def test_rank_trajectory_skips_non_2d():
     traj = spectral.rank_trajectory([W1, W2])
     assert "bias" not in traj
     assert "W" in traj
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_esd_returns_consistent_devices_on_cuda():
+    # Regression (v0.9.1): edges (linspace) came back on CPU while counts (histc)
+    # were on CUDA — a device-inconsistent pair from a CUDA input.
+    W = torch.randn(64, 64, device="cuda")
+    edges, counts = spectral.esd(W, bins=20)
+    assert edges.device == counts.device

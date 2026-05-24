@@ -46,7 +46,7 @@ def induction_score(attn_pattern: Any, *, seq_len_repeat: int) -> list[float]:
             f"induction_score: seq={seq} must be >= 2 * seq_len_repeat="
             f"{2 * seq_len_repeat}"
         )
-    ts = torch.arange(seq_len_repeat - 1)
+    ts = torch.arange(seq_len_repeat - 1, device=t.device)
     query_idx = ts + seq_len_repeat
     key_idx = ts + 1
     selected = t[:, :, query_idx, key_idx]  # (batch, n_heads, len(ts))

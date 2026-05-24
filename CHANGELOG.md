@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Fixed
+- **GPU device-correctness in three `core/` primitives.** `weight.singular_values` (and thus `effective_rank` / `stable_rank` / `sv_histogram` / `heavy_tail_alpha`) built its `max_dim` subsample index with a CPU `torch.randperm` and `index_select`-ed a CUDA matrix — a hard crash on GPU weights wider than `max_dim`. `attention.induction_score` indexed a CUDA attention tensor with CPU `arange` indices. `spectral.esd` returned CPU `linspace` edges alongside CUDA `histc` counts. All fixed by propagating the input tensor's `.device` (no `.cuda()` calls — invariant #4 preserved). Surfaced bringing up the GPU benchmark; CPU paths were unaffected.
 - `logit_lens_kl` dispatcher now runs once per residual-stream block output instead of once per d_model-shaped activation. It previously kept every captured activation whose last dim matched the unembed `d_model` — on Gemma 4 that was 175 entries (35 layers × 5 sources: self_attn / mlp / layernorm / block outputs) rather than the intended 35 block outputs. The dispatcher now keeps only activations whose module name ends in `.layers.N` (the residual-stream block boundary); the `d_model` check is retained as a secondary guard.
 
 ### Added

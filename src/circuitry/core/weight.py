@@ -39,7 +39,7 @@ def singular_values(
         # Sample columns from the longer axis to keep SVD bounded.
         axis = 1 if M.shape[1] > M.shape[0] else 0
         n = M.shape[axis]
-        idx = torch.randperm(n)[:max_dim]
+        idx = torch.randperm(n, device=M.device)[:max_dim]
         M = M.index_select(axis, idx)
     s = torch.linalg.svdvals(M)
     s, _ = torch.sort(s, descending=True)

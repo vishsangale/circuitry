@@ -80,3 +80,13 @@ def test_entropy_of_one_hot_attention_is_zero():
     ents = attention_pattern_entropy(attn)
     for e in ents:
         assert e == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_induction_score_on_cuda():
+    # Regression (v0.9.1): arange query/key index tensors were on CPU while the
+    # attn pattern was on CUDA → device mismatch in advanced indexing.
+    attn = torch.rand(2, 4, 50, 50, device="cuda")
+    scores = induction_score(attn, seq_len_repeat=25)
+    assert len(scores) == 4
+    assert all(isinstance(x, float) for x in scores)
