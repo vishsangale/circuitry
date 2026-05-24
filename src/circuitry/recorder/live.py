@@ -25,11 +25,15 @@ from circuitry.writers.base import MetricWriter
 
 logger = logging.getLogger("circuitry")
 
+# All four are SVD-derived: they consume a matrix's singular values. The
+# recorder computes the SVD once per matrix per step (see _run_diagnostics)
+# and feeds these `_from_sv` variants, so the stock recipe's 4 SVD diagnostics
+# + sv_histogram share one SVD instead of recomputing it 5x per matrix.
 _WEIGHT_DIAGS = {
-    "effective_rank": _w.effective_rank,
-    "stable_rank": _w.stable_rank,
-    "condition_number": _w.condition_number,
-    "heavy_tail_alpha": _w.heavy_tail_alpha,
+    "effective_rank": _w._effective_rank_from_sv,
+    "stable_rank": _w._stable_rank_from_sv,
+    "condition_number": _w._condition_number_from_sv,
+    "heavy_tail_alpha": _w._heavy_tail_alpha_from_sv,
 }
 
 _ACT_DIAGS = {
@@ -567,6 +571,21 @@ class Recorder:
 
     def _run_diagnostics(self, ctx: StepContext) -> None:
         assert self._writer is not None
+
+        # Singular values of each weight matrix are computed at most once per
+        # step and shared across all SVD-derived diagnostics (effective_rank,
+        # stable_rank, condition_number, heavy_tail_alpha, sv_histogram). Keyed
+        # by id(); the weight tensors are stable for the duration of this call.
+        from circuitry.core.weight import singular_values as _singular_values
+        _sv_cache: dict[int, torch.Tensor] = {}
+
+        def _sv(w: torch.Tensor) -> torch.Tensor:
+            s = _sv_cache.get(id(w))
+            if s is None:
+                s = _singular_values(w)
+                _sv_cache[id(w)] = s
+            return s
+
         for name in self.recipe.weight_diagnostics:
             if not self._enabled(name):
                 continue
@@ -607,17 +626,17 @@ class Recorder:
                 continue
             elif name == "sv_histogram":
                 if ctx.weights:
-                    from circuitry.core.weight import singular_values
                     for mod_name, w in ctx.weights.items():
-                        sv = singular_values(w)
-                        self._writer.add_histogram(f"spectral/per_param/{mod_name}/sv_histogram", sv, ctx.step)
+                        self._writer.add_histogram(
+                            f"spectral/per_param/{mod_name}/sv_histogram",
+                            _sv(w), ctx.step)
             else:
                 fn = _WEIGHT_DIAGS.get(name)
                 if fn is None:
                     logger.warning("circuitry: unknown weight diagnostic %r — skipping", name)
                     continue
                 for mod_name, w in ctx.weights.items():
-                    self._writer.add_scalar(f"weight/{name}/{mod_name}", float(fn(w)), ctx.step)
+                    self._writer.add_scalar(f"weight/{name}/{mod_name}", float(fn(_sv(w))), ctx.step)
 
         for name in self.recipe.activation_diagnostics:
             if not self._enabled(name):

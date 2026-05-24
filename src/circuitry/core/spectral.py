@@ -22,7 +22,10 @@ def esd(W: ArrayLike, bins: int = 100) -> tuple[torch.Tensor, torch.Tensor]:
     ``torch.utils.tensorboard.SummaryWriter.add_histogram`` after a small
     reshape, and also human-plottable.
     """
-    s = weight.singular_values(W)
+    return _esd_from_sv(weight.singular_values(W), bins)
+
+
+def _esd_from_sv(s: torch.Tensor, bins: int = 100) -> tuple[torch.Tensor, torch.Tensor]:
     if s.numel() == 0:
         edges = torch.linspace(0.0, 1.0, bins + 1, device=s.device)
         counts = torch.zeros(bins, device=s.device)

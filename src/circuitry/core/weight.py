@@ -52,7 +52,10 @@ def effective_rank(W: ArrayLike, eps: float = 1e-12) -> float:
     """Roy & Vetterli (2007) effective rank: ``exp(H(p))`` where ``p`` is the
     normalized singular-value distribution.
     """
-    s = singular_values(W)
+    return _effective_rank_from_sv(singular_values(W), eps)
+
+
+def _effective_rank_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
     s = s[s > eps]
     if s.numel() == 0:
         return 0.0
@@ -65,7 +68,10 @@ def stable_rank(W: ArrayLike) -> float:
     """``||W||_F^2 / ||W||_2^2``. Lower-bounds the algebraic rank and is
     numerically robust on near-singular matrices.
     """
-    s = singular_values(W)
+    return _stable_rank_from_sv(singular_values(W))
+
+
+def _stable_rank_from_sv(s: torch.Tensor) -> float:
     if s.numel() == 0:
         return 0.0
     return float((s.pow(2).sum() / (s[0].pow(2))).item())
@@ -75,7 +81,10 @@ def condition_number(W: ArrayLike, eps: float = 1e-12) -> float:
     """``sigma_max / sigma_min``. Returns ``+inf`` if the smallest singular
     value is below ``eps``.
     """
-    s = singular_values(W)
+    return _condition_number_from_sv(singular_values(W), eps)
+
+
+def _condition_number_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
     if s.numel() == 0 or s[-1].item() < eps:
         return float("inf")
     return float((s[0] / s[-1]).item())
@@ -88,7 +97,10 @@ def heavy_tail_alpha(W: ArrayLike, top_frac: float = 0.5) -> float:
 
     Returns ``+inf`` on degenerate inputs.
     """
-    s = singular_values(W)
+    return _heavy_tail_alpha_from_sv(singular_values(W), top_frac)
+
+
+def _heavy_tail_alpha_from_sv(s: torch.Tensor, top_frac: float = 0.5) -> float:
     if s.numel() < 4:
         return float("inf")
     s2 = s.pow(2).sort(descending=True).values

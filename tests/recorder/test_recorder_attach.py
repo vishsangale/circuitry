@@ -284,6 +284,40 @@ def test_attach_no_attn_impl_warning_without_config(tmp_path, caplog):
     assert not any("attn_implementation" in r.message for r in caplog.records)
 
 
+def test_svd_shared_across_weight_diagnostics(tmp_path, monkeypatch):
+    """Regression (v0.9.1 perf): the SVD-derived weight diagnostics share one
+    singular_values() call per matrix per step, instead of each recomputing it.
+    With 4 SVD diagnostics on a 2-matrix model, expect 2 SVD calls — not 8."""
+    import circuitry.core.weight as cw
+
+    calls = {"n": 0}
+    real = cw.singular_values
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(cw, "singular_values", counting)
+
+    register_recipe(Recipe(
+        name="svd_share",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r".*")],
+        weight_diagnostics=["effective_rank", "stable_rank",
+                            "heavy_tail_alpha", "sv_histogram"],
+        expected_min_matches={r".*": 0},
+    ))
+    model = _toy_model()  # nn.Sequential(Linear, ReLU, Linear) → 2 weight matrices
+    rec = Recorder(model, run_dir=tmp_path, recipe="svd_share",
+                   writer=RecordingWriter(), every_n_steps=1, strict=False)
+    rec.attach()
+    rec.step(0)
+    rec.detach()
+    assert calls["n"] == 2, (
+        f"expected 1 SVD per matrix (2 matrices), got {calls['n']} — "
+        "SVD sharing across diagnostics regressed"
+    )
+
+
 def test_recorder_noop_on_non_zero_rank(monkeypatch, tmp_path):
     _register_demo()
     monkeypatch.setattr("torch.distributed.is_initialized", lambda: True)

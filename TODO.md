@@ -48,11 +48,15 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
   holds. Bring-up also surfaced + fixed 3 GPU device bugs in `core/`. See observations doc + the
   follow-up below.
 
-- [ ] **[perf] GPU cost of SVD-based weight diagnostics dominates emission time.** ~4.1 s/emission
-  on an 88M model (effective_rank / stable_rank / heavy_tail_alpha / sv_histogram, all via
-  `svdvals` over ~80 matrices). Profile and consider GPU-aware mitigations: lower `max_dim`
-  default, batch/skip some SVDs, a lighter default recipe on GPU, or documenting a larger default
-  `every_n_steps` on GPU. (Surfaced by the item-10 GPU bench.)
+- [x] **[perf] GPU cost of SVD-based weight diagnostics dominates emission time.** Done (primary
+  win) — the SVD was computed 4× redundantly (each of effective_rank / stable_rank /
+  heavy_tail_alpha / sv_histogram called `singular_values` independently). Recorder now computes
+  it once per matrix per step and shares it: ~4× fewer SVDs, per-emission ~4.1 s → ~1.08 s on the
+  88M GPU bench (+1202% → +306% at every-25). Helps CPU equally. 206 tests pass.
+- [ ] **[perf] Further SVD cost reduction (optional).** After sharing, the irreducible cost is one
+  SVD per matrix (~1 s for 58 matrices on GPU). Headroom: lower `max_dim` default (accuracy
+  trade-off), or compute singular values via eigvalsh on the smaller Gram matrix (W^T W). Only
+  needed if the ≤10% §10 budget must hold at aggressive cadences on fast GPUs.
 
 ## v1.0 — major
 
