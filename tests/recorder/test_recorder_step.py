@@ -278,3 +278,77 @@ def test_attention_pattern_entropy_uses_main_pass_not_probe(tmp_path):
     assert set(head_vals) == {0, 1}
     for i in (0, 1):
         assert head_vals[i] == pytest.approx(expected_entropies[i], abs=1e-4)
+
+
+def test_attention_entropy_warns_once_on_unnormalized_rows(tmp_path, caplog):
+    """When captured attention rows don't sum to 1 (sigmoid-like), the Recorder
+    warns once that entropy is over the normalized shape."""
+    import logging
+    import types
+    import torch
+    import torch.nn as nn
+
+    from circuitry import HookPoint, Recipe, Recorder, TensorSource
+
+    d_model, n_heads = 8, 2
+
+    class _Attn(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = nn.Linear(d_model, d_model, bias=False)
+            self.k_proj = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x, output_attentions: bool = False):
+            B, T, D = x.shape
+            H = n_heads
+            q = self.q_proj(x).view(B, T, H, D // H).transpose(1, 2)
+            k = self.k_proj(x).view(B, T, H, D // H).transpose(1, 2)
+            scores = (q @ k.transpose(-2, -1)) / (D // H) ** 0.5
+            attn = torch.sigmoid(scores)  # rows do NOT sum to 1
+            out = (attn @ q)  # shape only; value irrelevant
+            out = out.transpose(1, 2).reshape(B, T, D)
+            if output_attentions:
+                return out, attn
+            return out
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.self_attn = _Attn()
+
+        def forward(self, x, output_attentions: bool = False):
+            return self.self_attn(x, output_attentions=output_attentions)
+
+    class _M(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = types.SimpleNamespace(
+                output_attentions=False, _attn_implementation="eager")
+            self.layers = nn.ModuleList([_Block()])
+
+        def forward(self, x, output_attentions=None):
+            # Dual-mode: under the current kwarg injection it receives
+            # output_attentions as a kwarg; if absent it reads config.
+            if output_attentions is None:
+                output_attentions = self.config.output_attentions
+            for b in self.layers:
+                x = b(x, output_attentions=output_attentions)
+            return x
+
+    model = _M()
+    recipe = Recipe(
+        name="entropy_warn",
+        hook_points=[HookPoint(source=TensorSource.OUTPUT,
+                               pattern=r"layers\.\d+\.self_attn$")],
+        activation_diagnostics=["attention_pattern_entropy"],
+    )
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl",
+                   every_n_steps=1, strict=False)
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    rec.attach()
+    model(torch.randn(1, 4, d_model))
+    rec.step(0)
+    rec.detach()
+
+    warns = [r for r in caplog.records if "do not sum to 1" in r.getMessage()]
+    assert len(warns) == 1, [r.getMessage() for r in caplog.records]

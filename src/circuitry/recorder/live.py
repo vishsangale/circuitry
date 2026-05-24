@@ -147,6 +147,7 @@ class Recorder:
         self._lens_meta: _LensMeta | None = None
         self._induction_probe: torch.Tensor | None = None
         self._main_pass_attn: dict[str, torch.Tensor] = {}
+        self._warned_unnormalized_attn = False
         self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
@@ -780,6 +781,19 @@ class Recorder:
                     attention_pattern_entropy as _ape,
                 )
                 for mn, attn in self._main_pass_attn.items():
+                    if not self._warned_unnormalized_attn:
+                        rs = attn.detach().to(torch.float32).sum(dim=-1)
+                        dev = (rs - 1.0).abs().max().item()
+                        if dev > 1e-3:
+                            logger.warning(
+                                "circuitry: attention_pattern_entropy rows do "
+                                "not sum to 1 (max deviation %.3g) — entropy is "
+                                "computed over the normalized attention shape; "
+                                "total attention mass is discarded. Values are "
+                                "comparable across attention variants but are "
+                                "not raw softmax entropy.", dev,
+                            )
+                            self._warned_unnormalized_attn = True
                     ents = _ape(attn)
                     for i, e in enumerate(ents):
                         self._writer.add_scalar(
