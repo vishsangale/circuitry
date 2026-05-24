@@ -24,6 +24,7 @@ class Recipe:
     module_prefix: str | None = None
     sae_checkpoints: dict[str, tuple[str, str]] | None = None
     induction_probe_seq_len: int = 25
+    lens_max_tokens: int | None = None
 
     def with_prefix(self, prefix: str) -> Recipe:
         """Return a new Recipe scoped to ``prefix``.

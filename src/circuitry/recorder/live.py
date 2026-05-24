@@ -693,8 +693,11 @@ class Recorder:
                     self._lens_meta = None
                     continue
                 _last_name, last_x = block_outputs[-1]
+                max_tok = self.recipe.lens_max_tokens
                 with torch.inference_mode():
                     last_f32 = last_x.detach().to(torch.float32)
+                    if max_tok is not None:
+                        last_f32 = last_f32[:, :max_tok, :]
                     ln = self._lens_meta.layer_norm
                     last_normed = ln(last_f32) if ln is not None else last_f32
                     W = _W_raw.to(torch.float32)
@@ -704,10 +707,26 @@ class Recorder:
                     else:
                         final_logits = last_normed @ W
                 for mod_name, x in block_outputs:
-                    kl = _llk(
-                        x, self._lens_meta.unembed, final_logits,
-                        layer_norm=self._lens_meta.layer_norm,
-                    )
+                    if max_tok is not None:
+                        x = x[:, :max_tok, :]
+                    try:
+                        kl = _llk(
+                            x, self._lens_meta.unembed, final_logits,
+                            layer_norm=self._lens_meta.layer_norm,
+                        )
+                    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                        if (not isinstance(e, torch.cuda.OutOfMemoryError)
+                                and "out of memory" not in str(e).lower()):
+                            raise
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        logger.warning(
+                            "circuitry: logit_lens_kl ran out of memory on %s — "
+                            "skipping this layer's emission for this step. Set "
+                            "recipe.lens_max_tokens to cap the lens cost. (%s)",
+                            mod_name, e,
+                        )
+                        continue
                     self._writer.add_scalar(
                         f"activation/logit_lens_kl/{mod_name}", kl, ctx.step,
                     )

@@ -352,3 +352,109 @@ def test_attention_entropy_warns_once_on_unnormalized_rows(tmp_path, caplog):
 
     warns = [r for r in caplog.records if "do not sum to 1" in r.getMessage()]
     assert len(warns) == 1, [r.getMessage() for r in caplog.records]
+
+
+def _lens_model_and_recipe(lens_max_tokens=None):
+    import torch.nn as nn
+    from circuitry import HookPoint, Recipe, TensorSource
+
+    d_model, vocab = 8, 16
+
+    class _Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = nn.Linear(d_model, d_model, bias=False)
+
+        def forward(self, x):
+            return x + self.lin(x)
+
+    class _Tiny(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = nn.ModuleList([_Block(), _Block()])
+            self.ln_f = nn.LayerNorm(d_model)
+            self.lm_head = nn.Linear(d_model, vocab, bias=False)
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+        def forward(self, x):
+            for b in self.layers:
+                x = b(x)
+            return self.lm_head(self.ln_f(x))
+
+    recipe = Recipe(
+        name=f"lens_{lens_max_tokens}",
+        hook_points=[HookPoint(source=TensorSource.OUTPUT,
+                               pattern=r"layers\.\d+$")],
+        activation_diagnostics=["logit_lens_kl"],
+        lens_max_tokens=lens_max_tokens,
+    )
+    return _Tiny(), recipe, d_model
+
+
+def test_lens_max_tokens_caps_sequence_dim(tmp_path, monkeypatch):
+    import torch
+    import circuitry.core.lens as lens_mod
+    from circuitry import Recorder
+
+    seen = {}
+    real = lens_mod.logit_lens_kl
+
+    def spy(residual, *a, **k):
+        seen["seq"] = residual.shape[1]
+        return real(residual, *a, **k)
+
+    monkeypatch.setattr(lens_mod, "logit_lens_kl", spy)
+    model, recipe, d_model = _lens_model_and_recipe(lens_max_tokens=2)
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl",
+                   every_n_steps=1, strict=False)
+    rec.attach()
+    model(torch.randn(1, 6, d_model))
+    rec.step(0)
+    rec.detach()
+    assert seen["seq"] == 2
+
+
+def test_logit_lens_kl_oom_is_survived(tmp_path, monkeypatch, caplog):
+    import logging
+    import torch
+    import circuitry.core.lens as lens_mod
+    from circuitry import Recorder
+
+    def boom(*a, **k):
+        raise RuntimeError("CUDA out of memory. Tried to allocate ...")
+
+    monkeypatch.setattr(lens_mod, "logit_lens_kl", boom)
+    model, recipe, d_model = _lens_model_and_recipe()
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl",
+                   every_n_steps=1, strict=False)
+    caplog.set_level(logging.WARNING, logger="circuitry")
+    rec.attach()
+    model(torch.randn(1, 4, d_model))
+    rec.step(0)        # must NOT raise
+    rec.detach()
+    assert any("out of memory" in r.getMessage().lower()
+               for r in caplog.records)
+    out = (tmp_path / "metrics.jsonl").read_text()
+    assert "activation/logit_lens_kl/layers.0" not in out  # skipped
+
+
+def test_non_oom_runtimeerror_still_propagates(tmp_path, monkeypatch):
+    import torch
+    import pytest
+    import circuitry.core.lens as lens_mod
+    from circuitry import Recorder
+
+    def boom(*a, **k):
+        raise RuntimeError("some unrelated bug")
+
+    monkeypatch.setattr(lens_mod, "logit_lens_kl", boom)
+    model, recipe, d_model = _lens_model_and_recipe()
+    rec = Recorder(model, tmp_path, recipe, writer="jsonl",
+                   every_n_steps=1, strict=False)
+    rec.attach()
+    model(torch.randn(1, 4, d_model))
+    with pytest.raises(RuntimeError, match="some unrelated bug"):
+        rec.step(0)
+    rec.detach()
