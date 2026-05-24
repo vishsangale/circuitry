@@ -59,6 +59,10 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae
 │   │   └── metrics.py      # sae_reconstruction_error
+│   ├── patching/           # v1.0: activation patching (interventional)
+│   │   ├── sites.py        # Site dataclass + HF/TL resolution
+│   │   ├── intervene.py    # patch_site() context manager
+│   │   └── runner.py       # PatchRunner prompt-pair runner
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
 │   │   ├── scan.py         # scan_run
@@ -90,9 +94,11 @@ The library bundles primitives that get re-implemented project-by-project (effec
 
 ### Layering rules (enforced in CI)
 
-- `core/` MUST NOT import from `recorder/`, `recipes/`, `writers/`, or `cli/`.
+- `core/` MUST NOT import from `recorder/`, `recipes/`, `writers/`, `cli/`, or `patching/`.
 - `recipes/` MUST NOT import from `cli/`.
+- `patching/` may import from `core/` and `recipes/`; MUST NOT import from `cli/`.
 - The package MUST NOT import from any downstream user codebase. `circuitry` is the consumed dependency, never the consumer.
+- `transformer_lens` is an approved optional dependency (lazy import only; `circuitry` must install and run without it).
 
 A simple `import-linter` config or hand-rolled AST test enforces this.
 
@@ -142,6 +148,12 @@ attention.attention_pattern_entropy(attn_pattern: Tensor) -> list[float]  # norm
 from circuitry import sae
 sae.load_sae(release: str, sae_id: str, device: str = "cpu")
 sae.sae_reconstruction_error(x: Tensor, sae) -> dict[str, float]
+
+# patching metrics (v1.0)
+from circuitry.core import patching
+patching.logit_diff(logits: Tensor, correct: int, incorrect: int) -> float
+patching.kl_divergence(p_logits: Tensor, q_logits: Tensor, *, chunk_size: int = 256) -> float
+patching.ce_loss(logits: Tensor, targets: Tensor) -> float
 ```
 
 Invariants for everything in `core/`:
@@ -272,6 +284,43 @@ class MetricWriter(Protocol):
 `add_image` is essential for vision recipes (activation maps, weight kernels visualized as heatmaps) and for matrix-as-image debug views even in LLM recipes (e.g. plotting `W_O @ W_V` per head). `dataformats` follows TB's convention.
 
 The TensorBoard adapter (default) is a thin wrapper over `torch.utils.tensorboard.SummaryWriter`. The JSONL adapter writes one JSON line per `add_scalar` call and dumps tensors / images to side files under `<run_dir>/circuitry/artifacts/` (no extra deps); the `scan` / `report` workflow reads this format. The null adapter is a no-op for tests. Third-party loggers (wandb, mlflow, etc.) are not shipped in v0.3.0 — implement `MetricWriter` (~50 LOC) and pass the instance to `Recorder(writer=...)`.
+
+### 4.6 Intervention mode (v1.0)
+
+The `patching/` subsystem adds an opt-in **intervention mode** for causal analysis (activation patching, and the attribution methods built on it). It is the first capability in `circuitry` that *modifies* activations rather than only observing them. Contrasted with the observation-only `Recorder` and `scan` workflows, intervention mode upholds these invariants:
+
+- **Opt-in.** Interventions require explicit use of the `circuitry.patching` API. `Recorder` and `scan` remain observation-only and are never affected by patching.
+- **Isolated.** Every intervention is scoped to a context manager (`patch_site`). The forward hook is removed and model state is restored on exit, including on exception (`try/finally`, mutation-last — hooks installed as the final setup step so a partial setup can't leak).
+- **Frozen model.** Parameter `requires_grad` is forced off for the duration and restored on exit; eval mode is set on entry and restored; no optimizer runs and no parameter values are modified.
+- **Activation-grad-only.** The only gradient flow permitted is on activation tensors at intervention sites (for attribution methods such as AtP\* and EAP). Parameter gradients are never enabled.
+
+Sites are resolved to concrete model locations by a resolver: `HFSiteResolver` (recipe/config-declared layout — per-head needs eager attention; per-neuron is Llama-family-first) or `TLSiteResolver` (TransformerLens hook names; lazy `transformer_lens` import). The metric helpers live in `core/patching.py` (pure functions); any `Callable[[Tensor], float]` is accepted as a custom metric.
+
+```python
+from circuitry.patching import Site, patch_site, PatchRunner
+from circuitry.patching.sites import HFSiteResolver
+from circuitry.core.patching import logit_diff
+
+resolver = HFSiteResolver.from_config(model.config)
+site = Site(component="attn_head_out", layer=5, head=3)
+
+# Low-level: single intervention (restores on exit)
+with patch_site(model, site, value=cached_act, resolver=resolver):
+    output = model(**inputs)
+
+# High-level: prompt-pair runner
+runner = PatchRunner(model, resolver)
+result = runner.run_patching(
+    clean_inputs=clean_ids,
+    corrupted_inputs=corrupted_ids,
+    sites=[site],
+    metric=lambda logits: logit_diff(logits, correct=tok_a, incorrect=tok_b),
+    direction="denoise",
+)
+print(result.metric_values)  # {site: metric}
+```
+
+Attribution methods (EAP, AtP\*, ACDC) and SAE-feature circuits build on this primitive and ship in follow-on v1.0 sub-specs.
 
 ## 5. Recipe internals — worked example
 
