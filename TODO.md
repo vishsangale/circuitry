@@ -1,13 +1,72 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through v0.9.0 (2026-05-23);
-all tags + GitHub Releases v0.1.0 → v0.9.0 are published. The design contract is
+Tracking doc for open work and future improvements. Released through v0.9.1 (2026-05-23);
+all tags + GitHub Releases v0.1.0 → v0.9.1 are published. The design contract is
 `docs/design.md` — any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
-**[val]** validation / benchmarking · **[hygiene]** repo housekeeping.
+**[val]** validation / benchmarking · **[docs]** documentation · **[hygiene]** repo housekeeping.
 
 ---
+
+## External feedback — softmax-vs-sigmoid attention study (2026-05-23)
+
+Field report from a user running circuitry to compare softmax vs sigmoid attention
+(HF-Llama, 1M & 10M params, 16 GB GPU, live `Recorder` + jsonl). Verified against current
+`main` (HEAD `e1bfbd5`); line references and staleness notes are mine. Suggested release
+grouping is a proposal, not yet decided.
+
+**Correctness / robustness (candidate v0.9.2 patch):**
+
+- [ ] **[bug] `attention_pattern_entropy` is not normalization-invariant.** `core/attention.py:56-62`
+  computes raw `-Σ xlogy(p,p)` over the key axis. Valid for softmax (rows sum to 1), but for
+  attention whose weights don't sum to 1 (sigmoid / some linear attention) it conflates
+  *concentration* with *total attention mass* — the number isn't a true entropy and
+  cross-architecture comparison is confounded. **This blocked the reporter's core experiment**
+  (their highest-value item). Fix: normalize rows by their sum before entropy, or emit a separate
+  normalization-invariant concentration metric; warn when row-sums deviate from 1. Confirmed
+  accurate against current code.
+- [ ] **[bug] `logit_lens_kl` OOMs at modest scale and takes down the whole run.** `core/lens.py:72`
+  materializes a full `(batch, seq, vocab)` logits tensor, upcast to float32 (lines 66/69 — doubles
+  the footprint vs bf16); the Recorder calls it once per layer, so cost accumulates across layers
+  (~1.5 GB/layer at seq 512, vocab 47k → OOM on a 16 GB GPU at 10M params). Fix: chunk over
+  layers/seq and free between; subsample positions/layers; run in model dtype; degrade gracefully
+  (skip + warn) on OOM instead of crashing the run. Expose `lens_layers` / `lens_max_tokens` knobs.
+  Confirmed accurate.
+- [ ] **[bug] `output_attentions=True` kwarg injection breaks on wrapped models.** `recorder/live.py:427-435`
+  installs a forward-pre-hook on the passed model that injects `output_attentions=True` into kwargs;
+  a thin wrapper whose `forward(input_ids, labels)` lacks `**kwargs` raises `TypeError` (the reporter
+  had to hand it the inner `LlamaForCausalLM`). Fix: prefer `config._attn_implementation="eager"` /
+  `config.output_attentions=True` over kwarg injection (aligns with the v0.9.1 SDPA-warn path at
+  `live.py:256`), or catch `TypeError` and fall back, or accept a `target_module` arg; at minimum
+  document "attach to the HF model, not a wrapper." Confirmed accurate.
+
+**Ergonomics (informs the v1.0 surface):**
+
+- [ ] **[feat] No easy way to disable / select a single diagnostic.** Dropping `logit_lens_kl`
+  required `dataclasses.replace(get_recipe("llm"), activation_diagnostics=[…])`. Fix: a
+  `disable=[...]` / `only=[...]` argument on `Recorder` / recipe.
+- [ ] **[feat] `report` is a flat dump with no summary; no A/B compare.** A live run renders 80 KB+
+  enumerating every module × diagnostic × step — fine for one model, unusable for comparison. Fix:
+  a top-of-report summary/verdict (per-family final value + trend + flags), a compact mode, and a
+  `circuitry compare run_a run_b` (per-family deltas, seed aggregation) — otherwise every comparison
+  user re-writes a jsonl parser, as the reporter did.
+
+**Trivial / docs (quick wins):**
+
+- [ ] **[feat] No `circuitry --version`.** Confirmed — `cli/main.py` argparse exposes no `--version`
+  flag (forces an `importlib.metadata` workaround). Easy add to the top-level parser.
+- [ ] **[docs] Clarify `scan` vs. live `report`.** `report` works directly on a live `metrics.jsonl`
+  (no `findings.json` needed), but that path isn't documented next to the checkpoint-scan →
+  `findings.json` → `report` flow.
+
+**Already addressed in current `main` (no action — reporter's item #4):**
+
+- ✅ **MLP weights ARE hooked.** The reporter saw only the `.*\.(q|k|v|o)_proj$` weight pattern, but
+  `recipes/llm.py:13-14` also hooks `w1|w2|w3|gate_proj|up_proj|down_proj` as `WEIGHT` (since the
+  original recipe, commit `1a9b9bf`), so `effective_rank` / `stable_rank` / `heavy_tail_alpha` /
+  `sv_histogram` already cover gate/up/down_proj. Likely an older snapshot or a partial read of the
+  recipe — no rank-analysis blind spot on current main.
 
 ## v0.9.1 — near-term (tech debt surfaced during v0.9 validation)
 
