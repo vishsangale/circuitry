@@ -34,15 +34,25 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
 
 ## v0.9.x — validation / benchmarking debt
 
-- [ ] **[val] Capture induction_score + attention_pattern_entropy on a real model.** Both were
-  never actually captured (SDPA blocked them). Re-run a small model with
-  `attn_implementation="eager"` and record real numbers.
-- [ ] **[val] Re-validate SAE on a representative sequence.** v0.9 SAE numbers came from a
-  non-representative 4-token input (recon_mse 3130, l0 1293 vs expected ~71 at scale).
-  Re-run on a realistic sequence length.
-- [ ] **[val] GPU re-measurement of the performance budget.** Bench numbers are CPU-only
-  (~15% overhead claim, GPU TBD since M2). Confirm the ≤10% wall-clock budget (design §10)
-  holds on GPU, including the v0.9 lens + induction probe pass (+134% Phase-4 on CPU).
+- [x] **[val] Capture induction_score + attention_pattern_entropy on a real model.** Done —
+  `smoke_hf_model.py` gained `--attn-impl`/`--device`; Qwen2.5-0.5B under eager emits real
+  per-head values (induction_score up to 0.986 → a strong induction head; entropy 0–2.88 nats),
+  SDPA emits zero + fires the item-6 WARN. See observations doc.
+- [x] **[val] Re-validate SAE on a representative sequence.** Done — 189-token prose on Gemma 2 2B
+  + gemma-scope layer-8 SAE: recon_mse 3130→83.5, l0 1293→106.5 (near the ~71 design point;
+  residual gap plausibly bf16). The 4-token v0.9.0 numbers were non-representative as suspected.
+- [x] **[val] GPU re-measurement of the performance budget.** Done — **negative result**: at
+  aggressive cadence the v0.9 stock recipe blows the ≤10% §10 budget on GPU (+1202% at every-25;
+  +257–306% at lower cadences). Per-emission cost ~4.1 s (≈290 training steps) is dominated by
+  SVD weight diagnostics, which don't shrink on GPU while the training step does. CPU budget
+  holds. Bring-up also surfaced + fixed 3 GPU device bugs in `core/`. See observations doc + the
+  follow-up below.
+
+- [ ] **[perf] GPU cost of SVD-based weight diagnostics dominates emission time.** ~4.1 s/emission
+  on an 88M model (effective_rank / stable_rank / heavy_tail_alpha / sv_histogram, all via
+  `svdvals` over ~80 matrices). Profile and consider GPU-aware mitigations: lower `max_dim`
+  default, batch/skip some SVDs, a lighter default recipe on GPU, or documenting a larger default
+  `every_n_steps` on GPU. (Surfaced by the item-10 GPU bench.)
 
 ## v1.0 — major
 

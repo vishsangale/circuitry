@@ -41,13 +41,15 @@ def _section(title: str):
     print(f"  (took {time.time() - t0:.2f}s)", flush=True)
 
 
-def _load_model(name: str, dtype: torch.dtype):
+def _load_model(name: str, dtype: torch.dtype, attn_impl: str, device: str):
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError:
         sys.exit("transformers not installed. Run: venv/bin/pip install transformers")
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name, dtype=dtype)
+    model = AutoModelForCausalLM.from_pretrained(
+        name, dtype=dtype, attn_implementation=attn_impl)
+    model = model.to(device)
     return model, tok
 
 
@@ -120,6 +122,12 @@ def main() -> int:
                    help="Scope the recipe to modules under this dotted prefix "
                         "(e.g. 'model.language_model'). Passed to "
                         "Recipe.with_prefix() after _build_safe_recipe.")
+    p.add_argument("--attn-impl", default="sdpa",
+                   choices=["sdpa", "eager", "flash_attention_2"],
+                   help="HF attention implementation. Use 'eager' to capture "
+                        "induction_score / attention_pattern_entropy — SDPA "
+                        "returns no per-head attention weights.")
+    p.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
     args = p.parse_args()
 
     run_dir = pathlib.Path(args.run_dir).resolve()
@@ -130,12 +138,13 @@ def main() -> int:
 
     print(f"run_dir: {run_dir}")
     print(f"model:   {args.model}  dtype={args.dtype}")
+    print(f"attn:    {args.attn_impl}  device={args.device}")
     if args.prefix:
         print(f"prefix:  {args.prefix}")
 
     # ------------------------------------------------------------------ load
     with _section(f"Phase 1: load {args.model}"):
-        model, tok = _load_model(args.model, dtype)
+        model, tok = _load_model(args.model, dtype, args.attn_impl, args.device)
         n_params = sum(p.numel() for p in model.parameters())
         n_modules = sum(1 for _ in model.named_modules())
         # Robust vocab lookup for multimodal configs (text_config nested).
@@ -194,7 +203,7 @@ def main() -> int:
         print(f"  matched_modules.txt -> {filt_run / 'circuitry' / 'matched_modules.txt'}")
 
         torch.manual_seed(0)
-        input_ids = torch.randint(0, vocab, (1, args.seqlen))
+        input_ids = torch.randint(0, vocab, (1, args.seqlen), device=args.device)
 
         # If --scan, save checkpoints during training so scan_run has work later.
         ckpt_dir = filt_run / "checkpoints"
