@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from circuitry.core.patching import logit_diff
+from circuitry.core.patching import logit_diff_t
 from circuitry.patching.eap import EAPRunner
 
 
 def _metric(logits):
-    return logit_diff(logits, correct=0, incorrect=1)
+    return logit_diff_t(logits, correct=0, incorrect=1)
 
 
 def test_eap_matches_bruteforce_per_edge(linear_mlp_toy):

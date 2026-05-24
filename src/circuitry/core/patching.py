@@ -59,3 +59,47 @@ def ce_loss(logits: Tensor, targets: Tensor) -> float:
     if x.ndim == 3:
         x = x[:, -1, :]
     return float(torch.nn.functional.cross_entropy(x, targets).item())
+
+
+# ---------------------------------------------------------------------------
+# Differentiable (_t) variants — same math, NO .detach(), return grad-carrying
+# scalar Tensor.  Used by EAP where gradients must flow back through the metric.
+# ---------------------------------------------------------------------------
+
+
+def logit_diff_t(logits: Tensor, correct: int, incorrect: int) -> Tensor:
+    """Differentiable logit-diff: returns a scalar Tensor (no .detach())."""
+    x = logits.float()
+    if x.ndim == 3:
+        x = x[:, -1, :]
+    if x.ndim == 1:
+        return x[correct] - x[incorrect]
+    return (x[:, correct] - x[:, incorrect]).mean()
+
+
+def kl_divergence_t(p_logits: Tensor, q_logits: Tensor) -> Tensor:
+    """Differentiable KL(softmax(p) || softmax(q)), mean over tokens.
+
+    No chunking (EAP batches are small) and no .detach().
+    """
+    p = p_logits.float()
+    q = q_logits.float()
+    if p.ndim == 1:
+        p = p.unsqueeze(0)
+        q = q.unsqueeze(0)
+    if p.ndim == 3:
+        p = p.reshape(-1, p.shape[-1])
+        q = q.reshape(-1, q.shape[-1])
+    n = p.shape[0]
+    log_p = torch.log_softmax(p, dim=-1)
+    log_q = torch.log_softmax(q, dim=-1)
+    kl_sum = (log_p.exp() * (log_p - log_q)).sum()
+    return kl_sum / max(n, 1)
+
+
+def ce_loss_t(logits: Tensor, targets: Tensor) -> Tensor:
+    """Differentiable cross-entropy loss (no .detach()), scalar Tensor."""
+    x = logits.float()
+    if x.ndim == 3:
+        x = x[:, -1, :]
+    return torch.nn.functional.cross_entropy(x, targets)

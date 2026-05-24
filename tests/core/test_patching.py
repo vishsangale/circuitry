@@ -4,7 +4,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from circuitry.core.patching import ce_loss, kl_divergence, logit_diff
+from circuitry.core.patching import (
+    ce_loss,
+    ce_loss_t,
+    kl_divergence,
+    kl_divergence_t,
+    logit_diff,
+    logit_diff_t,
+)
 
 
 def test_logit_diff_1d():
@@ -72,3 +79,40 @@ def test_ce_loss_3d_last_token():
         torch.nn.functional.cross_entropy(logits[:, -1, :].float(), targets).item()
     )
     assert result == pytest.approx(expected, abs=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Differentiable _t variant tests
+# ---------------------------------------------------------------------------
+
+
+def test_logit_diff_t_matches_float_and_is_differentiable():
+    torch.manual_seed(10)
+    logits = torch.randn(2, 5, 8, requires_grad=True)
+    t = logit_diff_t(logits, correct=0, incorrect=1)
+    assert t.requires_grad
+    assert float(t.item()) == pytest.approx(logit_diff(logits, correct=0, incorrect=1), abs=1e-5)
+    t.backward()  # no error; grad flows
+    assert logits.grad is not None
+
+
+def test_kl_divergence_t_returns_differentiable_tensor():
+    torch.manual_seed(11)
+    p = torch.randn(2, 5, 8, requires_grad=True)
+    q = torch.randn(2, 5, 8)
+    t = kl_divergence_t(p, q)
+    assert isinstance(t, torch.Tensor)
+    assert t.requires_grad
+    t.backward()
+    assert p.grad is not None
+
+
+def test_ce_loss_t_matches_float_and_is_differentiable():
+    torch.manual_seed(12)
+    logits = torch.randn(4, 10, requires_grad=True)
+    targets = torch.randint(0, 10, (4,))
+    t = ce_loss_t(logits, targets)
+    assert t.requires_grad
+    assert float(t.item()) == pytest.approx(ce_loss(logits, targets), abs=1e-5)
+    t.backward()
+    assert logits.grad is not None
