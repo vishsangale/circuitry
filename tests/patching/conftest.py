@@ -91,3 +91,37 @@ def toy_model():
 @pytest.fixture
 def transformer_model():
     return FakeTransformerModel(n_layers=2, d_model=8, n_heads=2, d_mlp=16)
+
+
+class LinearMLPToy(nn.Module):
+    """Attention-free linear residual stack with HF-like names. Fully linear:
+    EAP's first-order score is EXACT here, so it must equal brute-force patching."""
+
+    def __init__(self, n_layers=2, d=4, vocab=5):
+        super().__init__()
+        self.n_layers, self.d, self.vocab = n_layers, d, vocab
+        self.embed_tokens = nn.Embedding(vocab, d)
+        self.layers = nn.ModuleList()
+        for _ in range(n_layers):
+            block = nn.Module()
+            block.mlp = nn.Module()
+            block.mlp.up_proj = nn.Linear(d, d, bias=False)
+            block.mlp.down_proj = nn.Linear(d, d, bias=False)
+            self.layers.append(block)
+        self.lm_head = nn.Linear(d, vocab, bias=False)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.5)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        x = self.embed_tokens(input_ids)            # (b, s, d) — embed writer output
+        for block in self.layers:
+            mlp_out = block.mlp.down_proj(block.mlp.up_proj(x))   # linear, no activation
+            x = x + mlp_out                          # residual write
+        return self.lm_head(x)                       # (b, s, vocab)
+
+
+@pytest.fixture
+def linear_mlp_toy():
+    torch.manual_seed(0)
+    return LinearMLPToy(n_layers=2, d=4, vocab=5)
