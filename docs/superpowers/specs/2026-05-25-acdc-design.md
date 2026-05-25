@@ -121,19 +121,35 @@ LayerNorm, letting the LN renormalize the swapped contribution (post-LN
 injection would skip renormalization and is only first-order — that is exactly
 what makes EAP approximate). Concretely, per reader:
 
-- **attn q/k/v (layer L):** capture `resid_pre(L)` at `input_layernorm`'s input.
-  In each of `q_proj`/`k_proj`/`v_proj`'s pre-hooks, override the projection
-  input with `input_layernorm( resid_pre(L) + Σ_slot Δ )`, where the Δ-sum is
-  over that **slot's** removed incoming edges. Re-applying the (stateless) LN
-  module per slot keeps q/k/v **independently ablatable and exact through LN**
-  on HF, where the three share one `input_layernorm` (TransformerLens gets this
-  natively via `use_split_qkv_input`).
-- **mlp_in (layer L):** capture `resid_mid(L)` at `post_attention_layernorm`'s
-  input; override `up_proj`'s input with `post_attention_layernorm( resid_mid(L)
-  + Σ Δ )`.
-- **logits_in:** capture `resid_post` at the final norm's input (HF: `model.norm`
-  / `model.model.norm`; TL: `hook_resid_post` before `ln_final`); override
-  `lm_head`'s input with `final_norm( resid_post + Σ Δ )`.
+- **attn q/k/v (layer L), per head:** capture `resid_pre(L)` at `input_layernorm`'s
+  input. Override each projection's **output via a forward hook** that rebuilds it
+  per head: for query head `h` (slot q) the output slice is
+  `LN( resid_pre(L) + Σ Δ ) @ W_q[h]ᵀ`, where the Δ-sum is over the removed
+  incoming edges of *that* `(head h, slot q)` reader. Re-applying the (stateless)
+  LN per head keeps each `(head, slot)` edge **independently ablatable and exact
+  through LN** on HF, where q/k/v share one `input_layernorm` and the proj is a
+  single matmul (TransformerLens gets this natively via `use_split_qkv_input`).
+  Injecting pre-LN at the proj *input* (a single per-layer pre-hook) cannot give
+  different heads different residuals; the per-head **output** rebuild can.
+  - **GQA (`n_kv_heads < n_heads`):** k/v are computed once per kv-group and
+    physically shared across the query heads in the group, so per-query-head k/v
+    independence is not representable. For k/v, the Δ-sum is **aggregated at the
+    kv-group level** (union of removed writers over the query heads in the group),
+    and the kv slice is rebuilt as `LN( resid_pre + Σ_group Δ ) @ W_k[kv]ᵀ`. For
+    MHA (`n_kv_heads == n_heads`) this is exactly per-head. The full-ablation
+    anchor is unaffected (at full ablation every writer is corrupted regardless
+    of granularity). Per-query-head k/v ACDC under GQA is a documented follow-on.
+- **mlp_in (layer L):** a single **pre-hook on `post_attention_layernorm`** that
+  adds `Σ Δ` to its input. The LN then renormalizes `resid_mid + Σ Δ`, and both
+  `gate_proj` and `up_proj` (which read the LN output) see the swap — no need to
+  hook the projections individually.
+- **logits_in:** a single **pre-hook on the final norm** (HF: `model.norm` /
+  `model.model.norm`; TL: `hook_resid_post` feeds `ln_final`) that adds `Σ Δ` to
+  its input. `lm_head` reads `final_norm(resid_post + Σ Δ)` automatically.
+- **Norm-absent (linear toys):** when a norm module is absent, LN ≡ identity and
+  the Δ is added directly at the consumer's input (the MLP's first projection /
+  `lm_head` / the attention proj rebuild without the LN call). This matches EAP's
+  `ln_scale = 1.0` fallback and is what makes the linear-toy anchors exact.
 
 **Capturing `live_act[u]` in the same forward.** A forward hook on each writer
 captures its live contribution as the forward proceeds — `embed` output,
