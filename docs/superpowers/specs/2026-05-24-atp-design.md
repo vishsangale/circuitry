@@ -142,11 +142,20 @@ cancellation:
 score_graddrop(node) = Σ_pos | Δact_node[pos] · grad_node[pos] |
 ```
 
-This needs the per-position gradient. Where a single backward gives the summed
-gradient, GradDrop runs ~`n_positions` backward passes (one per position's metric
-contribution) to get per-position gradients, then applies the absolute-sum rule.
-It is opt-in (`graddrop=True`) because of this cost. When off (default), scoring
-uses the plain summed term (§3/§4).
+where `Δact_node[pos] · grad_node[pos]` is the per-position dot over the node's
+feature dims. For the **single-position metrics** this library targets
+(e.g. `logit_diff` at the final token), a single backward already yields
+`∂metric/∂act[pos]` for every input position `pos` (the gradient tensor carries
+the position axis), so the per-input-position contributions `c[pos]` — and thus
+the absolute-sum — are computed exactly from **one** backward pass. GradDrop is
+opt-in (`graddrop=True`); when off (default), scoring uses the plain summed term
+`Σ_pos c[pos]` (§3/§4), and `Σ_pos |c[pos]| ≥ |Σ_pos c[pos]|` always holds.
+
+*Limitation:* for a metric that is itself a **sum over multiple output
+positions**, fully isolating cancellation across those output-position loss
+terms would need a per-output-position backward variant; the single-backward
+input-position absolute-sum here addresses input-position cancellation only.
+That variant is a follow-on, not in this sub-spec.
 
 ---
 
