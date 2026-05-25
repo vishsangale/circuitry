@@ -373,23 +373,28 @@ class AtPRunner:
         n_heads = self.n_heads
         head_dim = self.head_dim
 
+        n_kv_heads = self.n_kv_heads
+
         for L, block in enumerate(self._layers_list):
             if n_heads > 0 and head_dim is not None and hasattr(block, "self_attn"):
                 _L = L
                 _n_heads = n_heads
+                _n_kv_heads = n_kv_heads
                 _head_dim = head_dim
 
                 def _v_proj_hook(
                     module: nn.Module, inp: tuple, output: Tensor,
-                    _L: int = _L, _n_heads: int = _n_heads, _head_dim: int = _head_dim,
+                    _L: int = _L, _n_heads: int = _n_heads,
+                    _n_kv_heads: int = _n_kv_heads, _head_dim: int = _head_dim,
                 ) -> None:
-                    # output: (b, s, n_heads * head_dim) — detach and slice per head
+                    # output: (b, s, n_kv_heads * head_dim) — detach and slice per kv-head
                     v = output.detach()
                     b, s, _ = v.shape
-                    v_heads = v.reshape(b, s, _n_heads, _head_dim)
+                    v_heads = v.reshape(b, s, _n_kv_heads, _head_dim)
                     for h in range(_n_heads):
+                        kv_h = h // (_n_heads // _n_kv_heads)
                         node = AtPNode(Node("attn_head", _L, h), "v")
-                        acts[node] = v_heads[:, :, h, :].clone()
+                        acts[node] = v_heads[:, :, kv_h, :].clone()
 
                 handles.append(block.self_attn.v_proj.register_forward_hook(_v_proj_hook))
 
@@ -497,23 +502,28 @@ class AtPRunner:
         n_heads = self.n_heads
         head_dim = self.head_dim
 
+        n_kv_heads = self.n_kv_heads
+
         for L, block in enumerate(self._layers_list):
             if n_heads > 0 and head_dim is not None and hasattr(block, "self_attn"):
                 _L = L
                 _n_heads = n_heads
+                _n_kv_heads = n_kv_heads
                 _head_dim = head_dim
 
                 def _v_proj_hook_grad(
                     module: nn.Module, inp: tuple, output: Tensor,
-                    _L: int = _L, _n_heads: int = _n_heads, _head_dim: int = _head_dim,
+                    _L: int = _L, _n_heads: int = _n_heads,
+                    _n_kv_heads: int = _n_kv_heads, _head_dim: int = _head_dim,
                 ) -> None:
-                    # output: (b, s, n_heads * head_dim)
-                    # retain_grad on the FULL output tensor; read per-head grad after bwd
+                    # output: (b, s, n_kv_heads * head_dim)
+                    # retain_grad on the FULL output tensor; read per-kv-head grad after bwd
                     output.retain_grad()
                     for h in range(_n_heads):
+                        kv_h = h // (_n_heads // _n_kv_heads)
                         node = AtPNode(Node("attn_head", _L, h), "v")
-                        # Store a tuple referencing the SAME tensor + head metadata
-                        node_acts[node] = (output, h, _n_heads, _head_dim)  # type: ignore[assignment]
+                        # Store a tuple: (tensor, kv_h, n_kv_heads, head_dim)
+                        node_acts[node] = (output, kv_h, _n_kv_heads, _head_dim)  # type: ignore[assignment]
 
                 handles.append(block.self_attn.v_proj.register_forward_hook(_v_proj_hook_grad))
 
@@ -1247,10 +1257,10 @@ class AtPRunner:
                         node = AtPNode(Node("attn_head", L, h), "v")
                         stored = clean_node_acts.get(node)
                         if stored is not None and isinstance(stored, tuple):
-                            v_proj_out, h_idx, _n_heads, _head_dim = stored
+                            v_proj_out, kv_h, _n_kv_heads, _head_dim = stored
                             b, s, _ = v_proj_out.shape
-                            v_heads = v_proj_out.detach().reshape(b, s, _n_heads, _head_dim)
-                            clean_acts[node] = v_heads[:, :, h_idx, :].clone()
+                            v_heads = v_proj_out.detach().reshape(b, s, _n_kv_heads, _head_dim)
+                            clean_acts[node] = v_heads[:, :, kv_h, :].clone()
 
             # Step 6: score each node
             scores: dict[AtPNode, float] = {}
@@ -1500,8 +1510,9 @@ class AtPRunner:
                         continue
                     L = inner_node.layer
                     h = inner_node.head
+                    kv_h = _kv_head_for(h, n_heads, n_kv_heads)
                     _corr_head = corr_act  # (b, s, head_dim)
-                    _n_heads = self.n_heads
+                    _n_kv_heads = n_kv_heads
                     _head_dim = self.head_dim
                     block = self._layers_list[L]
                     if not hasattr(block, "self_attn"):
@@ -1510,14 +1521,14 @@ class AtPRunner:
 
                     def _v_proj_replace_hook(
                         module: nn.Module, inp: tuple, output: Tensor,
-                        _h: int = h, _n_heads: int = _n_heads, _head_dim: int = _head_dim,
+                        _kv_h: int = kv_h, _n_kv: int = _n_kv_heads, _head_dim: int = _head_dim,
                         _c: Tensor = _corr_head,
                     ) -> Tensor:
-                        # Replace head h's slice in the v_proj output
+                        # Replace kv_h's slice in the v_proj output (GQA-aware)
                         b, s, _ = output.shape
-                        out = output.clone().reshape(b, s, _n_heads, _head_dim)
-                        out[:, :, _h, :] = _c
-                        return out.reshape(b, s, _n_heads * _head_dim)
+                        out = output.clone().reshape(b, s, _n_kv, _head_dim)
+                        out[:, :, _kv_h, :] = _c
+                        return out.reshape(b, s, _n_kv * _head_dim)
 
                     handles.append(
                         block.self_attn.v_proj.register_forward_hook(_v_proj_replace_hook)
