@@ -22,6 +22,22 @@ All notable changes to this project will be documented in this file. The format 
   - `docs/design.md` §4.6 adds the sanctioned intervention-mode contract; `transformer_lens`
     is an approved optional dependency (lazy import — circuitry runs without it).
   Attribution methods (EAP, AtP\*, ACDC) build on this primitive in follow-on sub-specs.
+- **EAP — Edge Attribution Patching** (v1.0 patching pillar, sub-spec 2). Gradient-based
+  approximate attribution over the residual-stream computation graph:
+  - `circuitry.patching.graph` — `Node` / `Edge` / `Slot` / `build_graph`: the causal
+    edge graph (writers = embed + attention heads + MLPs; readers = q/k/v + mlp_in +
+    logits_in).
+  - `EAPRunner(model, resolver).run(clean_inputs, corrupted_inputs, metric, ig_steps=1)`
+    → `EAPResult` (per-edge scores; `top_k` / `threshold` / `ranked` helpers). 2-forward +
+    1-backward analytic scoring (`Δact · grad`), no per-edge forward passes.
+  - Vanilla EAP (`ig_steps=1`) and activation-path EAP-IG (`ig_steps=N`).
+  - Backends: TransformerLens (native per-slot hooks) and HF (eager, Llama-family —
+    per-head `z@W_O` writers; q/k/v reader gradients back-mapped to residual space with
+    the RMSNorm scale as a stop-gradient constant; GQA-aware).
+  - Differentiable metric siblings in `circuitry.core.patching`: `logit_diff_t` /
+    `kl_divergence_t` / `ce_loss_t` (no `.detach()`); the float versions are unchanged.
+  - Correctness gated by an exact per-edge cross-check against brute-force `patch_site`
+    patching on linear toys, plus a rank-correlation check on a real HF Llama.
 
 ## [0.9.2] — 2026-05-23
 

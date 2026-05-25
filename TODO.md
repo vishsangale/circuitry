@@ -132,8 +132,11 @@ Specs + plans live under `docs/superpowers/`.
   `circuitry.patching` (`Site` / `patch_site` / `PatchRunner` / `HFSiteResolver` + `TLSiteResolver`)
   + `core/patching.py` metrics (`logit_diff` / `kl_divergence` / `ce_loss`) + `docs/design.md` §4.6
   intervention-mode contract amendment. 276 tests, Gemini-reviewed.
-- [ ] **Sub-spec 2 — EAP** (edge attribution patching). Introduces the residual-stream edge graph
-  (derived from node sites — the core primitive deliberately left edges to per-method).
+- [x] **Sub-spec 2 — EAP** (edge attribution patching). Done (2026-05-24, on `main`, unreleased).
+  `circuitry.patching.graph` (Node/Edge/build_graph) + `EAPRunner`/`EAPResult` (2-fwd+1-bwd analytic
+  scoring) + vanilla & activation-path EAP-IG (`ig_steps`) + TL and HF (RMSNorm/GQA, Llama-family)
+  backends + `core/patching` `_t` differentiable metrics. Exact per-edge cross-check vs `patch_site`
+  on linear toys; rank-correlation on real HF Llama. 300 tests, Gemini-reviewed clean.
 - [ ] **Sub-spec 3 — AtP\*** (attribution patching + corrections). Uses activation gradients
   (`patch_site(..., enable_activation_grad=True)` already supports this).
 - [ ] **Sub-spec 4 — ACDC** (iterative circuit pruning). Reuses EAP's edge graph.
