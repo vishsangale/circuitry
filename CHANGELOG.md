@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-05-25
+
 ### Added
 - **Activation patching — core intervention primitive** (v1.0 patching pillar, sub-spec 1).
   New `circuitry.patching` subsystem, the library's first *interventional* (not
