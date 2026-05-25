@@ -322,6 +322,8 @@ print(result.metric_values)  # {site: metric}
 
 Attribution methods (EAP, AtP\*, ACDC) and SAE-feature circuits build on this primitive and ship in follow-on v1.0 sub-specs.
 
+**EAP (sub-spec 2, shipped).** `EAPRunner(model, resolver).run(clean_inputs, corrupted_inputs, metric, ig_steps=1)` returns an `EAPResult` of per-edge attribution scores over the residual-stream graph (`circuitry.patching.graph`: `Node`/`Edge`/`build_graph`). Edges are writer→reader with q/k/v-typed attention reads; nodes are attention heads + MLPs + embed + logits. Scoring is the 2-forward + 1-backward linear approximation (`Δact · grad`, summed over `d_model`), with vanilla EAP (`ig_steps=1`) and activation-path EAP-IG (`ig_steps=N`). Backends: TransformerLens (native per-slot hooks) and HF (eager, Llama-family — per-head `z@W_O` writers, q/k/v reader gradients back-mapped to residual space with the RMSNorm scale as a stop-gradient constant, GQA-aware). The EAP metric must be **differentiable** — use the tensor-returning `circuitry.core.patching.logit_diff_t` / `kl_divergence_t` / `ce_loss_t`, not the `.detach()`-ing float versions.
+
 ## 5. Recipe internals — worked example
 
 `recipes/llm.py`:
