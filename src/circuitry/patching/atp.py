@@ -1,6 +1,7 @@
 """AtP* node attribution. Design spec docs/superpowers/specs/2026-05-24-atp-design.md."""
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -52,8 +53,17 @@ class AtPResult:
         return [n for n, s in self.scores.items() if abs(s) >= tau]
 
 
+# ---------------------------------------------------------------------------
+# GQA helper (mirrors EAP's _kv_head_for)
+# ---------------------------------------------------------------------------
+
+def _kv_head_for(query_head: int, n_heads: int, n_kv_heads: int) -> int:
+    """Map a query head index to its corresponding KV-head index under GQA."""
+    return query_head // (n_heads // n_kv_heads)
+
+
 class AtPRunner:
-    """Vanilla AtP node attribution runner.
+    """Vanilla AtP / AtP* node attribution runner.
 
     Computes per-node scores: score(node) = Σ(Δact_node ⊙ grad_node) summed
     over ALL dims (positions + features).
@@ -68,7 +78,10 @@ class AtPRunner:
       embed  — embed_tokens output (d_model)
       mlp(L) — layers[L].mlp.down_proj output (d_model)
       attn_head(L,h) slot v — layers[L].self_attn.v_proj output, head-h slice
-      attn_head(L,h) slot q/k — placeholder 0.0 (Task 5 adds QK fix)
+      attn_head(L,h) slot q/k:
+        qk_fix=True  — attention-pattern recomputation (QK fix); scored in d_model space
+                       against grad_attn_out (gradient w.r.t. o_proj output)
+        qk_fix=False — vanilla Σ(Δq_h ⊙ grad_q_h) in head_dim space (q_proj output grads)
     """
 
     def __init__(self, model: nn.Module, resolver: Any = None) -> None:
@@ -83,6 +96,17 @@ class AtPRunner:
         self.n_heads = n_heads
         d_model = getattr(resolver, "d_model", None) if resolver is not None else None
         self.head_dim = (d_model // n_heads) if (d_model is not None and n_heads > 0) else None
+
+        # GQA: number of key/value heads (defaults to n_heads for MHA)
+        self.n_kv_heads: int = n_heads
+        if resolver is not None and n_heads > 0:
+            hf_cfg = getattr(model, "config", None)
+            if hf_cfg is not None:
+                self.n_kv_heads = getattr(hf_cfg, "num_key_value_heads", n_heads)
+
+        # Detect HF model with RoPE (has model.model.rotary_emb)
+        inner = getattr(model, "model", None)
+        self._has_rope: bool = (inner is not None and hasattr(inner, "rotary_emb"))
 
     # ------------------------------------------------------------------
     # Module locator helpers
@@ -135,6 +159,143 @@ class AtPRunner:
         for name, p in self.model.named_parameters():
             if name in orig_rg:
                 p.requires_grad_(orig_rg[name])
+
+    # ------------------------------------------------------------------
+    # QK data capture helpers
+    # ------------------------------------------------------------------
+
+    def _apply_rope(
+        self,
+        q_pre: Tensor,       # (b, s, n_heads*head_dim)
+        k_pre: Tensor,       # (b, s, n_kv_heads*head_dim)
+        position_embeddings: tuple[Tensor, Tensor],
+    ) -> tuple[Tensor, Tensor]:
+        """Apply rotary position embeddings and return post-RoPE Q, K.
+
+        Returns:
+          q_post: (b, n_heads, s, head_dim)
+          k_post: (b, n_kv_heads, s, head_dim)
+        """
+        from transformers.models.llama.modeling_llama import apply_rotary_pos_emb  # lazy import
+
+        n_heads = self.n_heads
+        n_kv_heads = self.n_kv_heads
+        head_dim = self.head_dim
+        cos, sin = position_embeddings
+        b, s, _ = q_pre.shape
+        q_pre_h = q_pre.view(b, s, n_heads, head_dim).transpose(1, 2)       # (b, n_heads, s, hd)
+        k_pre_h = k_pre.view(b, s, n_kv_heads, head_dim).transpose(1, 2)    # (b, n_kv, s, hd)
+        q_post, k_post = apply_rotary_pos_emb(q_pre_h, k_pre_h, cos, sin)
+        return q_post, k_post
+
+    def _cache_qk_data(
+        self,
+        inputs: _Inputs,
+        *,
+        compute_pattern: bool = True,
+    ) -> dict[int, dict[str, Any]]:
+        """No-grad forward: capture per-layer Q, K, V (post-RoPE if available) and
+        the attention pattern (via output_attentions=True on HF models).
+
+        Returns layer_idx → dict with keys:
+          "q_post": (b, n_heads, s, head_dim)   — post-RoPE Q (or pre-RoPE if no RoPE)
+          "k_post": (b, n_kv_heads, s, head_dim)
+          "v":      (b, n_kv_heads, s, head_dim)
+          "pattern": (b, n_heads, s, s)  [only if compute_pattern=True and HF model]
+          "attn_mask": (b, 1, s, s) or None
+        """
+        n_heads = self.n_heads
+        n_kv_heads = self.n_kv_heads
+        head_dim = self.head_dim
+        has_rope = self._has_rope
+
+        layer_data: dict[int, dict[str, Any]] = {}
+        handles: list[Any] = []
+
+        for L, block in enumerate(self._layers_list):
+            if not (n_heads > 0 and head_dim is not None and hasattr(block, "self_attn")):
+                continue
+
+            cap: dict[str, Any] = {}
+            layer_data[L] = cap
+            _L = L
+
+            if has_rope:
+                def _self_attn_pre_hook(
+                    module: nn.Module, args: tuple, kwargs: dict,
+                    _c: dict = cap,
+                ) -> None:
+                    _c["position_embeddings"] = kwargs.get("position_embeddings")
+                    _c["attn_mask"] = kwargs.get("attention_mask")
+
+                handles.append(
+                    block.self_attn.register_forward_pre_hook(
+                        _self_attn_pre_hook, with_kwargs=True
+                    )
+                )
+
+            def _q_proj_hook(
+                module: nn.Module, inp: tuple, output: Tensor,
+                _c: dict = cap,
+            ) -> None:
+                _c["q_pre"] = output.detach()
+
+            def _k_proj_hook(
+                module: nn.Module, inp: tuple, output: Tensor,
+                _c: dict = cap,
+            ) -> None:
+                _c["k_pre"] = output.detach()
+
+            def _v_proj_hook(
+                module: nn.Module, inp: tuple, output: Tensor,
+                _c: dict = cap, _nkv: int = n_kv_heads, _hd: int = head_dim,
+            ) -> None:
+                v = output.detach()
+                b, s, _ = v.shape
+                _c["v"] = v.view(b, s, _nkv, _hd).transpose(1, 2)  # (b, nkv, s, hd)
+
+            handles.append(block.self_attn.q_proj.register_forward_hook(_q_proj_hook))
+            handles.append(block.self_attn.k_proj.register_forward_hook(_k_proj_hook))
+            handles.append(block.self_attn.v_proj.register_forward_hook(_v_proj_hook))
+
+        # For HF models with output_attentions support, enable it to get patterns
+        call_inputs = inputs
+        if compute_pattern and has_rope and isinstance(inputs, dict):
+            call_inputs = dict(inputs)
+            call_inputs["output_attentions"] = True
+
+        try:
+            with torch.no_grad():
+                out = self._call_model(call_inputs)
+        finally:
+            for h in handles:
+                h.remove()
+
+        # Post-process: apply RoPE and store patterns
+        for _L, cap in layer_data.items():
+            q_pre = cap.get("q_pre")
+            k_pre = cap.get("k_pre")
+            if q_pre is None or k_pre is None:
+                continue
+
+            if has_rope and "position_embeddings" in cap:
+                q_post, k_post = self._apply_rope(q_pre, k_pre, cap["position_embeddings"])
+            else:
+                # Fallback (no RoPE / toy models): reshape to (b, n_heads, s, hd)
+                b, s, _ = q_pre.shape
+                q_post = q_pre.view(b, s, n_heads, head_dim).transpose(1, 2)
+                k_post = k_pre.view(b, s, n_kv_heads, head_dim).transpose(1, 2)
+
+            cap["q_post"] = q_post
+            cap["k_post"] = k_post
+
+        # Attach attention patterns from output_attentions
+        if compute_pattern and has_rope and hasattr(out, "attentions") and out.attentions:
+            for L, cap in layer_data.items():
+                if L < len(out.attentions) and out.attentions[L] is not None:
+                    cap["pattern"] = out.attentions[L].detach()
+
+        return layer_data
 
     # ------------------------------------------------------------------
     # Activation capture helpers
@@ -227,7 +388,8 @@ class AtPRunner:
         metric: Callable[[Any], Tensor],
         orig_rg: dict[str, bool],
         capture_intermediates: bool = False,
-    ) -> tuple[Any, dict[AtPNode, Tensor], dict[AtPNode, Tensor | None], dict[int, Tensor]]:
+        capture_qk_grads: bool = False,
+    ) -> tuple[Any, dict[AtPNode, Tensor], dict[AtPNode, Tensor | None], dict[int, Tensor], dict[int, Tensor], dict[int, Tensor]]:
         """Forward + backward pass capturing node activations AND their gradients.
 
         For vanilla AtP, we capture the FULL downstream gradient (including
@@ -256,14 +418,24 @@ class AtPRunner:
         scoring). The intermediate tensor stays in the autograd graph (no
         clone/detach) so its .grad is populated after backward.
 
-        Returns (model_out, node_acts, node_grads, intermediates).
-        intermediates: layer_idx → the down_proj INPUT tensor (in graph, grad retained).
+        If capture_qk_grads=True, additionally:
+          - retain_grad on q_proj and k_proj outputs (for vanilla q/k scoring)
+          - retain_grad on o_proj outputs (grad_attn_out for QK fix scoring)
+
+        Returns (model_out, node_acts, node_grads, intermediates,
+                 qproj_grads, oproj_grads).
+        qproj_grads: layer_idx → full q_proj output (with .grad after backward)
+        oproj_grads: layer_idx → o_proj output tensor (with .grad after backward)
         """
         # Params remain frozen (requires_grad=False) — no param re-enable needed.
         # Grad is seeded at the activation level via the embed hook below.
 
         node_acts: dict[AtPNode, Tensor] = {}
         intermediates: dict[int, Tensor] = {}
+        # Storage for q/k proj outputs and o_proj outputs (for QK fix)
+        qproj_outs: dict[int, Tensor] = {}   # layer → q_proj output (with retain_grad)
+        kproj_outs: dict[int, Tensor] = {}   # layer → k_proj output (with retain_grad)
+        oproj_outs: dict[int, Tensor] = {}   # layer → o_proj output (with retain_grad)
         handles: list[Any] = []
 
         embed_node = AtPNode(Node("embed"), None)
@@ -301,6 +473,34 @@ class AtPRunner:
                         node_acts[node] = (output, h, _n_heads, _head_dim)  # type: ignore[assignment]
 
                 handles.append(block.self_attn.v_proj.register_forward_hook(_v_proj_hook_grad))
+
+                if capture_qk_grads:
+                    _L2 = L
+
+                    def _q_proj_hook_grad(
+                        module: nn.Module, inp: tuple, output: Tensor,
+                        _L: int = _L2,
+                    ) -> None:
+                        output.retain_grad()
+                        qproj_outs[_L] = output
+
+                    def _k_proj_hook_grad(
+                        module: nn.Module, inp: tuple, output: Tensor,
+                        _L: int = _L2,
+                    ) -> None:
+                        output.retain_grad()
+                        kproj_outs[_L] = output
+
+                    def _o_proj_hook_grad(
+                        module: nn.Module, inp: tuple, output: Tensor,
+                        _L: int = _L2,
+                    ) -> None:
+                        output.retain_grad()
+                        oproj_outs[_L] = output
+
+                    handles.append(block.self_attn.q_proj.register_forward_hook(_q_proj_hook_grad))
+                    handles.append(block.self_attn.k_proj.register_forward_hook(_k_proj_hook_grad))
+                    handles.append(block.self_attn.o_proj.register_forward_hook(_o_proj_hook_grad))
 
             mlp_node = AtPNode(Node("mlp", L), None)
             _mlp_node = mlp_node
@@ -372,7 +572,195 @@ class AtPRunner:
                     else:
                         node_grads[node] = None
 
-        return out, node_acts, node_grads, intermediates
+        return out, node_acts, node_grads, intermediates, qproj_outs, kproj_outs, oproj_outs
+
+    # ------------------------------------------------------------------
+    # QK fix analytic scoring
+    # ------------------------------------------------------------------
+
+    def _compute_qk_fix_scores(
+        self,
+        clean_qk_data: dict[int, dict[str, Any]],
+        corr_qk_data: dict[int, dict[str, Any]],
+        oproj_outs: dict[int, Tensor],
+    ) -> dict[AtPNode, float]:
+        """Compute QK-fixed scores for all q/k nodes.
+
+        For each layer L and head h:
+          Query node:
+            Δq_h = q_corr_post_rope[:, h] - q_clean_post_rope[:, h]  (b, s, head_dim)
+            Q_new = Q_clean_h + Δq_h = q_corr_post_rope[:, h]
+            scores_new = Q_new @ K_clean_h.T * scaling + attn_mask_h
+            pattern_new = softmax(scores_new, dim=-1)
+            Δpattern_h = pattern_new - pattern_clean_h
+            V_clean_kv = v_clean[:, kv_h]   (b, s, head_dim)
+            Δz_h = Δpattern_h @ V_clean_kv  (b, q_pos, head_dim)
+            Δhead_out_h = Δz_h @ W_O_h.T   (b, q_pos, d_model)
+            grad_attn_out = oproj_outs[L].grad  (b, s, d_model) — shared across heads
+            score = (Δhead_out_h * grad_attn_out).sum()
+
+          Key node: symmetric — replace K_clean_h with K_corr_h in scores recomputation.
+
+        GQA: kv_h = _kv_head_for(h, n_heads, n_kv_heads)
+        """
+        n_heads = self.n_heads
+        n_kv_heads = self.n_kv_heads
+        head_dim = self.head_dim
+        assert head_dim is not None
+
+        scores: dict[AtPNode, float] = {}
+
+        for L in range(self.n_layers):
+            clean = clean_qk_data.get(L)
+            corr = corr_qk_data.get(L)
+            if clean is None or corr is None:
+                for h in range(n_heads):
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = 0.0
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = 0.0
+                continue
+
+            q_clean = clean.get("q_post")   # (b, n_heads, s, head_dim)
+            k_clean = clean.get("k_post")   # (b, n_kv_heads, s, head_dim)
+            v_clean = clean.get("v")        # (b, n_kv_heads, s, head_dim)
+            pattern_clean = clean.get("pattern")  # (b, n_heads, s, s)
+            attn_mask = clean.get("attn_mask")    # (b, 1, s, s) or None
+            q_corr = corr.get("q_post")
+            k_corr = corr.get("k_post")
+
+            # Get grad_attn_out: o_proj output gradient, shared across heads
+            o_out = oproj_outs.get(L)
+            if o_out is None or o_out.grad is None:
+                for h in range(n_heads):
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = 0.0
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = 0.0
+                continue
+
+            grad_attn_out = o_out.grad.detach()  # (b, s, d_model)
+
+            # W_O for this layer
+            block = self._layers_list[L]
+            W_O = block.self_attn.o_proj.weight  # (d_model, n_heads*head_dim)
+
+            scaling = 1.0 / math.sqrt(head_dim)
+
+            # If no pattern_clean (toy model without output_attentions),
+            # we need to compute it ourselves from clean Q, K, mask
+            # We'll handle this by a unified recompute path
+
+            for h in range(n_heads):
+                kv_h = _kv_head_for(h, n_heads, n_kv_heads)
+                W_O_h = W_O[:, h * head_dim:(h + 1) * head_dim]  # (d_model, head_dim)
+
+                if (q_clean is None or k_clean is None or v_clean is None
+                        or q_corr is None or k_corr is None):
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = 0.0
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = 0.0
+                    continue
+
+                Q_clean_h = q_clean[:, h, :, :]     # (b, s, head_dim)  [note: after transpose→(b,n,s,hd)]
+                K_clean_h = k_clean[:, kv_h, :, :]  # (b, s, head_dim)
+                V_clean_h = v_clean[:, kv_h, :, :]  # (b, s, head_dim)
+                Q_corr_h = q_corr[:, h, :, :]
+                K_corr_h = k_corr[:, kv_h, :, :]
+
+                # Compute clean pattern (needed as baseline)
+                if pattern_clean is not None:
+                    pat_clean_h = pattern_clean[:, h, :, :]  # (b, s, s)
+                else:
+                    # No output_attentions — recompute from clean Q/K
+                    scores_clean = (Q_clean_h @ K_clean_h.transpose(-2, -1)) * scaling
+                    if attn_mask is not None:
+                        scores_clean = scores_clean + attn_mask[:, 0, :, :]
+                    pat_clean_h = torch.softmax(scores_clean.float(), dim=-1).to(Q_clean_h.dtype)
+
+                # ---- QUERY node: replace Q_clean_h with Q_corr_h ----
+                scores_q = (Q_corr_h @ K_clean_h.transpose(-2, -1)) * scaling
+                if attn_mask is not None:
+                    scores_q = scores_q + attn_mask[:, 0, :, :]
+                pat_q = torch.softmax(scores_q.float(), dim=-1).to(Q_clean_h.dtype)
+                delta_pattern_q = pat_q - pat_clean_h                  # (b, s, s)
+                delta_z_q = delta_pattern_q @ V_clean_h                # (b, q, head_dim)
+                delta_head_out_q = delta_z_q @ W_O_h.T                # (b, q, d_model)
+                score_q = float((delta_head_out_q * grad_attn_out).sum().item())
+                scores[AtPNode(Node("attn_head", L, h), "q")] = score_q
+
+                # ---- KEY node: replace K_clean_h with K_corr_h ----
+                scores_k = (Q_clean_h @ K_corr_h.transpose(-2, -1)) * scaling
+                if attn_mask is not None:
+                    scores_k = scores_k + attn_mask[:, 0, :, :]
+                pat_k = torch.softmax(scores_k.float(), dim=-1).to(Q_clean_h.dtype)
+                delta_pattern_k = pat_k - pat_clean_h                  # (b, s, s)
+                delta_z_k = delta_pattern_k @ V_clean_h                # (b, q, head_dim)
+                delta_head_out_k = delta_z_k @ W_O_h.T                # (b, q, d_model)
+                score_k = float((delta_head_out_k * grad_attn_out).sum().item())
+                scores[AtPNode(Node("attn_head", L, h), "k")] = score_k
+
+        return scores
+
+    def _compute_vanilla_qk_scores(
+        self,
+        clean_qk_data: dict[int, dict[str, Any]],
+        corr_qk_data: dict[int, dict[str, Any]],
+        qproj_outs: dict[int, Tensor],
+        kproj_outs: dict[int, Tensor],
+    ) -> dict[AtPNode, float]:
+        """Vanilla q/k scoring: Σ(Δq_h ⊙ grad_q_h) in head_dim space.
+
+        Uses the gradient w.r.t. q_proj output (per-head slice) and the
+        delta from corrupted minus clean q_proj outputs (pre-RoPE).
+        """
+        n_heads = self.n_heads
+        n_kv_heads = self.n_kv_heads
+        head_dim = self.head_dim
+        assert head_dim is not None
+
+        scores: dict[AtPNode, float] = {}
+
+        for L in range(self.n_layers):
+            clean = clean_qk_data.get(L)
+            corr = corr_qk_data.get(L)
+
+            q_proj_out = qproj_outs.get(L)
+            k_proj_out = kproj_outs.get(L)
+
+            for h in range(n_heads):
+                kv_h = _kv_head_for(h, n_heads, n_kv_heads)
+
+                # Q vanilla
+                if (clean is not None and corr is not None
+                        and q_proj_out is not None and q_proj_out.grad is not None
+                        and "q_pre" in clean and "q_pre" in corr):
+                    q_clean_pre = clean["q_pre"]  # (b, s, n_heads*head_dim)
+                    q_corr_pre = corr["q_pre"]
+                    b, s, _ = q_clean_pre.shape
+                    q_c = q_clean_pre.view(b, s, n_heads, head_dim)[:, :, h, :]
+                    q_r = q_corr_pre.view(b, s, n_heads, head_dim)[:, :, h, :]
+                    delta_q = q_r - q_c  # (b, s, head_dim)
+                    grad_q = q_proj_out.grad.reshape(b, s, n_heads, head_dim)[:, :, h, :]
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = float(
+                        (delta_q * grad_q.detach()).sum().item()
+                    )
+                else:
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = 0.0
+
+                # K vanilla
+                if (clean is not None and corr is not None
+                        and k_proj_out is not None and k_proj_out.grad is not None
+                        and "k_pre" in clean and "k_pre" in corr):
+                    k_clean_pre = clean["k_pre"]  # (b, s, n_kv_heads*head_dim)
+                    k_corr_pre = corr["k_pre"]
+                    b, s, _ = k_clean_pre.shape
+                    k_c = k_clean_pre.view(b, s, n_kv_heads, head_dim)[:, :, kv_h, :]
+                    k_r = k_corr_pre.view(b, s, n_kv_heads, head_dim)[:, :, kv_h, :]
+                    delta_k = k_r - k_c  # (b, s, head_dim)
+                    grad_k = k_proj_out.grad.reshape(b, s, n_kv_heads, head_dim)[:, :, kv_h, :]
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = float(
+                        (delta_k * grad_k.detach()).sum().item()
+                    )
+                else:
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = 0.0
+
+        return scores
 
     # ------------------------------------------------------------------
     # Public API
@@ -388,17 +776,19 @@ class AtPRunner:
         graddrop: bool = False,
         qk_fix: bool = True,
     ) -> AtPResult:
-        """Compute vanilla AtP node scores.
+        """Compute AtP* node scores.
 
         Steps:
           1. Freeze params + eval (save/restore in try/finally).
-          2. Corrupted forward (no grad): cache node activations.
+          2. Corrupted forward (no grad): cache node activations + QK data.
           3. Clean forward + backward: retain_grad on node activation tensors,
-             read .grad after backward.
-          4. score(node) = float((Δact * grad).sum()) — sum over ALL dims.
-          5. q/k nodes: placeholder 0.0 (Task 5 replaces with QK fix).
-          6. Return AtPResult over enumerate_nodes.
+             read .grad after backward. Also captures o_proj grads for QK fix.
+          4. Clean forward (no grad): capture clean QK data (Q/K/V/pattern).
+          5. score(node) = float((Δact * grad).sum()) — sum over ALL dims.
+          6. q/k nodes: QK fix (attn-pattern recomputation) or vanilla Δq·grad.
+          7. Return AtPResult over enumerate_nodes.
         """
+        need_qk = self.n_heads > 0 and self.head_dim is not None
         was_training, orig_rg = self._freeze_eval()
         try:
             # Step 1: cache corrupted activations (no grad)
@@ -406,12 +796,28 @@ class AtPRunner:
                 corrupted_inputs, capture_intermediates=neurons
             )
 
-            # Step 2: clean forward + backward to get grads
-            _, clean_node_acts, clean_node_grads, clean_intermediates = self._collect_clean_grads(
-                clean_inputs, metric, orig_rg, capture_intermediates=neurons
+            # Step 2: cache corrupted QK data (for QK fix and vanilla)
+            corr_qk_data: dict[int, dict[str, Any]] = {}
+            if need_qk:
+                corr_qk_data = self._cache_qk_data(corrupted_inputs, compute_pattern=False)
+
+            # Step 3: clean forward + backward to get grads
+            _, clean_node_acts, clean_node_grads, clean_intermediates, qproj_outs, kproj_outs, oproj_outs = (
+                self._collect_clean_grads(
+                    clean_inputs, metric, orig_rg,
+                    capture_intermediates=neurons,
+                    capture_qk_grads=need_qk,
+                )
             )
 
-            # Step 3: compute clean activations for embed and mlp nodes
+            # Step 4: cache clean QK data (post-RoPE Q/K/V + pattern)
+            clean_qk_data: dict[int, dict[str, Any]] = {}
+            if need_qk:
+                clean_qk_data = self._cache_qk_data(clean_inputs, compute_pattern=True)
+                # Copy pre-RoPE q_pre/k_pre into clean_qk_data for vanilla scoring
+                # (already captured by _cache_qk_data)
+
+            # Step 5: compute clean activations for embed and mlp nodes
             # (we need clean acts to compute Δact = corr - clean)
             # For embed and mlp: node_acts stores the actual tensor; detach to get clean value
             clean_acts: dict[AtPNode, Tensor] = {}
@@ -439,17 +845,28 @@ class AtPRunner:
                             v_heads = v_proj_out.detach().reshape(b, s, _n_heads, _head_dim)
                             clean_acts[node] = v_heads[:, :, h_idx, :].clone()
 
-            # Step 4: score each node
+            # Step 6: score each node
             scores: dict[AtPNode, float] = {}
             d_mlp = getattr(self.resolver, "d_mlp", None) if self.resolver is not None else None
             all_nodes = enumerate_nodes(
                 self.n_layers, self.n_heads, d_mlp=d_mlp if neurons else None
             )
 
+            # Compute q/k scores once (either QK-fix or vanilla)
+            qk_scores: dict[AtPNode, float] = {}
+            if need_qk:
+                if qk_fix:
+                    qk_scores = self._compute_qk_fix_scores(
+                        clean_qk_data, corr_qk_data, oproj_outs
+                    )
+                else:
+                    qk_scores = self._compute_vanilla_qk_scores(
+                        clean_qk_data, corr_qk_data, qproj_outs, kproj_outs
+                    )
+
             for atp_node in all_nodes:
                 if atp_node.slot in ("q", "k"):
-                    # Placeholder: Task 5 implements QK fix
-                    scores[atp_node] = 0.0
+                    scores[atp_node] = qk_scores.get(atp_node, 0.0)
                     continue
 
                 inner_node = atp_node.node
@@ -501,8 +918,12 @@ class AtPRunner:
         with its corrupted-forward value. This matches "what if this node had fired
         as in the corrupted run?"
 
-        q/k nodes: return 0.0 (skipped by the test).
+        q nodes: patch q_proj output head-h slice clean→corrupted (real forward intervention).
+        k nodes: patch k_proj output head-h slice clean→corrupted (real forward intervention).
         """
+        n_heads = self.n_heads
+        n_kv_heads = self.n_kv_heads
+        head_dim = self.head_dim
         was_training, orig_rg = self._freeze_eval()
         try:
             with torch.no_grad():
@@ -517,17 +938,80 @@ class AtPRunner:
                     corrupted_inputs, capture_intermediates=has_neuron_nodes
                 )
 
+                # For q/k nodes: cache corrupted q_proj/k_proj outputs
+                corr_qk_data: dict[int, dict[str, Any]] = {}
+                has_qk_nodes = any(n.slot in ("q", "k") for n in nodes)
+                if has_qk_nodes and n_heads > 0 and head_dim is not None:
+                    corr_qk_data = self._cache_qk_data(corrupted_inputs, compute_pattern=False)
+
             scores: dict[AtPNode, float] = {}
 
             for atp_node in nodes:
-                if atp_node.slot in ("q", "k"):
-                    scores[atp_node] = 0.0
-                    continue
-
                 inner_node = atp_node.node
                 handles: list[Any] = []
 
-                if inner_node.kind == "mlp_neuron":
+                if atp_node.slot == "q" and inner_node.kind == "attn_head":
+                    # Brute-force q node: replace head h's q_proj output with corrupted value
+                    L = inner_node.layer
+                    h = inner_node.head
+                    cap = corr_qk_data.get(L)
+                    if cap is None or "q_pre" not in cap:
+                        scores[atp_node] = 0.0
+                        continue
+                    q_corr_pre = cap["q_pre"]  # (b, s, n_heads*head_dim)
+                    block = self._layers_list[L]
+                    _h = h
+                    _n_heads = n_heads
+                    _hd = head_dim
+                    _corr = q_corr_pre
+
+                    def _q_proj_replace_hook(
+                        module: nn.Module, inp: tuple, output: Tensor,
+                        _h: int = _h, _nh: int = _n_heads, _hd: int = _hd,
+                        _c: Tensor = _corr,
+                    ) -> Tensor:
+                        b, s, _ = output.shape
+                        out = output.clone().reshape(b, s, _nh, _hd)
+                        corr_h = _c.view(b, s, _nh, _hd)
+                        out[:, :, _h, :] = corr_h[:, :, _h, :]
+                        return out.reshape(b, s, _nh * _hd)
+
+                    handles.append(
+                        block.self_attn.q_proj.register_forward_hook(_q_proj_replace_hook)
+                    )
+
+                elif atp_node.slot == "k" and inner_node.kind == "attn_head":
+                    # Brute-force k node: replace kv_h's k_proj output with corrupted value
+                    L = inner_node.layer
+                    h = inner_node.head
+                    kv_h = _kv_head_for(h, n_heads, n_kv_heads)
+                    cap = corr_qk_data.get(L)
+                    if cap is None or "k_pre" not in cap:
+                        scores[atp_node] = 0.0
+                        continue
+                    k_corr_pre = cap["k_pre"]  # (b, s, n_kv_heads*head_dim)
+                    block = self._layers_list[L]
+                    _kv_h = kv_h
+                    _n_kv = n_kv_heads
+                    _hd = head_dim
+                    _corr = k_corr_pre
+
+                    def _k_proj_replace_hook(
+                        module: nn.Module, inp: tuple, output: Tensor,
+                        _kv_h: int = _kv_h, _nkv: int = _n_kv, _hd: int = _hd,
+                        _c: Tensor = _corr,
+                    ) -> Tensor:
+                        b, s, _ = output.shape
+                        out = output.clone().reshape(b, s, _nkv, _hd)
+                        corr_kv = _c.view(b, s, _nkv, _hd)
+                        out[:, :, _kv_h, :] = corr_kv[:, :, _kv_h, :]
+                        return out.reshape(b, s, _nkv * _hd)
+
+                    handles.append(
+                        block.self_attn.k_proj.register_forward_hook(_k_proj_replace_hook)
+                    )
+
+                elif inner_node.kind == "mlp_neuron":
                     # Patch the MLP intermediate (down_proj INPUT) for neuron n only.
                     # Use a forward_pre_hook so we're patching exactly the same point
                     # that the analytic path reads (down_proj INPUT = mlp_neuron site).
@@ -635,5 +1119,51 @@ class AtPRunner:
                 scores[atp_node] = patched_metric - clean_metric
 
             return scores
+        finally:
+            self._restore(was_training, orig_rg)
+
+    def qk_operand_shapes(
+        self,
+        clean_inputs: _Inputs,
+        corrupted_inputs: _Inputs,
+        metric: Callable[[Any], Tensor],
+    ) -> dict[tuple[int, int], tuple[int, int]]:
+        """Debug accessor: for each (layer, head), return (Δhead_out_dim, grad_dim).
+
+        Both must be d_model. This validates that the QK fix operates in a
+        consistent d_model space — Δhead_out is projected to d_model via W_O,
+        and grad_attn_out is the d_model gradient w.r.t. the o_proj output.
+
+        Returns dict[(L, h): (Δhead_out_dim, grad_dim)].
+        """
+        was_training, orig_rg = self._freeze_eval()
+        try:
+            # Run QK fix to get operand dimensions
+            # We only need the o_proj output grad and W_O shapes
+            _, _, _, _, _, _, oproj_outs = self._collect_clean_grads(
+                clean_inputs, metric, orig_rg,
+                capture_intermediates=False,
+                capture_qk_grads=True,
+            )
+
+            result: dict[tuple[int, int], tuple[int, int]] = {}
+            n_heads = self.n_heads
+
+            for L in range(self.n_layers):
+                block = self._layers_list[L]
+                if not hasattr(block, "self_attn"):
+                    continue
+                o_out = oproj_outs.get(L)
+                if o_out is None:
+                    continue
+                # grad_dim = d_model (from o_proj output shape)
+                grad_dim = o_out.shape[-1]
+                # Δhead_out_dim = d_model (W_O_h: (d_model, head_dim), Δz_h: (b, q, head_dim))
+                W_O = block.self_attn.o_proj.weight  # (d_model, n_heads*head_dim)
+                delta_head_out_dim = W_O.shape[0]  # d_model
+                for h in range(n_heads):
+                    result[(L, h)] = (delta_head_out_dim, grad_dim)
+
+            return result
         finally:
             self._restore(was_training, orig_rg)
