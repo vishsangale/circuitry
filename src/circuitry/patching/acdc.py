@@ -87,6 +87,21 @@ class ACDCRunner:
                 self.model.set_use_attn_result(prior)
         return self._eap.writer_activations(corrupted_inputs)
 
+    @staticmethod
+    def _slice_pos(logits: Tensor, position: int | None) -> Tensor:
+        """Slice to a single token position (keeping a length-1 axis) or pass through."""
+        if position is None or logits.ndim < 3:
+            return logits
+        return logits[:, position:position + 1, :] if position != -1 else logits[:, -1:, :]
+
+    def _recovery_kl(self, circuit_logits: Tensor, clean_logits: Tensor,
+                     position: int | None = -1) -> float:
+        """KL(circuit ‖ clean) at `position` (default last token). Reuses core."""
+        from circuitry.core.patching import kl_divergence
+        p = self._slice_pos(circuit_logits, position)
+        q = self._slice_pos(clean_logits, position)
+        return kl_divergence(p, q)
+
     # ------------------------------------------------------------------
     # The set-ablation forward (HF / toy path).  Returns logits.
     # ------------------------------------------------------------------
