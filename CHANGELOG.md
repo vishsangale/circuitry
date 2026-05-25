@@ -56,6 +56,28 @@ All notable changes to this project will be documented in this file. The format 
   - Correctness gated by exact vanilla/neuron cross-checks vs brute-force `patch_site`
     on linear toys, and a real-Llama check that the QK fix beats vanilla against
     brute-force; frozen-model contract verified (no parameter-gradient leak).
+- **ACDC — Automatic Circuit DisCovery** (v1.0 patching pillar, sub-spec 4).
+  Greedy reverse-topological edge pruning with corrupted-resample set ablation:
+  - `circuitry.patching.acdc` — `ACDCRunner(model, resolver).run(clean_inputs,
+    corrupted_inputs, tau, *, ordering=, position=, metric=)` → `ACDCResult`
+    (pruned circuit edges; `n_kept()` / `circuit_graph()`).
+  - Forward-only edge pruning: ablated edges feed corrupted-run activations (cached
+    once), kept edges propagate live (current-circuit) activations; deltas injected
+    **pre-LayerNorm** per reader/slot (per-head rebuild on HF eager, native on TL).
+  - Recovery metric: last-token KL to clean (default, configurable `position`);
+    custom metric callable accepted. Single-threshold `tau` (per-edge tolerance) +
+    `sweep(taus)` Pareto helper `[(τ, n_kept, final_kl), …]`.
+  - Traversal orderings: `"topo"` (reverse-topological with deterministic tie-break
+    key) and `"eap"` (lowest `|EAP score|` first, consumes `EAPResult.scores`).
+    v1.0 ships traversal-ordering; the EAP-score skip speedup is a documented
+    follow-on.
+  - Backends: HF (eager, Llama-family; GQA k/v at kv-group granularity) and
+    TransformerLens. Empty- and full-ablation anchors are exact under
+    `corrupted − live` + pre-LN injection.
+  - Correctness gated by empty-/full-ablation anchors on real HF Llama + toy,
+    live-vs-clean delta guard (dead-edge pruning on a constructed toy), and
+    determinism across runs (topo + eap orderings both deterministic, Pareto
+    monotonicity). Reuses EAP's graph, writer-activation caching, and backends.
 
 ## [0.9.2] — 2026-05-23
 

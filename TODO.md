@@ -143,7 +143,14 @@ Specs + plans live under `docs/superpowers/`.
   (real `patch_site` calibration); HF (eager, Llama, GQA) + TL backends. Exact vanilla/neuron gates
   vs brute-force on linear toys; QK fix beats vanilla on real Llama. 330 tests, Gemini-reviewed
   (fixed GQA v-slot crash + GradDrop spec sync). `transformers` added as approved lazy optional dep.
-- [ ] **Sub-spec 4 — ACDC** (iterative circuit pruning). Reuses EAP's edge graph.
+- [x] **Sub-spec 4 — ACDC** (iterative circuit pruning). Done (2026-05-25, on `main`, unreleased).
+  `circuitry.patching.acdc` (`ACDCRunner`/`ACDCResult`): greedy reverse-topological edge pruning with
+  corrupted-resample set ablation (corrupted−live deltas, pre-LN per-head injection), last-token
+  KL-to-clean recovery (configurable position + custom metric), `tau` threshold + `sweep` Pareto helper,
+  `topo`/`eap` ordering, HF (eager, Llama, GQA kv-group) + TL backends. Exact empty-/full-ablation
+  anchors. 128 new tests, Gemini-reviewed. v1.0 patching pillar (4 of 4 sub-specs) complete.
+  **Follow-ons:** mean / zero ablation modes; the EAP-score skip-speedup (`eap_skip_threshold`);
+  per-query-head k/v under GQA; SAE-feature circuits; report/compare integration.
 - [ ] **later — SAE-feature circuits** (intervention site = SAE feature; builds on the SAE primitive).
 
 ## Future research / features (from `docs/v0.9-research` ledger)
