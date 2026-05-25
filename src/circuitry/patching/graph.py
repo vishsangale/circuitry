@@ -13,9 +13,10 @@ _ATTN_SLOTS: tuple[Slot, ...] = ("q", "k", "v")
 
 @dataclass(frozen=True)
 class Node:
-    kind: str                 # "embed" | "attn_head" | "mlp" | "logits"
+    kind: str                 # "embed" | "attn_head" | "mlp" | "mlp_neuron" | "logits"
     layer: int | None = None
     head: int | None = None
+    neuron: int | None = None
 
 
 @dataclass(frozen=True)
