@@ -486,6 +486,354 @@ class EAPRunner:
 
         return out, writer_acts, reader_grads
 
+    def _collect_reader_inputs(
+        self, inputs: _Inputs
+    ) -> tuple[dict[Node, Tensor], dict[tuple[Node, str], Tensor]]:
+        """No-grad pass that captures writer activations AND the raw (pre-proj) reader
+        inputs at each hook point, for use by the IG interpolation loop.
+
+        Returns (writer_acts, reader_inputs) where reader_inputs keys are the
+        same (Node, slot) as _collect_reader_grads but values are the actual
+        tensor the projection / lm_head reads — i.e., the post-LN residual for
+        MLP/logits readers, and the post-LN residual for attn readers (pre q/k/v_proj).
+        These are *detached* tensors (no grad).
+
+        Also captures ln_scales_attn / ln_scales_mlp (returned as side-effect via
+        the shared mutable dicts passed in; here they are captured into returned dicts).
+        """
+        writer_acts: dict[Node, Tensor] = {}
+        reader_inputs: dict[tuple[Node, str], Tensor] = {}
+        ln_scales_attn: dict[int, Any] = {}
+        ln_scales_mlp: dict[int, Any] = {}
+        handles: list[Any] = []
+
+        embed_node = Node("embed")
+        eps = self._rms_norm_eps
+
+        def _embed_writer_hook(module: nn.Module, inp: tuple, output: Tensor) -> None:
+            writer_acts[embed_node] = output.detach()
+
+        handles.append(self._embed().register_forward_hook(_embed_writer_hook))
+
+        for L, block in enumerate(self._layers_list):
+            # Capture LN scales (same logic as _collect_reader_grads)
+            attn_norm = getattr(block, "input_layernorm", None)
+            if attn_norm is not None:
+                def _attn_norm_pre_hook(
+                    module: nn.Module, args: tuple, _L: int = L,
+                ) -> None:
+                    x_resid = args[0]
+                    scale = (1.0 / torch.sqrt(
+                        x_resid.pow(2).mean(dim=-1, keepdim=True) + eps
+                    )).detach()
+                    ln_scales_attn[_L] = scale
+
+                handles.append(attn_norm.register_forward_pre_hook(_attn_norm_pre_hook))
+            else:
+                ln_scales_attn[L] = 1.0
+
+            mlp_norm = getattr(block, "post_attention_layernorm", None)
+            if mlp_norm is not None:
+                def _mlp_norm_pre_hook(
+                    module: nn.Module, args: tuple, _L: int = L,
+                ) -> None:
+                    x_resid = args[0]
+                    scale = (1.0 / torch.sqrt(
+                        x_resid.pow(2).mean(dim=-1, keepdim=True) + eps
+                    )).detach()
+                    ln_scales_mlp[_L] = scale
+
+                handles.append(mlp_norm.register_forward_pre_hook(_mlp_norm_pre_hook))
+            else:
+                ln_scales_mlp[L] = 1.0
+
+            # Attention head writer hooks (same as _collect_writer_acts)
+            if self.n_heads > 0:
+                n_heads = self.n_heads
+                head_dim = self.head_dim
+
+                def _o_proj_pre_hook_writer(
+                    module: nn.Module, args: tuple,
+                    _L: int = L,
+                    _n_heads: int = n_heads,
+                    _head_dim: int = head_dim,
+                ) -> None:
+                    z = args[0].detach()
+                    b, s, _ = z.shape
+                    z_heads = z.reshape(b, s, _n_heads, _head_dim)
+                    W_O = module.weight
+                    for h in range(_n_heads):
+                        z_h = z_heads[:, :, h, :]
+                        W_O_h = W_O[:, h * _head_dim:(h + 1) * _head_dim]
+                        contrib = z_h @ W_O_h.T
+                        writer_acts[Node("attn_head", _L, h)] = contrib
+
+                handles.append(block.self_attn.o_proj.register_forward_pre_hook(_o_proj_pre_hook_writer))
+
+                # Capture the raw residual at each proj input (post-LN, pre-proj)
+                for slot, proj in [("q", block.self_attn.q_proj),
+                                    ("k", block.self_attn.k_proj),
+                                    ("v", block.self_attn.v_proj)]:
+                    def _proj_reader_input_hook(
+                        module: nn.Module, args: tuple,
+                        _L: int = L, _slot: str = slot,
+                    ) -> None:
+                        reader_inputs[(Node("attn_head", _L, 0), _slot, _L)] = args[0].detach()  # type: ignore[index]
+
+                    handles.append(proj.register_forward_pre_hook(_proj_reader_input_hook))
+
+            mlp_node = Node("mlp", L)
+
+            def _down_proj_writer_hook(
+                module: nn.Module, inp: tuple, output: Tensor,
+                _n: Node = mlp_node,
+            ) -> None:
+                writer_acts[_n] = output.detach()
+
+            handles.append(block.mlp.down_proj.register_forward_hook(_down_proj_writer_hook))
+
+            # Capture MLP reader input (post-LN residual before up_proj)
+            def _up_proj_reader_input_hook(
+                module: nn.Module, args: tuple,
+                _L: int = L,
+            ) -> None:
+                reader_inputs[(Node("mlp", _L), "mlp_in")] = args[0].detach()  # type: ignore[index]
+
+            handles.append(block.mlp.up_proj.register_forward_pre_hook(_up_proj_reader_input_hook))
+
+        # Capture logits reader input (residual before lm_head)
+        def _lm_head_reader_input_hook(module: nn.Module, args: tuple) -> None:
+            reader_inputs[(Node("logits"), "logits_in")] = args[0].detach()  # type: ignore[index]
+
+        handles.append(self._lm_head().register_forward_pre_hook(_lm_head_reader_input_hook))
+
+        try:
+            with torch.no_grad():
+                self._call_model(inputs)
+        finally:
+            for h in handles:
+                h.remove()
+
+        # Return reader_inputs with standard (Node, slot) keys (drop the extra L for attn)
+        # The attn keys were stored with a 3-tuple; normalise to (Node, slot) now.
+        # We stored attn reader inputs keyed by (Node("attn_head", L, 0), slot, L) —
+        # one entry per (L, slot); per-head sharing is handled later in IG loop.
+        normalized: dict[tuple[Node, str], Tensor] = {}
+        for key, val in reader_inputs.items():
+            if len(key) == 3 and isinstance(key[2], int):
+                # attn key: (Node("attn_head", L, 0), slot, L) → ("_attn_in", L, slot)
+                _, slot, layer_idx = key
+                normalized[("_attn_in", layer_idx, slot)] = val  # type: ignore[assignment]
+            else:
+                normalized[key] = val  # type: ignore[assignment]
+
+        return writer_acts, normalized, ln_scales_attn, ln_scales_mlp  # type: ignore[return-value]
+
+    def _collect_reader_grads_ig(
+        self,
+        inputs: _Inputs,
+        metric: Callable[[Any], Tensor],
+        ig_steps: int,
+        clean_reader_inputs: dict,
+        corrupted_reader_inputs: dict,
+        ln_scales_attn: dict[int, Any],
+        ln_scales_mlp: dict[int, Any],
+    ) -> dict[tuple[Node, str], Tensor]:
+        """Run ig_steps interpolation forward+backward passes and average gradients.
+
+        For each k=1..ig_steps, α=k/ig_steps, each reader uses the "offset + clone"
+        pattern to evaluate the gradient AT the interpolated value r_interp while
+        maintaining downstream gradient flow:
+
+          actual_x = what the model naturally produces at this reader (from clean inputs)
+          r_interp = corr_in + α * (clean_in - corr_in)          [target value]
+          shifted   = actual_x + (r_interp − actual_x).detach()  [= r_interp numerically;
+                                                                   connected to actual_x's grad graph]
+          r_clone   = shifted.clone().requires_grad_(True)        [same pattern as vanilla;
+                                                                   non-leaf if shifted has grad]
+
+        This preserves inter-layer gradient flow (gradient at layer L flows back through
+        the actual residual stream to layer 0 readers), while the VALUE at each reader is
+        exactly r_interp. On a linear model the gradient is constant so IG == vanilla;
+        on a nonlinear model the gradient varies, giving a better attribution estimate.
+
+        For ig_steps=1: called only when ig_steps > 1 — the vanilla path handles ig_steps=1.
+        Returns averaged reader_grads dict (same keys as _collect_reader_grads).
+        """
+        n_heads = self.n_heads
+        n_kv_heads = self.n_kv_heads
+        head_dim = self.head_dim
+        b, s = self._batch_seq(inputs)
+        logits_node = Node("logits")
+
+        # Accumulate grads over ig_steps
+        grad_accum_mlp: dict[tuple[Node, str], Tensor] = {}
+        grad_accum_attn: dict[tuple[int, str], Tensor] = {}  # (L, slot) -> summed
+
+        for k in range(1, ig_steps + 1):
+            alpha = k / ig_steps
+            step_mlp_clones: dict[tuple[Node, str], Tensor] = {}
+            step_proj_outputs: dict[tuple[int, str], Tensor] = {}
+            step_handles: list[Any] = []
+
+            for L, block in enumerate(self._layers_list):
+                if self.n_heads > 0:
+                    for slot, proj in [("q", block.self_attn.q_proj),
+                                        ("k", block.self_attn.k_proj),
+                                        ("v", block.self_attn.v_proj)]:
+                        clean_in = clean_reader_inputs.get(("_attn_in", L, slot))
+                        corr_in = corrupted_reader_inputs.get(("_attn_in", L, slot))
+
+                        def _proj_pre_hook_ig(
+                            module: nn.Module, args: tuple,
+                            _clean: Any = clean_in,
+                            _corr: Any = corr_in,
+                            _alpha: float = alpha,
+                        ) -> tuple:
+                            actual_x = args[0]
+                            if _clean is not None and _corr is not None:
+                                # Shift to interpolated value while staying in computation graph
+                                r_interp = (_corr + _alpha * (_clean - _corr)).detach()
+                                offset = (r_interp - actual_x).detach()
+                                actual_x = actual_x + offset  # = r_interp numerically
+                            r_clone = actual_x.clone().requires_grad_(True)
+                            return (r_clone,) + args[1:]
+
+                        def _proj_output_hook_ig(
+                            module: nn.Module, inp: tuple, output: Tensor,
+                            _L: int = L, _slot: str = slot,
+                            _store: dict = step_proj_outputs,
+                        ) -> None:
+                            output.retain_grad()
+                            _store[(_L, _slot)] = output
+
+                        step_handles.append(proj.register_forward_pre_hook(_proj_pre_hook_ig))
+                        step_handles.append(proj.register_forward_hook(_proj_output_hook_ig))
+
+                # MLP reader: shift actual residual to interpolated value, then clone
+                mlp_node = Node("mlp", L)
+                clean_mlp = clean_reader_inputs.get((mlp_node, "mlp_in"))
+                corr_mlp = corrupted_reader_inputs.get((mlp_node, "mlp_in"))
+
+                def _up_proj_ig(
+                    module: nn.Module, args: tuple,
+                    _node: Node = mlp_node,
+                    _clean: Any = clean_mlp,
+                    _corr: Any = corr_mlp,
+                    _alpha: float = alpha,
+                    _store: dict = step_mlp_clones,
+                ) -> tuple:
+                    actual_x = args[0]
+                    if _clean is not None and _corr is not None:
+                        r_interp = (_corr + _alpha * (_clean - _corr)).detach()
+                        offset = (r_interp - actual_x).detach()
+                        actual_x = actual_x + offset  # = r_interp numerically
+                    r_clone = actual_x.clone().requires_grad_(True)
+                    r_clone.retain_grad()
+                    _store[(_node, "mlp_in")] = r_clone
+                    return (r_clone,) + args[1:]
+
+                step_handles.append(block.mlp.up_proj.register_forward_pre_hook(_up_proj_ig))
+
+            # Logits reader: shift actual residual to interpolated value, then clone
+            clean_logits_in = clean_reader_inputs.get((logits_node, "logits_in"))
+            corr_logits_in = corrupted_reader_inputs.get((logits_node, "logits_in"))
+
+            def _lm_head_ig(
+                module: nn.Module, args: tuple,
+                _clean: Any = clean_logits_in,
+                _corr: Any = corr_logits_in,
+                _alpha: float = alpha,
+                _store: dict = step_mlp_clones,
+                _logits_node: Node = logits_node,
+            ) -> tuple:
+                actual_x = args[0]
+                if _clean is not None and _corr is not None:
+                    r_interp = (_corr + _alpha * (_clean - _corr)).detach()
+                    offset = (r_interp - actual_x).detach()
+                    actual_x = actual_x + offset  # = r_interp numerically
+                r_clone = actual_x.clone().requires_grad_(True)
+                r_clone.retain_grad()
+                _store[(_logits_node, "logits_in")] = r_clone
+                return (r_clone,) + args[1:]
+
+            step_handles.append(self._lm_head().register_forward_pre_hook(_lm_head_ig))
+
+            try:
+                with torch.enable_grad():
+                    out = self._call_model(inputs)
+                    metric(out).backward()
+            finally:
+                for h in step_handles:
+                    h.remove()
+
+            # Accumulate MLP/logits reader grads (with LN scaling same as vanilla)
+            for key, t in step_mlp_clones.items():
+                node, slot = key
+                if t.grad is not None:
+                    g = t.grad.detach()
+                    if slot == "mlp_in" and node.layer is not None:
+                        ln_s = ln_scales_mlp.get(node.layer, 1.0)
+                        g = g * ln_s
+                else:
+                    # No grad (e.g. disconnected): contribute zero
+                    ref = clean_reader_inputs.get(key) or corrupted_reader_inputs.get(key)
+                    g = torch.zeros_like(ref) if ref is not None else torch.zeros(b, s, 1)
+                if key in grad_accum_mlp:
+                    grad_accum_mlp[key] = grad_accum_mlp[key] + g
+                else:
+                    grad_accum_mlp[key] = g
+
+            # Accumulate attn proj output grads
+            for (L_k, slot_k), proj_out in step_proj_outputs.items():
+                if proj_out.grad is not None:
+                    g = proj_out.grad.detach()
+                    if (L_k, slot_k) in grad_accum_attn:
+                        grad_accum_attn[(L_k, slot_k)] = grad_accum_attn[(L_k, slot_k)] + g
+                    else:
+                        grad_accum_attn[(L_k, slot_k)] = g
+
+        # Average gradients
+        reader_grads: dict[tuple[Node, str], Tensor] = {}
+
+        for key, accum in grad_accum_mlp.items():
+            reader_grads[key] = accum / ig_steps
+
+        # Back-map averaged attn grads to residual space (same logic as _collect_reader_grads)
+        if self.n_heads > 0:
+            for L, block in enumerate(self._layers_list):
+                ln_s = ln_scales_attn.get(L, 1.0)
+                for slot, proj in [("q", block.self_attn.q_proj),
+                                    ("k", block.self_attn.k_proj),
+                                    ("v", block.self_attn.v_proj)]:
+                    W_proj = proj.weight  # (n_proj_heads*head_dim, d_model)
+                    d_model = W_proj.shape[1]
+                    n_proj_heads = n_kv_heads if slot in ("k", "v") else n_heads
+                    accum = grad_accum_attn.get((L, slot))
+                    if accum is None:
+                        # No grad accumulated → zero
+                        for h in range(n_heads):
+                            reader_grads[(Node("attn_head", L, h), slot)] = torch.zeros(
+                                b, s, d_model, dtype=W_proj.dtype
+                            )
+                        continue
+                    avg_proj_grad = accum / ig_steps  # (b, s, n_proj_heads*head_dim)
+                    avg_proj_grad_heads = avg_proj_grad.reshape(b, s, n_proj_heads, head_dim)
+                    for h in range(n_heads):
+                        if slot in ("k", "v"):
+                            kv_h = self._kv_head_for(h, n_heads, n_kv_heads)
+                            dL_dproj_h = avg_proj_grad_heads[:, :, kv_h, :]
+                            W_proj_h = W_proj[kv_h * head_dim:(kv_h + 1) * head_dim, :]
+                        else:
+                            dL_dproj_h = avg_proj_grad_heads[:, :, h, :]
+                            W_proj_h = W_proj[h * head_dim:(h + 1) * head_dim, :]
+                        grad_resid = self._backmap_qkv_grad(
+                            dL_dproj_h, W_proj_h.detach(), ln_s
+                        )
+                        reader_grads[(Node("attn_head", L, h), slot)] = grad_resid
+
+        return reader_grads
+
     # ------------------------------------------------------------------
     # TransformerLens-specific collect methods
     # ------------------------------------------------------------------
@@ -701,19 +1049,36 @@ class EAPRunner:
 
         try:
             if self._tl:
-                # TL path: use native hook-based collectors
+                # TL path: use native hook-based collectors (ig_steps > 1 not implemented
+                # for TL; ig_steps=1 falls through unchanged as vanilla)
                 acts_corrupted = self._collect_writer_acts_tl(corrupted_inputs)  # type: ignore[arg-type]
                 _, acts_clean, grads_clean = self._collect_reader_grads_tl(clean_inputs, metric)  # type: ignore[arg-type]
-            else:
-                # HF/toy path: existing implementation
+            elif ig_steps <= 1:
+                # HF/toy path: vanilla EAP (ig_steps=1 or default)
                 # Step 1: corrupted forward (no grad needed)
                 with torch.no_grad():
                     _, acts_corrupted = self._collect_writer_acts(corrupted_inputs)
 
                 # Step 2: clean forward + backward (need grads for reader inputs)
                 _, acts_clean, grads_clean = self._collect_reader_grads(clean_inputs, metric)
+            else:
+                # HF/toy path: EAP-IG with ig_steps interpolation steps
+                # Step 1: cache corrupted writer acts + reader inputs (no grad)
+                acts_corrupted, corrupted_reader_inputs, _, _ = \
+                    self._collect_reader_inputs(corrupted_inputs)  # type: ignore[misc]
 
-            # Step 3: build stacked tensors and score (shared)
+                # Step 2: cache clean writer acts + reader inputs + LN scales (no grad)
+                acts_clean, clean_reader_inputs, ln_scales_attn, ln_scales_mlp = \
+                    self._collect_reader_inputs(clean_inputs)  # type: ignore[misc]
+
+                # Step 3: IG loop — run ig_steps interpolated forward+backward passes
+                grads_clean = self._collect_reader_grads_ig(
+                    clean_inputs, metric, ig_steps,
+                    clean_reader_inputs, corrupted_reader_inputs,
+                    ln_scales_attn, ln_scales_mlp,
+                )
+
+            # Step 4: build stacked tensors and score (shared)
             act_clean_t = self._stack_acts(acts_clean)
             act_corrupted_t = self._stack_acts(acts_corrupted)
             grad_clean_t = self._stack_grads(grads_clean)
