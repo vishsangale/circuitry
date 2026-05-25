@@ -1,6 +1,7 @@
 """ACDC: greedy circuit discovery via corrupted-resample set-ablation. Spec §2–§6."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,8 @@ from circuitry.patching.graph import (
     Edge,
     EdgeGraph,
     Node,
+    edge_sort_key,
+    reverse_topo_readers,
 )
 
 _Inputs = Tensor | dict[str, Any]
@@ -245,3 +248,63 @@ class ACDCRunner:
             for h in handles:
                 h.remove()
         return _logits_of(out)
+
+    # ------------------------------------------------------------------
+    # Dispatch forward (HF / toy path; TL is a later task).
+    # ------------------------------------------------------------------
+
+    def _forward(self, clean_inputs: _Inputs, removed: set[Edge],
+                 corr_act: dict[Node, Tensor]) -> Tensor:
+        if self._tl:
+            return self._run_capturing_live_tl(clean_inputs, removed, corr_act)
+        return self._run_capturing_live(clean_inputs, removed, corr_act)
+
+    def _incoming_in_order(
+        self,
+        reader: Node,
+        slot: str,
+        ordering: str,
+        eap_scores: dict[Edge, float] | None,
+    ) -> list[Edge]:
+        edges = [e for e in self.graph.edges if e.reader == reader and e.slot == slot]
+        if ordering == "eap" and eap_scores is not None:
+            return sorted(edges, key=lambda e: (abs(eap_scores.get(e, 0.0)), edge_sort_key(e)))
+        return sorted(edges, key=edge_sort_key)
+
+    def run(
+        self,
+        clean_inputs: _Inputs,
+        corrupted_inputs: _Inputs,
+        tau: float,
+        ordering: str | None = None,
+        eap_scores: dict[Edge, float] | None = None,
+        position: int | None = -1,
+        metric: Callable[[Tensor, Tensor], float] | None = None,
+    ) -> ACDCResult:
+        """Greedy reverse-topo edge pruning. Returns the surviving circuit."""
+        if ordering is None:
+            ordering = "eap" if eap_scores is not None else "topo"
+
+        corr_act = self._cache_corrupted_acts(corrupted_inputs)
+        with torch.no_grad():
+            full_clean_logits = _logits_of(self._eap._call_model(clean_inputs))
+
+        def recovery(circuit_logits: Tensor) -> float:
+            if metric is not None:
+                return float(metric(circuit_logits, full_clean_logits))
+            return self._recovery_kl(circuit_logits, full_clean_logits, position)
+
+        removed: set[Edge] = set()
+        current = 0.0
+        for reader, slot in reverse_topo_readers(self.graph):
+            for edge in self._incoming_in_order(reader, slot, ordering, eap_scores):
+                removed.add(edge)
+                logits = self._forward(clean_inputs, removed, corr_act)
+                new_kl = recovery(logits)
+                if new_kl - current < tau:
+                    current = new_kl
+                else:
+                    removed.discard(edge)
+
+        kept = [e for e in self.graph.edges if e not in removed]
+        return ACDCResult(kept, sorted(removed, key=edge_sort_key), current, self.graph)
