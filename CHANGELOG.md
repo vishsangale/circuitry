@@ -38,6 +38,24 @@ All notable changes to this project will be documented in this file. The format 
     `kl_divergence_t` / `ce_loss_t` (no `.detach()`); the float versions are unchanged.
   - Correctness gated by an exact per-edge cross-check against brute-force `patch_site`
     patching on linear toys, plus a rank-correlation check on a real HF Llama.
+- **AtP\* — Attribution Patching with corrections** (v1.0 patching pillar, sub-spec 3).
+  Node attribution (vs EAP's edges):
+  - `circuitry.patching.atp` — `AtPRunner(model, resolver).run(clean_inputs,
+    corrupted_inputs, metric, *, neurons=, graddrop=, qk_fix=)` → `AtPResult`
+    (`AtPNode`-keyed scores; `ranked`/`top_k`/`threshold`/`verify_top_k`).
+  - Vanilla AtP (`Δact · full-grad`) for value / MLP / neuron / embed nodes;
+    **neuron-level** nodes feasible (O(nodes)).
+  - **QK fix** for query/key nodes: recompute the attention pattern with the patched
+    (post-RoPE) q/k, propagate through the clean V, project via `W_O` to `d_model`,
+    dot with the attention-output gradient. **GradDrop** (`graddrop=True`):
+    sum of |per-position score| to counter sign-cancellation.
+  - `verify_top_k` calibrates the top-K against real `patch_site` patching.
+  - Backends: HF (eager, Llama-family; GQA-aware; `output_attentions` for the QK
+    pattern) and TL (vanilla q/k on the TL path). `transformers` joins
+    `transformer_lens` as an approved lazy optional dependency (AtP\* QK-fix RoPE).
+  - Correctness gated by exact vanilla/neuron cross-checks vs brute-force `patch_site`
+    on linear toys, and a real-Llama check that the QK fix beats vanilla against
+    brute-force; frozen-model contract verified (no parameter-gradient leak).
 
 ## [0.9.2] — 2026-05-23
 

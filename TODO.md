@@ -137,8 +137,12 @@ Specs + plans live under `docs/superpowers/`.
   scoring) + vanilla & activation-path EAP-IG (`ig_steps`) + TL and HF (RMSNorm/GQA, Llama-family)
   backends + `core/patching` `_t` differentiable metrics. Exact per-edge cross-check vs `patch_site`
   on linear toys; rank-correlation on real HF Llama. 300 tests, Gemini-reviewed clean.
-- [ ] **Sub-spec 3 — AtP\*** (attribution patching + corrections). Uses activation gradients
-  (`patch_site(..., enable_activation_grad=True)` already supports this).
+- [x] **Sub-spec 3 — AtP\*** (attribution patching + corrections). Done (2026-05-25, on `main`,
+  unreleased). `circuitry.patching.atp` (`AtPRunner`/`AtPResult`/`AtPNode`): vanilla AtP +
+  QK fix (attn-pattern recomputation, RoPE-aware) + GradDrop + neuron-level nodes + `verify_top_k`
+  (real `patch_site` calibration); HF (eager, Llama, GQA) + TL backends. Exact vanilla/neuron gates
+  vs brute-force on linear toys; QK fix beats vanilla on real Llama. 330 tests, Gemini-reviewed
+  (fixed GQA v-slot crash + GradDrop spec sync). `transformers` added as approved lazy optional dep.
 - [ ] **Sub-spec 4 — ACDC** (iterative circuit pruning). Reuses EAP's edge graph.
 - [ ] **later — SAE-feature circuits** (intervention site = SAE feature; builds on the SAE primitive).
 
