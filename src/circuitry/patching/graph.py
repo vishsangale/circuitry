@@ -88,3 +88,37 @@ def build_graph(n_layers: int, n_heads: int) -> EdgeGraph:
             if wo < _order(rnode, n_layers):
                 edges.append(Edge(w, rnode, slot))
     return EdgeGraph(n_layers, n_heads, writers, readers, edges)
+
+
+def edge_sort_key(edge: Edge) -> tuple:
+    """Deterministic total order on edges for reproducible ACDC traversal.
+
+    Sorts by writer identity then slot.  None fields sort first via the -1
+    sentinel (layer/head/neuron are non-negative when present).
+    """
+    w = edge.writer
+    return (
+        w.kind,
+        -1 if w.layer is None else w.layer,
+        -1 if w.head is None else w.head,
+        -1 if w.neuron is None else w.neuron,
+        edge.slot,
+    )
+
+
+def reverse_topo_readers(graph: EdgeGraph) -> list[tuple[Node, Slot]]:
+    """Readers in reverse-topological order (logits first, layer-0 last).
+
+    Ties (e.g. heads sharing an attn block) break by the reader's
+    (layer, head, slot) so iteration is bit-reproducible.
+    """
+    def key(rs: tuple[Node, Slot]) -> tuple:
+        rnode, slot = rs
+        return (
+            -_order(rnode, graph.n_layers),                # reverse topo
+            -1 if rnode.layer is None else rnode.layer,
+            -1 if rnode.head is None else rnode.head,
+            slot,
+        )
+
+    return sorted(graph.readers, key=key)
