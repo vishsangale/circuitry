@@ -76,21 +76,38 @@ class EAPRunner:
     def __init__(self, model: nn.Module, resolver: Any = None) -> None:
         self.model = model
         self.resolver = resolver
-        # Locate layers list (nested HF: model.model.layers, flat toys: model.layers)
-        self._layers_list = self._locate_layers(model)
-        n_layers = len(self._layers_list)
-        n_heads = getattr(resolver, "n_heads", 0) if resolver is not None else 0
-        self.n_heads = n_heads
-        # GQA: number of key/value heads (defaults to n_heads for MHA)
-        self.n_kv_heads: int = n_heads
-        if resolver is not None and n_heads > 0:
-            cfg = getattr(model, "config", None)
-            if cfg is not None:
-                self.n_kv_heads = getattr(cfg, "num_key_value_heads", n_heads)
-        self.head_dim = (resolver.d_model // resolver.n_heads) if resolver is not None and n_heads > 0 else None
-        # RMSNorm eps from config (used for ln_scale; only relevant for HF models)
-        cfg = getattr(model, "config", None)
-        self._rms_norm_eps: float = getattr(cfg, "rms_norm_eps", 1e-6) if cfg is not None else 1e-6
+
+        # Detect TransformerLens path via TLSiteResolver (lazy — no TL import here).
+        from circuitry.patching.sites import TLSiteResolver  # local import to avoid cycle
+        self._tl: bool = isinstance(resolver, TLSiteResolver)
+
+        if self._tl:
+            # TL path: read topology from model.cfg (HookedTransformerConfig)
+            cfg = model.cfg  # type: ignore[attr-defined]
+            n_layers: int = cfg.n_layers
+            n_heads: int = cfg.n_heads
+            self.n_heads = n_heads
+            self.n_kv_heads: int = n_heads  # TL input hooks expose MHA; no GQA back-map needed
+            self.head_dim = cfg.d_model // n_heads
+            self._layers_list = None  # unused in TL path
+            self._rms_norm_eps: float = 1e-6  # unused in TL path
+        else:
+            # HF/toy path: locate layers list the existing way
+            self._layers_list = self._locate_layers(model)
+            n_layers = len(self._layers_list)
+            n_heads = getattr(resolver, "n_heads", 0) if resolver is not None else 0
+            self.n_heads = n_heads
+            # GQA: number of key/value heads (defaults to n_heads for MHA)
+            self.n_kv_heads = n_heads
+            if resolver is not None and n_heads > 0:
+                hf_cfg = getattr(model, "config", None)
+                if hf_cfg is not None:
+                    self.n_kv_heads = getattr(hf_cfg, "num_key_value_heads", n_heads)
+            self.head_dim = (resolver.d_model // resolver.n_heads) if resolver is not None and n_heads > 0 else None
+            # RMSNorm eps from config (used for ln_scale; only relevant for HF models)
+            hf_cfg = getattr(model, "config", None)
+            self._rms_norm_eps = getattr(hf_cfg, "rms_norm_eps", 1e-6) if hf_cfg is not None else 1e-6
+
         self.graph = build_graph(n_layers, n_heads)
 
     # ------------------------------------------------------------------
@@ -469,6 +486,177 @@ class EAPRunner:
 
         return out, writer_acts, reader_grads
 
+    # ------------------------------------------------------------------
+    # TransformerLens-specific collect methods
+    # ------------------------------------------------------------------
+
+    def _collect_writer_acts_tl(self, inputs: Tensor) -> dict[Node, Tensor]:
+        """Collect writer activations via TL native hooks (no grad).
+
+        Uses:
+          hook_embed                        → Node("embed")
+          blocks.{L}.attn.hook_result       → Node("attn_head", L, h)  [h in 0..n_heads-1]
+          blocks.{L}.hook_mlp_out           → Node("mlp", L)
+
+        Requires model.set_use_attn_result(True) (called by run()).
+        """
+        acts: dict[Node, Tensor] = {}
+        n_heads = self.n_heads
+        n_layers = self.graph.n_layers
+
+        def _embed_hook(tensor: Tensor, hook: Any) -> None:
+            acts[Node("embed")] = tensor.detach()
+
+        fwd_hooks: list[tuple[str, Any]] = [("hook_embed", _embed_hook)]
+
+        for L in range(n_layers):
+            result_key = f"blocks.{L}.attn.hook_result"
+            mlp_out_key = f"blocks.{L}.hook_mlp_out"
+
+            def _result_hook(tensor: Tensor, hook: Any, _L: int = L) -> None:
+                # tensor: (b, s, n_heads, d_model)
+                for h in range(n_heads):
+                    acts[Node("attn_head", _L, h)] = tensor[:, :, h, :].detach()
+
+            def _mlp_out_hook(tensor: Tensor, hook: Any, _L: int = L) -> None:
+                acts[Node("mlp", _L)] = tensor.detach()
+
+            fwd_hooks.append((result_key, _result_hook))
+            fwd_hooks.append((mlp_out_key, _mlp_out_hook))
+
+        with torch.no_grad():
+            self.model.run_with_hooks(inputs, fwd_hooks=fwd_hooks)  # type: ignore[attr-defined]
+
+        return acts
+
+    def _collect_reader_grads_tl(
+        self,
+        inputs: Tensor,
+        metric: Callable[[Any], Tensor],
+    ) -> tuple[Any, dict[Node, Tensor], dict[tuple[Node, str], Tensor]]:
+        """Forward + backward collecting writer acts AND reader grads via TL hooks.
+
+        Writer acts:
+          hook_embed → Node("embed")
+          blocks.{L}.attn.hook_result[:,:,h,:] → Node("attn_head", L, h)
+          blocks.{L}.hook_mlp_out → Node("mlp", L)
+
+        Reader grads (after backward):
+          blocks.{L}.hook_q_input[:,:,h,:].grad → (Node("attn_head",L,h), "q")
+          blocks.{L}.hook_k_input[:,:,h,:].grad → (Node("attn_head",L,h), "k")
+          blocks.{L}.hook_v_input[:,:,h,:].grad → (Node("attn_head",L,h), "v")
+          blocks.{L}.hook_mlp_in.grad            → (Node("mlp",L), "mlp_in")
+          blocks.{N-1}.hook_resid_post.grad       → (Node("logits"), "logits_in")
+
+        Reader hooks return a clone with requires_grad_(True) so grad flows back.
+        """
+        writer_acts: dict[Node, Tensor] = {}
+        reader_tensors: dict[tuple[Node, str], Tensor] = {}
+        n_heads = self.n_heads
+        n_layers = self.graph.n_layers
+
+        # Writer hooks: just capture, no modification
+        def _embed_hook(tensor: Tensor, hook: Any) -> None:
+            writer_acts[Node("embed")] = tensor.detach()
+
+        fwd_hooks: list[tuple[str, Any]] = [("hook_embed", _embed_hook)]
+
+        for L in range(n_layers):
+            result_key = f"blocks.{L}.attn.hook_result"
+            mlp_out_key = f"blocks.{L}.hook_mlp_out"
+
+            def _result_hook(tensor: Tensor, hook: Any, _L: int = L) -> None:
+                for h in range(n_heads):
+                    writer_acts[Node("attn_head", _L, h)] = tensor[:, :, h, :].detach()
+
+            def _mlp_out_hook(tensor: Tensor, hook: Any, _L: int = L) -> None:
+                writer_acts[Node("mlp", _L)] = tensor.detach()
+
+            fwd_hooks.append((result_key, _result_hook))
+            fwd_hooks.append((mlp_out_key, _mlp_out_hook))
+
+        # Reader hooks: return a differentiable clone so grad flows to it
+        for L in range(n_layers):
+            for slot in ("q", "k", "v"):
+                hook_key = f"blocks.{L}.hook_{slot}_input"
+
+                def _qkv_reader_hook(
+                    tensor: Tensor, hook: Any,
+                    _L: int = L, _slot: str = slot,
+                ) -> Tensor:
+                    t = tensor.clone().requires_grad_(True)
+                    t.retain_grad()
+                    # Store the full (b,s,n_heads,d_model) tensor; slice per-head after bwd
+                    reader_tensors[(_L, _slot)] = t
+                    return t  # substitute: downstream sees our differentiable clone
+
+                fwd_hooks.append((hook_key, _qkv_reader_hook))
+
+            mlp_in_key = f"blocks.{L}.hook_mlp_in"
+            mlp_node = Node("mlp", L)
+
+            def _mlp_in_hook(
+                tensor: Tensor, hook: Any, _node: Node = mlp_node,
+            ) -> Tensor:
+                t = tensor.clone().requires_grad_(True)
+                t.retain_grad()
+                reader_tensors[(_node, "mlp_in")] = t
+                return t
+
+            fwd_hooks.append((mlp_in_key, _mlp_in_hook))
+
+        # Logits reader: residual post at the last block
+        last_resid_key = f"blocks.{n_layers - 1}.hook_resid_post"
+        logits_node = Node("logits")
+
+        def _logits_reader_hook(tensor: Tensor, hook: Any) -> Tensor:
+            t = tensor.clone().requires_grad_(True)
+            t.retain_grad()
+            reader_tensors[(logits_node, "logits_in")] = t
+            return t
+
+        fwd_hooks.append((last_resid_key, _logits_reader_hook))
+
+        with torch.enable_grad():
+            logits = self.model.run_with_hooks(inputs, fwd_hooks=fwd_hooks)  # type: ignore[attr-defined]
+            metric(logits).backward()
+
+        # Assemble reader grads dict (keyed by (Node, slot))
+        reader_grads: dict[tuple[Node, str], Tensor] = {}
+
+        for L in range(n_layers):
+            for slot in ("q", "k", "v"):
+                full_tensor = reader_tensors.get((L, slot))
+                for h in range(n_heads):
+                    key = (Node("attn_head", L, h), slot)
+                    if full_tensor is not None and full_tensor.grad is not None:
+                        # Slice head h from full (b, s, n_heads, d_model) grad
+                        reader_grads[key] = full_tensor.grad[:, :, h, :].detach()
+                    else:
+                        # No gradient (e.g. q/k unused in fixed-pattern attn)
+                        b, s = inputs.shape[0], inputs.shape[1]
+                        d_model = self.model.cfg.d_model  # type: ignore[attr-defined]
+                        reader_grads[key] = torch.zeros(b, s, d_model)
+
+            mlp_node = Node("mlp", L)
+            mlp_t = reader_tensors.get((mlp_node, "mlp_in"))
+            if mlp_t is not None and mlp_t.grad is not None:
+                reader_grads[(mlp_node, "mlp_in")] = mlp_t.grad.detach()
+            else:
+                b, s = inputs.shape[0], inputs.shape[1]
+                d_model = self.model.cfg.d_model  # type: ignore[attr-defined]
+                reader_grads[(mlp_node, "mlp_in")] = torch.zeros(b, s, d_model)
+
+        logits_t = reader_tensors.get((logits_node, "logits_in"))
+        if logits_t is not None and logits_t.grad is not None:
+            reader_grads[(logits_node, "logits_in")] = logits_t.grad.detach()
+        else:
+            b, s = inputs.shape[0], inputs.shape[1]
+            d_model = self.model.cfg.d_model  # type: ignore[attr-defined]
+            reader_grads[(logits_node, "logits_in")] = torch.zeros(b, s, d_model)
+
+        return logits, writer_acts, reader_grads
+
     def _stack_acts(self, acts: dict[Node, Tensor]) -> Tensor:
         """Stack writer activation tensors into (batch, pos, |writers|, d_model)."""
         tensors = [acts[n] for n in self.graph.writers]
@@ -501,15 +689,31 @@ class EAPRunner:
           3. score_edges().
         """
         was_training, orig_rg = self._freeze_eval()
+
+        if self._tl:
+            # Enable TL hooks needed for the EAP pass; restore prior values after.
+            _prior_attn_result = self.model.cfg.use_attn_result  # type: ignore[attr-defined]
+            _prior_split_qkv = self.model.cfg.use_split_qkv_input  # type: ignore[attr-defined]
+            _prior_mlp_in = self.model.cfg.use_hook_mlp_in  # type: ignore[attr-defined]
+            self.model.set_use_attn_result(True)  # type: ignore[attr-defined]
+            self.model.set_use_split_qkv_input(True)  # type: ignore[attr-defined]
+            self.model.set_use_hook_mlp_in(True)  # type: ignore[attr-defined]
+
         try:
-            # Step 1: corrupted forward (no grad needed)
-            with torch.no_grad():
-                _, acts_corrupted = self._collect_writer_acts(corrupted_inputs)
+            if self._tl:
+                # TL path: use native hook-based collectors
+                acts_corrupted = self._collect_writer_acts_tl(corrupted_inputs)  # type: ignore[arg-type]
+                _, acts_clean, grads_clean = self._collect_reader_grads_tl(clean_inputs, metric)  # type: ignore[arg-type]
+            else:
+                # HF/toy path: existing implementation
+                # Step 1: corrupted forward (no grad needed)
+                with torch.no_grad():
+                    _, acts_corrupted = self._collect_writer_acts(corrupted_inputs)
 
-            # Step 2: clean forward + backward (need grads for reader inputs)
-            _, acts_clean, grads_clean = self._collect_reader_grads(clean_inputs, metric)
+                # Step 2: clean forward + backward (need grads for reader inputs)
+                _, acts_clean, grads_clean = self._collect_reader_grads(clean_inputs, metric)
 
-            # Step 3: build stacked tensors and score
+            # Step 3: build stacked tensors and score (shared)
             act_clean_t = self._stack_acts(acts_clean)
             act_corrupted_t = self._stack_acts(acts_corrupted)
             grad_clean_t = self._stack_grads(grads_clean)
@@ -517,6 +721,11 @@ class EAPRunner:
             return score_edges(self.graph, act_clean_t, act_corrupted_t, grad_clean_t)
         finally:
             self._restore(was_training, orig_rg)
+            if self._tl:
+                # Restore prior TL config flags
+                self.model.set_use_attn_result(_prior_attn_result)  # type: ignore[attr-defined]
+                self.model.set_use_split_qkv_input(_prior_split_qkv)  # type: ignore[attr-defined]
+                self.model.set_use_hook_mlp_in(_prior_mlp_in)  # type: ignore[attr-defined]
 
     def bruteforce_edge_scores(
         self,
