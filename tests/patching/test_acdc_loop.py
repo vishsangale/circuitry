@@ -91,3 +91,29 @@ def test_sweep_is_monotone(linear_mlp_toy):
     n_kept = [n for _, n, _ in frontier]
     assert all(a >= b for a, b in zip(n_kept, n_kept[1:], strict=False))  # monotone non-increasing
     assert n_kept[-1] == 0  # τ=inf → empty circuit
+
+
+def test_custom_metric_drives_pruning(linear_mlp_toy):
+    runner = ACDCRunner(linear_mlp_toy)
+    clean = torch.tensor([[1, 2, 3, 4]])
+    corrupted = torch.tensor([[4, 3, 2, 1]])
+    calls = {"n": 0}
+
+    def my_metric(circuit_logits, clean_logits):
+        calls["n"] += 1
+        return float((circuit_logits[:, -1, :] - clean_logits[:, -1, :]).abs().sum())
+
+    r = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.1,
+                   metric=my_metric)
+    assert calls["n"] > 0  # custom metric was used
+    assert isinstance(r.final_kl, float)
+
+
+def test_acdcresult_circuit_graph_subsets(linear_mlp_toy):
+    runner = ACDCRunner(linear_mlp_toy)
+    clean = torch.tensor([[1, 2, 3, 4]])
+    corrupted = torch.tensor([[4, 3, 2, 1]])
+    r = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.02)
+    sub = r.circuit_graph()
+    assert len(sub.edges) == r.n_kept()
+    assert all(e in set(r.kept_edges) for e in sub.edges)
