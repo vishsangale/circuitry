@@ -27,11 +27,17 @@ class ToyPatchModel(nn.Module):
 
 
 class FakeAttention(nn.Module):
-    """Identity attention with o_proj for head-slicing tests."""
+    """Identity attention with q_proj, k_proj, v_proj, o_proj for head-slicing tests."""
 
     def __init__(self, d_model: int):
         super().__init__()
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.o_proj = nn.Linear(d_model, d_model, bias=False)
+        nn.init.eye_(self.q_proj.weight)
+        nn.init.eye_(self.k_proj.weight)
+        nn.init.eye_(self.v_proj.weight)
         nn.init.eye_(self.o_proj.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

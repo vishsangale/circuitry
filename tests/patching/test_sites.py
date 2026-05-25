@@ -9,7 +9,7 @@ from circuitry.patching.sites import VALID_COMPONENTS, Site
 def test_site_valid_components():
     for comp in VALID_COMPONENTS:
         kwargs = {"component": comp, "layer": 0}
-        if comp == "attn_head_out":
+        if comp in ("attn_head_out", "attn_head_q_out", "attn_head_k_out"):
             kwargs["head"] = 0
         if comp == "mlp_neuron":
             kwargs["neuron"] = 0
@@ -30,6 +30,26 @@ def test_attn_head_out_requires_head():
 def test_attn_head_out_accepts_head():
     s = Site(component="attn_head_out", layer=0, head=3)
     assert s.head == 3
+
+
+def test_attn_head_q_out_requires_head():
+    with pytest.raises(ValueError, match="requires head"):
+        Site(component="attn_head_q_out", layer=0)
+
+
+def test_attn_head_q_out_accepts_head():
+    s = Site(component="attn_head_q_out", layer=0, head=1)
+    assert s.head == 1
+
+
+def test_attn_head_k_out_requires_head():
+    with pytest.raises(ValueError, match="requires head"):
+        Site(component="attn_head_k_out", layer=0)
+
+
+def test_attn_head_k_out_accepts_head():
+    s = Site(component="attn_head_k_out", layer=0, head=2)
+    assert s.head == 2
 
 
 def test_mlp_neuron_requires_neuron():

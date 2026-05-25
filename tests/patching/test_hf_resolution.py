@@ -39,6 +39,20 @@ def test_attn_head_out_resolves_to_o_proj_input(resolver, transformer_model):
     assert resolved.is_input_hook is True
 
 
+def test_attn_head_q_out_resolves_to_q_proj_output(resolver, transformer_model):
+    site = Site(component="attn_head_q_out", layer=0, head=1)
+    resolved = resolver.resolve(transformer_model, site)
+    assert resolved.module is transformer_model.layers[0].self_attn.q_proj
+    assert resolved.is_input_hook is False
+
+
+def test_attn_head_k_out_resolves_to_k_proj_output(resolver, transformer_model):
+    site = Site(component="attn_head_k_out", layer=1, head=0)
+    resolved = resolver.resolve(transformer_model, site)
+    assert resolved.module is transformer_model.layers[1].self_attn.k_proj
+    assert resolved.is_input_hook is False
+
+
 def test_mlp_out_resolves_to_mlp_output(resolver, transformer_model):
     site = Site(component="mlp_out", layer=0)
     resolved = resolver.resolve(transformer_model, site)
@@ -73,6 +87,38 @@ def test_inject_head_slice_correct(resolver, transformer_model):
     result_heads = injected.reshape(2, 3, 2, 4)
     assert torch.equal(result_heads[:, :, 0, :], new_val)
     assert torch.equal(result_heads[:, :, 1, :], x.reshape(2, 3, 2, 4)[:, :, 1, :])
+
+
+def test_extract_q_out_head_slice(resolver, transformer_model):
+    site = Site(component="attn_head_q_out", layer=0, head=1)
+    resolved = resolver.resolve(transformer_model, site)
+    torch.manual_seed(6)
+    x = torch.randn(2, 3, 8)  # (batch, seq, d_model=8), n_heads=2, head_dim=4
+    extracted = resolved.extract(x)
+    expected = x.reshape(2, 3, 2, 4)[:, :, 1, :]  # head 1
+    assert torch.equal(extracted, expected)
+
+
+def test_inject_q_out_head_slice(resolver, transformer_model):
+    site = Site(component="attn_head_q_out", layer=0, head=0)
+    resolved = resolver.resolve(transformer_model, site)
+    torch.manual_seed(7)
+    x = torch.randn(2, 3, 8)
+    new_val = torch.ones(2, 3, 4)
+    injected = resolved.inject(x, new_val)
+    result_heads = injected.reshape(2, 3, 2, 4)
+    assert torch.equal(result_heads[:, :, 0, :], new_val)
+    assert torch.equal(result_heads[:, :, 1, :], x.reshape(2, 3, 2, 4)[:, :, 1, :])
+
+
+def test_extract_k_out_head_slice(resolver, transformer_model):
+    site = Site(component="attn_head_k_out", layer=0, head=0)
+    resolved = resolver.resolve(transformer_model, site)
+    torch.manual_seed(8)
+    x = torch.randn(2, 3, 8)  # (batch, seq, d_model=8), n_heads=2, head_dim=4
+    extracted = resolved.extract(x)
+    expected = x.reshape(2, 3, 2, 4)[:, :, 0, :]  # head 0
+    assert torch.equal(extracted, expected)
 
 
 def test_extract_neuron_correct(resolver, transformer_model):

@@ -12,6 +12,8 @@ VALID_COMPONENTS = frozenset({
     "resid_pre",
     "resid_post",
     "attn_head_out",
+    "attn_head_q_out",
+    "attn_head_k_out",
     "mlp_out",
     "mlp_neuron",
 })
@@ -33,8 +35,8 @@ class Site:
                 f"Unknown component {self.component!r}; "
                 f"valid: {sorted(VALID_COMPONENTS)}"
             )
-        if self.component == "attn_head_out" and self.head is None:
-            raise ValueError("attn_head_out requires head index")
+        if self.component in ("attn_head_out", "attn_head_q_out", "attn_head_k_out") and self.head is None:
+            raise ValueError(f"{self.component} requires head index")
         if self.component == "mlp_neuron" and self.neuron is None:
             raise ValueError("mlp_neuron requires neuron index")
 
@@ -210,6 +212,26 @@ class HFSiteResolver:
                 inject=lambda full, val, _h=h, _nh=nh, _hd=hd, _pos=pos: _inject_head(full, val, _h, _nh, _hd, _pos),
             )
 
+        if site.component == "attn_head_q_out":
+            q_proj = _get_submodule(layer_mod, "self_attn.q_proj")
+            h, nh, hd = site.head, self.n_heads, self.head_dim
+            return ResolvedSite(
+                module=q_proj,
+                is_input_hook=False,
+                extract=lambda x, _h=h, _nh=nh, _hd=hd, _pos=pos: _extract_head(x, _h, _nh, _hd, _pos),
+                inject=lambda full, val, _h=h, _nh=nh, _hd=hd, _pos=pos: _inject_head(full, val, _h, _nh, _hd, _pos),
+            )
+
+        if site.component == "attn_head_k_out":
+            k_proj = _get_submodule(layer_mod, "self_attn.k_proj")
+            h, nh, hd = site.head, self.n_heads, self.head_dim
+            return ResolvedSite(
+                module=k_proj,
+                is_input_hook=False,
+                extract=lambda x, _h=h, _nh=nh, _hd=hd, _pos=pos: _extract_head(x, _h, _nh, _hd, _pos),
+                inject=lambda full, val, _h=h, _nh=nh, _hd=hd, _pos=pos: _inject_head(full, val, _h, _nh, _hd, _pos),
+            )
+
         if site.component == "mlp_out":
             mlp_mod = _get_submodule(layer_mod, self.mlp_module)
             return ResolvedSite(
@@ -238,6 +260,8 @@ _TL_HOOK_MAP = {
     "resid_pre": "blocks.{L}.hook_resid_pre",
     "resid_post": "blocks.{L}.hook_resid_post",
     "attn_head_out": "blocks.{L}.attn.hook_z",
+    "attn_head_q_out": "blocks.{L}.attn.hook_q",
+    "attn_head_k_out": "blocks.{L}.attn.hook_k",
     "mlp_out": "blocks.{L}.mlp.hook_post",
     "mlp_neuron": "blocks.{L}.mlp.hook_post",
 }
@@ -266,6 +290,18 @@ class TLSiteResolver:
         pos = site.position
 
         if site.component == "attn_head_out":
+            head = site.head
+            return ResolvedSite(
+                module=hook_point,
+                is_input_hook=False,
+                extract=lambda x, _h=head, _pos=pos: (
+                    _pos_extract(x[:, :, _h, :], _pos) if x.ndim == 4
+                    else _pos_extract(x, _pos)
+                ),
+                inject=lambda full, val, _h=head, _pos=pos: _inject_tl_head(full, val, _h, _pos),
+            )
+
+        if site.component in ("attn_head_q_out", "attn_head_k_out"):
             head = site.head
             return ResolvedSite(
                 module=hook_point,
