@@ -57,3 +57,37 @@ def test_dead_edge_is_pruned(linear_mlp_toy):
     result = runner.run(clean_inputs=clean, corrupted_inputs=clean, tau=1e-9)
     assert result.n_kept() == 0
     assert result.final_kl < 1e-6
+
+
+def test_topo_ordering_is_deterministic(linear_mlp_toy):
+    runner = ACDCRunner(linear_mlp_toy)
+    clean = torch.tensor([[1, 2, 3, 4]])
+    corrupted = torch.tensor([[4, 3, 2, 1]])
+    r1 = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.02, ordering="topo")
+    r2 = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.02, ordering="topo")
+    assert set(r1.kept_edges) == set(r2.kept_edges)
+
+
+def test_eap_ordering_consumes_scores(linear_mlp_toy):
+    runner = ACDCRunner(linear_mlp_toy)
+    clean = torch.tensor([[1, 2, 3, 4]])
+    corrupted = torch.tensor([[4, 3, 2, 1]])
+    scores = {e: 0.0 for e in runner.graph.edges}
+    r = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.02,
+                   ordering="eap", eap_scores=scores)
+    assert isinstance(r.final_kl, float)
+    r_default = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.02,
+                           eap_scores=scores)  # ordering=None → picks eap
+    assert set(r.kept_edges) == set(r_default.kept_edges)
+
+
+def test_sweep_is_monotone(linear_mlp_toy):
+    runner = ACDCRunner(linear_mlp_toy)
+    clean = torch.tensor([[1, 2, 3, 4]])
+    corrupted = torch.tensor([[4, 3, 2, 1]])
+    frontier = runner.sweep(clean_inputs=clean, corrupted_inputs=corrupted,
+                            taus=[0.001, 0.05, 1.0, float("inf")])
+    assert [t for t, _, _ in frontier] == [0.001, 0.05, 1.0, float("inf")]
+    n_kept = [n for _, n, _ in frontier]
+    assert all(a >= b for a, b in zip(n_kept, n_kept[1:], strict=False))  # monotone non-increasing
+    assert n_kept[-1] == 0  # τ=inf → empty circuit

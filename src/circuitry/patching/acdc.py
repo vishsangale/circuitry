@@ -308,3 +308,22 @@ class ACDCRunner:
 
         kept = [e for e in self.graph.edges if e not in removed]
         return ACDCResult(kept, sorted(removed, key=edge_sort_key), current, self.graph)
+
+    def sweep(
+        self,
+        clean_inputs: _Inputs,
+        corrupted_inputs: _Inputs,
+        taus: list[float],
+        ordering: str | None = None,
+        eap_scores: dict[Edge, float] | None = None,
+        position: int | None = -1,
+        metric: Callable[[Tensor, Tensor], float] | None = None,
+    ) -> list[tuple[float, int, float]]:
+        """Run ACDC at each τ; return the Pareto frontier [(τ, n_kept, final_kl)]."""
+        out: list[tuple[float, int, float]] = []
+        for tau in taus:
+            r = self.run(clean_inputs=clean_inputs, corrupted_inputs=corrupted_inputs,
+                         tau=tau, ordering=ordering, eap_scores=eap_scores,
+                         position=position, metric=metric)
+            out.append((tau, r.n_kept(), r.final_kl))
+        return out
