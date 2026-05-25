@@ -140,15 +140,23 @@ class AtPRunner:
     # Activation capture helpers
     # ------------------------------------------------------------------
 
-    def _cache_node_acts(self, inputs: _Inputs) -> dict[AtPNode, Tensor]:
+    def _cache_node_acts(
+        self,
+        inputs: _Inputs,
+        capture_intermediates: bool = False,
+    ) -> tuple[dict[AtPNode, Tensor], dict[int, Tensor]]:
         """No-grad forward pass caching node activations (detached).
 
         Captures:
           embed node → embed_tokens output (b, s, d_model)
           mlp(L) node → down_proj output (b, s, d_model)
           attn_head(L,h) v → v_proj output, head-h slice (b, s, head_dim)
+          [if capture_intermediates] layer-L down_proj INPUT (b, s, d_mlp)
+
+        Returns (acts, intermediates) where intermediates is layer_idx → tensor.
         """
         acts: dict[AtPNode, Tensor] = {}
+        intermediates: dict[int, Tensor] = {}
         handles: list[Any] = []
 
         embed_node = AtPNode(Node("embed"), None)
@@ -162,7 +170,7 @@ class AtPRunner:
         head_dim = self.head_dim
 
         for L, block in enumerate(self._layers_list):
-            if n_heads > 0 and head_dim is not None:
+            if n_heads > 0 and head_dim is not None and hasattr(block, "self_attn"):
                 _L = L
                 _n_heads = n_heads
                 _head_dim = head_dim
@@ -192,6 +200,18 @@ class AtPRunner:
 
             handles.append(block.mlp.down_proj.register_forward_hook(_down_proj_hook))
 
+            if capture_intermediates:
+                _L = L
+
+                def _down_proj_pre_hook(
+                    module: nn.Module, args: tuple,
+                    _L: int = _L,
+                ) -> None:
+                    # args[0] is the down_proj INPUT (b, s, d_mlp) — the MLP intermediate
+                    intermediates[_L] = args[0].detach().clone()
+
+                handles.append(block.mlp.down_proj.register_forward_pre_hook(_down_proj_pre_hook))
+
         try:
             with torch.no_grad():
                 self._call_model(inputs)
@@ -199,14 +219,15 @@ class AtPRunner:
             for h in handles:
                 h.remove()
 
-        return acts
+        return acts, intermediates
 
     def _collect_clean_grads(
         self,
         inputs: _Inputs,
         metric: Callable[[Any], Tensor],
         orig_rg: dict[str, bool],
-    ) -> tuple[Any, dict[AtPNode, Tensor], dict[AtPNode, Tensor | None]]:
+        capture_intermediates: bool = False,
+    ) -> tuple[Any, dict[AtPNode, Tensor], dict[AtPNode, Tensor | None], dict[int, Tensor]]:
         """Forward + backward pass capturing node activations AND their gradients.
 
         For vanilla AtP, we capture the FULL downstream gradient (including
@@ -229,12 +250,20 @@ class AtPRunner:
         component-only (which is what EAP's clone trick gives). On a linear
         model, total == component since there's no nonlinearity.
 
-        Returns (model_out, node_acts, node_grads).
+        If capture_intermediates=True, also registers a forward_pre_hook on
+        each block.mlp.down_proj to capture the MLP intermediate (the INPUT to
+        down_proj — i.e., the post-activation hidden states used for mlp_neuron
+        scoring). The intermediate tensor stays in the autograd graph (no
+        clone/detach) so its .grad is populated after backward.
+
+        Returns (model_out, node_acts, node_grads, intermediates).
+        intermediates: layer_idx → the down_proj INPUT tensor (in graph, grad retained).
         """
         # Params remain frozen (requires_grad=False) — no param re-enable needed.
         # Grad is seeded at the activation level via the embed hook below.
 
         node_acts: dict[AtPNode, Tensor] = {}
+        intermediates: dict[int, Tensor] = {}
         handles: list[Any] = []
 
         embed_node = AtPNode(Node("embed"), None)
@@ -254,7 +283,7 @@ class AtPRunner:
         head_dim = self.head_dim
 
         for L, block in enumerate(self._layers_list):
-            if n_heads > 0 and head_dim is not None:
+            if n_heads > 0 and head_dim is not None and hasattr(block, "self_attn"):
                 _L = L
                 _n_heads = n_heads
                 _head_dim = head_dim
@@ -284,6 +313,23 @@ class AtPRunner:
                 node_acts[_n] = output
 
             handles.append(block.mlp.down_proj.register_forward_hook(_down_proj_hook_grad))
+
+            if capture_intermediates:
+                _L_inter = L
+
+                def _down_proj_pre_hook(
+                    module: nn.Module, args: tuple,
+                    _L: int = _L_inter,
+                ) -> None:
+                    # args[0] is the down_proj INPUT (b, s, d_mlp) — the MLP intermediate.
+                    # It inherits requires_grad=True from the embed seed flowing through
+                    # frozen up_proj. Call retain_grad so we can read .grad after backward.
+                    # Do NOT clone/detach — must stay in the live autograd graph.
+                    inter = args[0]
+                    inter.retain_grad()
+                    intermediates[_L] = inter
+
+                handles.append(block.mlp.down_proj.register_forward_pre_hook(_down_proj_pre_hook))
 
         try:
             with torch.enable_grad():
@@ -326,7 +372,7 @@ class AtPRunner:
                     else:
                         node_grads[node] = None
 
-        return out, node_acts, node_grads
+        return out, node_acts, node_grads, intermediates
 
     # ------------------------------------------------------------------
     # Public API
@@ -356,11 +402,13 @@ class AtPRunner:
         was_training, orig_rg = self._freeze_eval()
         try:
             # Step 1: cache corrupted activations (no grad)
-            corrupted_acts = self._cache_node_acts(corrupted_inputs)
+            corrupted_acts, corrupted_intermediates = self._cache_node_acts(
+                corrupted_inputs, capture_intermediates=neurons
+            )
 
             # Step 2: clean forward + backward to get grads
-            _, clean_node_acts, clean_node_grads = self._collect_clean_grads(
-                clean_inputs, metric, orig_rg
+            _, clean_node_acts, clean_node_grads, clean_intermediates = self._collect_clean_grads(
+                clean_inputs, metric, orig_rg, capture_intermediates=neurons
             )
 
             # Step 3: compute clean activations for embed and mlp nodes
@@ -402,6 +450,22 @@ class AtPRunner:
                 if atp_node.slot in ("q", "k"):
                     # Placeholder: Task 5 implements QK fix
                     scores[atp_node] = 0.0
+                    continue
+
+                inner_node = atp_node.node
+
+                if inner_node.kind == "mlp_neuron":
+                    # Neuron-level score: Σ_pos (Δinter_n · grad_inter_n)
+                    L = inner_node.layer
+                    n = inner_node.neuron
+                    clean_inter = clean_intermediates.get(L)
+                    corr_inter = corrupted_intermediates.get(L)
+                    if clean_inter is None or corr_inter is None or clean_inter.grad is None:
+                        scores[atp_node] = 0.0
+                        continue
+                    delta_n = (corr_inter - clean_inter.detach())[..., n]
+                    grad_n = clean_inter.grad[..., n]
+                    scores[atp_node] = float((delta_n * grad_n).sum().item())
                     continue
 
                 corr_act = corrupted_acts.get(atp_node)
@@ -446,8 +510,12 @@ class AtPRunner:
                 clean_out = self._call_model(clean_inputs)
                 clean_metric = metric(clean_out).item()
 
-                # Cache corrupted activations for all nodes
-                corrupted_acts = self._cache_node_acts(corrupted_inputs)
+                # Cache corrupted activations for all nodes (including intermediates
+                # in case neuron nodes are present in the list)
+                has_neuron_nodes = any(n.node.kind == "mlp_neuron" for n in nodes)
+                corrupted_acts, corrupted_intermediates = self._cache_node_acts(
+                    corrupted_inputs, capture_intermediates=has_neuron_nodes
+                )
 
             scores: dict[AtPNode, float] = {}
 
@@ -456,17 +524,41 @@ class AtPRunner:
                     scores[atp_node] = 0.0
                     continue
 
-                corr_act = corrupted_acts.get(atp_node)
-                if corr_act is None:
-                    scores[atp_node] = 0.0
-                    continue
-
-                # Patch this node's activation with the corrupted value (REPLACE, not add)
+                inner_node = atp_node.node
                 handles: list[Any] = []
 
-                inner_node = atp_node.node
+                if inner_node.kind == "mlp_neuron":
+                    # Patch the MLP intermediate (down_proj INPUT) for neuron n only.
+                    # Use a forward_pre_hook so we're patching exactly the same point
+                    # that the analytic path reads (down_proj INPUT = mlp_neuron site).
+                    L = inner_node.layer
+                    n = inner_node.neuron
+                    corr_inter = corrupted_intermediates.get(L)
+                    if corr_inter is None:
+                        scores[atp_node] = 0.0
+                        continue
+                    block = self._layers_list[L]
+                    _corr_inter = corr_inter
+                    _n = n
 
-                if inner_node.kind == "embed":
+                    def _neuron_pre_hook(
+                        module: nn.Module, args: tuple,
+                        _c: Tensor = _corr_inter, _idx: int = _n,
+                    ) -> tuple:
+                        # Replace neuron _idx in the intermediate with the corrupted value
+                        inter = args[0].clone()
+                        inter[..., _idx] = _c[..., _idx]
+                        return (inter,)
+
+                    handles.append(
+                        block.mlp.down_proj.register_forward_pre_hook(_neuron_pre_hook)
+                    )
+
+                elif inner_node.kind == "embed":
+                    corr_act = corrupted_acts.get(atp_node)
+                    if corr_act is None:
+                        scores[atp_node] = 0.0
+                        continue
                     _corr = corr_act
 
                     def _embed_replace_hook(
@@ -480,6 +572,10 @@ class AtPRunner:
                     )
 
                 elif inner_node.kind == "mlp":
+                    corr_act = corrupted_acts.get(atp_node)
+                    if corr_act is None:
+                        scores[atp_node] = 0.0
+                        continue
                     L = inner_node.layer
                     _corr = corr_act
                     block = self._layers_list[L]
@@ -495,12 +591,19 @@ class AtPRunner:
                     )
 
                 elif inner_node.kind == "attn_head" and atp_node.slot == "v":
+                    corr_act = corrupted_acts.get(atp_node)
+                    if corr_act is None:
+                        scores[atp_node] = 0.0
+                        continue
                     L = inner_node.layer
                     h = inner_node.head
                     _corr_head = corr_act  # (b, s, head_dim)
                     _n_heads = self.n_heads
                     _head_dim = self.head_dim
                     block = self._layers_list[L]
+                    if not hasattr(block, "self_attn"):
+                        scores[atp_node] = 0.0
+                        continue
 
                     def _v_proj_replace_hook(
                         module: nn.Module, inp: tuple, output: Tensor,
