@@ -882,7 +882,12 @@ class AtPRunner:
                         continue
                     delta_n = (corr_inter - clean_inter.detach())[..., n]
                     grad_n = clean_inter.grad[..., n]
-                    scores[atp_node] = float((delta_n * grad_n).sum().item())
+                    if graddrop:
+                        # per-position contribution is already a scalar (feature dim selected)
+                        per_pos = delta_n * grad_n  # (b, s)
+                        scores[atp_node] = float(per_pos.abs().sum().item())
+                    else:
+                        scores[atp_node] = float((delta_n * grad_n).sum().item())
                     continue
 
                 corr_act = corrupted_acts.get(atp_node)
@@ -894,7 +899,14 @@ class AtPRunner:
                     continue
 
                 delta = corr_act - cln_act
-                score = float((delta * grad).sum().item())
+                if graddrop:
+                    # GradDrop: Σ_pos |c[pos]| where c[pos] = Σ_features Δact[pos]·grad[pos]
+                    # Sum over feature dims (all dims after batch+seq) to get per-position scalar,
+                    # then take abs before summing over positions.
+                    per_pos = (delta * grad).sum(dim=tuple(range(2, delta.dim())))  # (b, s)
+                    score = float(per_pos.abs().sum().item())
+                else:
+                    score = float((delta * grad).sum().item())
                 scores[atp_node] = score
 
             return AtPResult(scores)
