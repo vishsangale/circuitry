@@ -250,6 +250,95 @@ class ACDCRunner:
         return _logits_of(out)
 
     # ------------------------------------------------------------------
+    # Set-ablation forward: TransformerLens path.
+    # ------------------------------------------------------------------
+
+    def _run_capturing_live_tl(
+        self,
+        clean_inputs: Tensor,
+        removed: set[Edge],
+        corr_act: dict[Node, Tensor],
+    ) -> Tensor:
+        """TL set-ablation forward. Uses split q/k/v inputs so per-head injection
+        is native; TL applies LN after these hook points (pre-LN injection)."""
+        n_heads = self.n_heads
+        n_layers = self.graph.n_layers
+        live: dict[Node, Tensor] = {}
+
+        # Build map: (reader, slot) -> [writers whose edges are removed]
+        inc: dict[tuple[Node, str], list[Node]] = {}
+        for e in removed:
+            inc.setdefault((e.reader, e.slot), []).append(e.writer)
+
+        def delta_for(reader: Node, slot: str) -> Tensor | None:
+            total: Tensor | None = None
+            for u in inc.get((reader, slot), []):
+                d = corr_act[u] - live[u]
+                total = d if total is None else total + d
+            return total
+
+        fwd_hooks: list[tuple[str, Any]] = []
+
+        # Writer capture: embed
+        def _embed(t: Tensor, hook: Any) -> None:
+            live[Node("embed")] = t.detach()
+        fwd_hooks.append(("hook_embed", _embed))
+
+        for L in range(n_layers):
+            # Writer capture: per-head attention result contributions
+            def _res(t: Tensor, hook: Any, _L: int = L) -> None:
+                # t: (b, s, n_heads, d_model)
+                for h in range(n_heads):
+                    live[Node("attn_head", _L, h)] = t[:, :, h, :].detach()
+            fwd_hooks.append((f"blocks.{L}.attn.hook_result", _res))
+
+            # Writer capture: MLP output
+            def _mlpout(t: Tensor, hook: Any, _L: int = L) -> None:
+                live[Node("mlp", _L)] = t.detach()
+            fwd_hooks.append((f"blocks.{L}.hook_mlp_out", _mlpout))
+
+            # Reader injection: q/k/v inputs (per-head, pre-LN in TL ordering)
+            for slot in ("q", "k", "v"):
+                def _qkv(
+                    t: Tensor, hook: Any, _L: int = L, _slot: str = slot,
+                ) -> Tensor:
+                    # t: (b, s, n_heads, d_model) — TL split q/k/v input
+                    out = t.clone()
+                    for h in range(n_heads):
+                        d = delta_for(Node("attn_head", _L, h), _slot)
+                        if d is not None:
+                            out[:, :, h, :] = out[:, :, h, :] + d
+                    return out
+                fwd_hooks.append((f"blocks.{L}.hook_{slot}_input", _qkv))
+
+            # Reader injection: MLP input
+            def _mlpin(t: Tensor, hook: Any, _L: int = L) -> Tensor:
+                d = delta_for(Node("mlp", _L), "mlp_in")
+                return t if d is None else t + d
+            fwd_hooks.append((f"blocks.{L}.hook_mlp_in", _mlpin))
+
+        # Reader injection: logits (pre-final-LN at last resid_post)
+        def _resid_post(t: Tensor, hook: Any) -> Tensor:
+            d = delta_for(Node("logits"), "logits_in")
+            return t if d is None else t + d
+        fwd_hooks.append((f"blocks.{n_layers - 1}.hook_resid_post", _resid_post))
+
+        prior_r = self.model.cfg.use_attn_result
+        prior_q = self.model.cfg.use_split_qkv_input
+        prior_m = self.model.cfg.use_hook_mlp_in
+        self.model.set_use_attn_result(True)
+        self.model.set_use_split_qkv_input(True)
+        self.model.set_use_hook_mlp_in(True)
+        try:
+            with torch.no_grad():
+                logits = self.model.run_with_hooks(clean_inputs, fwd_hooks=fwd_hooks)
+        finally:
+            self.model.set_use_attn_result(prior_r)
+            self.model.set_use_split_qkv_input(prior_q)
+            self.model.set_use_hook_mlp_in(prior_m)
+        return logits
+
+    # ------------------------------------------------------------------
     # Dispatch forward (HF / toy path; TL is a later task).
     # ------------------------------------------------------------------
 
