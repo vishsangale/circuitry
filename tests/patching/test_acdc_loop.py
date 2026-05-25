@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 
 from circuitry.patching.acdc import ACDCRunner
-from circuitry.patching.graph import Node  # noqa: F401
+from circuitry.patching.graph import Edge, Node
 
 
 def test_recovery_metric_last_token_kl_zero_for_identical(linear_mlp_toy):
@@ -117,3 +117,26 @@ def test_acdcresult_circuit_graph_subsets(linear_mlp_toy):
     sub = r.circuit_graph()
     assert len(sub.edges) == r.n_kept()
     assert all(e in set(r.kept_edges) for e in sub.edges)
+
+
+def test_prunes_dead_edges_keeps_live_path(linear_mlp_toy):
+    """Discrimination: ACDC prunes edges from a provably-dead writer while
+    keeping a known-live edge. Zero mlp(1)'s down_proj so its residual
+    contribution is identically 0 on every input -> Δact[mlp1] == 0 -> its
+    outgoing edges are dead. embed differs clean-vs-corrupted, so embed->logits
+    is live. At a small τ, ACDC must prune mlp(1)->logits and keep embed->logits.
+    """
+    m = linear_mlp_toy
+    with torch.no_grad():
+        m.layers[1].mlp.down_proj.weight.zero_()
+    runner = ACDCRunner(m)
+    clean = torch.tensor([[1, 2, 3, 4]])
+    corrupted = torch.tensor([[4, 3, 2, 1]])
+    result = runner.run(clean_inputs=clean, corrupted_inputs=corrupted, tau=0.01)
+
+    dead_edge = Edge(Node("mlp", 1), Node("logits"), "logits_in")
+    live_edge = Edge(Node("embed"), Node("logits"), "logits_in")
+    assert dead_edge in set(result.removed_edges)   # dead → pruned
+    assert live_edge in set(result.kept_edges)       # live → kept
+    # a genuine partial circuit (not all-or-nothing):
+    assert 0 < result.n_kept() < len(runner.graph.edges)

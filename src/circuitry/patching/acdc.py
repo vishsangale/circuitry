@@ -61,7 +61,7 @@ class ACDCRunner:
         self.head_dim = self._eap.head_dim
 
     # ------------------------------------------------------------------
-    # Locators (HF / toy).  TL handled in its own forward (later task).
+    # Locators (HF / toy).  TL uses its own forward (_run_capturing_live_tl).
     # ------------------------------------------------------------------
 
     def _final_norm(self) -> nn.Module | None:
@@ -339,7 +339,7 @@ class ACDCRunner:
         return logits
 
     # ------------------------------------------------------------------
-    # Dispatch forward (HF / toy path; TL is a later task).
+    # Dispatch forward: TL backend vs HF/toy backend.
     # ------------------------------------------------------------------
 
     def _forward(self, clean_inputs: _Inputs, removed: set[Edge],
@@ -390,6 +390,10 @@ class ACDCRunner:
                 removed.add(edge)
                 logits = self._forward(clean_inputs, removed, corr_act)
                 new_kl = recovery(logits)
+                # Strict-< per-edge tolerance. `current` is the measured KL of the
+                # current circuit (re-set on each accepted prune), never an
+                # accumulated sum; it may drift slightly negative (~1e-8) from
+                # float noise near KL==0, which is benign.
                 if new_kl - current < tau:
                     current = new_kl
                 else:
