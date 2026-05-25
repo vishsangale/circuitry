@@ -210,38 +210,43 @@ class AtPRunner:
         """Forward + backward pass capturing node activations AND their gradients.
 
         For vanilla AtP, we capture the FULL downstream gradient (including
-        residual bypass paths). We do this by:
-          - Temporarily re-enabling requires_grad on all params so the computation
-            graph is built (no param values are changed; we just need grad flow).
-          - Hooking each node's output, calling retain_grad() on it (works because
-            the output is now in the computation graph).
-          - After backward, reading .grad from each stored tensor.
+        residual bypass paths). We do this by seeding requires_grad at the
+        ACTIVATION level (embed output) rather than on parameters:
 
-        This gives the TOTAL gradient w.r.t. the node activation, not
+          - The embed forward hook replaces the embed output with a detached
+            grad-enabled leaf. This seeds the computation graph without touching
+            any parameter's requires_grad state.
+          - Grad flows through frozen-param Linear ops to their inputs (freezing
+            a param only blocks the PARAM's grad accumulation, not grad flow
+            through the op to its inputs). All downstream activations inherit
+            requires_grad=True automatically.
+          - retain_grad() on downstream activation tensors (mlp out, v_proj out)
+            lets us read their .grad after backward.
+          - No param ever has requires_grad=True during the backward, so no
+            param accumulates a .grad — frozen-model contract is upheld.
+
+        This gives the TOTAL gradient w.r.t. each node activation, not
         component-only (which is what EAP's clone trick gives). On a linear
         model, total == component since there's no nonlinearity.
 
         Returns (model_out, node_acts, node_grads).
         """
-        # Temporarily re-enable requires_grad on params so the computation graph
-        # is connected through the frozen model. Param grads themselves are
-        # irrelevant (we won't use them) — we only need intermediate act grads.
-        for name, p in self.model.named_parameters():
-            if orig_rg.get(name, False):
-                p.requires_grad_(True)
-            # For params that were originally frozen (orig_rg[name] == False):
-            # we still need to enable grad so the graph connects through them.
-            # Otherwise embed_tokens output has no grad and retain_grad fails.
-            p.requires_grad_(True)
+        # Params remain frozen (requires_grad=False) — no param re-enable needed.
+        # Grad is seeded at the activation level via the embed hook below.
 
         node_acts: dict[AtPNode, Tensor] = {}
         handles: list[Any] = []
 
         embed_node = AtPNode(Node("embed"), None)
 
-        def _embed_hook(module: nn.Module, inp: tuple, output: Tensor) -> None:
-            output.retain_grad()
-            node_acts[embed_node] = output
+        def _embed_hook(module: nn.Module, inp: tuple, output: Tensor) -> Tensor:
+            # Replace the embed output with a grad-enabled leaf tensor.
+            # Values are unchanged (detach preserves values); requires_grad seeds
+            # the autograd graph without enabling any parameter grad.
+            seeded = output.detach().requires_grad_(True)
+            seeded.retain_grad()
+            node_acts[embed_node] = seeded
+            return seeded
 
         handles.append(self._embed().register_forward_hook(_embed_hook))
 
@@ -287,9 +292,7 @@ class AtPRunner:
         finally:
             for h in handles:
                 h.remove()
-            # Re-freeze all params (back to frozen state before grad collection)
-            for _name, p in self.model.named_parameters():
-                p.requires_grad_(False)
+            # Params were never re-enabled (frozen-model contract). No refreeze needed.
 
         # Extract gradients
         node_grads: dict[AtPNode, Tensor | None] = {}

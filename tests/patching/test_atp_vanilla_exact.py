@@ -43,3 +43,18 @@ def test_model_clean_after_atp(linear_attn_toy):
     runner.run(clean_inputs=clean, corrupted_inputs=torch.tensor([[3, 2, 1, 0]]),
                metric=_metric, neurons=False)
     assert torch.equal(linear_attn_toy(clean), before)
+
+
+def test_no_param_grad_leak(linear_attn_toy):
+    """Frozen-model contract: run() must NOT populate any param .grad."""
+    for p in linear_attn_toy.parameters():
+        p.requires_grad_(True)
+        p.grad = None
+    runner = AtPRunner(linear_attn_toy, _resolver(linear_attn_toy))
+    runner.run(clean_inputs=torch.tensor([[0, 1, 2, 3]]),
+               corrupted_inputs=torch.tensor([[3, 2, 1, 0]]),
+               metric=_metric, neurons=False)
+    leaked = [n for n, p in linear_attn_toy.named_parameters() if p.grad is not None]
+    assert not leaked, f"param grad leaked: {leaked}"
+    # requires_grad restored to original (True here)
+    assert all(p.requires_grad for p in linear_attn_toy.parameters())
