@@ -100,3 +100,57 @@ def test_live_vs_clean_two_edge_composition(linear_mlp_toy):
     # mlp0's live contribution changed once e1 was ablated (it reads embed):
     assert not torch.allclose(live[Node("mlp", 0)], clean_live[Node("mlp", 0)], atol=1e-4)
     assert torch.isfinite(out).all()
+
+
+# --------------------------------------------------------------------------
+# Real HF Llama: LN-exactness (toys had no LayerNorm) + q/k injection (dead on
+# the toy) + GQA kv-group aggregation.  Anchors are exact (atol=1e-4).
+# --------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+transformers = pytest.importorskip("transformers")
+
+
+def _tiny_llama(n_kv_heads=4):
+    cfg = transformers.LlamaConfig(
+        vocab_size=32, hidden_size=16, intermediate_size=32,
+        num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=n_kv_heads,
+        max_position_embeddings=16,
+    )
+    torch.manual_seed(0)
+    m = transformers.LlamaForCausalLM(cfg)
+    m.config._attn_implementation = "eager"
+    return m.eval()
+
+
+def _llama_resolver(model):
+    return HFSiteResolver(
+        n_heads=model.config.num_attention_heads, d_model=model.config.hidden_size,
+        d_mlp=model.config.intermediate_size, layer_pattern="model.layers.{L}",
+    )
+
+
+def _anchor_on(model):
+    runner = ACDCRunner(model, _llama_resolver(model))
+    clean = {"input_ids": torch.tensor([[1, 2, 3, 4]])}
+    corrupted = {"input_ids": torch.tensor([[4, 3, 2, 1]])}
+    corr = runner._cache_corrupted_acts(corrupted)
+    with torch.no_grad():
+        clean_logits = model(**clean).logits
+        corrupted_logits = model(**corrupted).logits
+    empty = runner._run_capturing_live(clean, removed=set(), corr_act=corr)
+    full = runner._run_capturing_live(clean, removed=set(runner.graph.edges), corr_act=corr)
+    return empty, full, clean_logits, corrupted_logits
+
+
+def test_hf_llama_mha_empty_and_full_anchors():
+    empty, full, clean_logits, corrupted_logits = _anchor_on(_tiny_llama(n_kv_heads=4))
+    assert torch.allclose(empty, clean_logits, atol=1e-4)
+    assert torch.allclose(full, corrupted_logits, atol=1e-4)
+
+
+def test_hf_llama_gqa_empty_and_full_anchors():
+    empty, full, clean_logits, corrupted_logits = _anchor_on(_tiny_llama(n_kv_heads=2))
+    assert torch.allclose(empty, clean_logits, atol=1e-4)
+    assert torch.allclose(full, corrupted_logits, atol=1e-4)
