@@ -98,7 +98,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 - `recipes/` MUST NOT import from `cli/`.
 - `patching/` may import from `core/` and `recipes/`; MUST NOT import from `cli/`.
 - The package MUST NOT import from any downstream user codebase. `circuitry` is the consumed dependency, never the consumer.
-- `transformer_lens` is an approved optional dependency (lazy import only; `circuitry` must install and run without it).
+- `transformer_lens` and `transformers` are approved optional dependencies (lazy import only; `circuitry` must install and run without them). `transformers` is imported lazily by the AtP\* QK fix (HF Llama RoPE recomputation, eager-only); `transformer_lens` by the optional TL backends.
 
 A simple `import-linter` config or hand-rolled AST test enforces this.
 
