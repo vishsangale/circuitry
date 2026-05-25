@@ -22,7 +22,7 @@ FORBIDDEN = {
 # from itself, the standard library, or its declared third-party deps. Any
 # other root package implies an unauthorized dependency on a consumer codebase
 # or an undeclared third-party — both should fail this test.
-ALLOWED_ROOTS = frozenset({"circuitry", "torch", "numpy", "tensorboard", "sae_lens", "transformer_lens"}) | sys.stdlib_module_names
+ALLOWED_ROOTS = frozenset({"circuitry", "torch", "numpy", "tensorboard", "sae_lens", "transformer_lens", "transformers"}) | sys.stdlib_module_names
 
 
 def _imports(path: pathlib.Path) -> set[str]:

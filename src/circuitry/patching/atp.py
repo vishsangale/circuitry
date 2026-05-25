@@ -52,6 +52,33 @@ class AtPResult:
     def threshold(self, tau: float) -> list[AtPNode]:
         return [n for n, s in self.scores.items() if abs(s) >= tau]
 
+    def verify_top_k(
+        self,
+        k: int,
+        clean_inputs: Any,
+        corrupted_inputs: Any,
+        metric: Any,
+        resolver: Any,
+        runner: AtPRunner,
+    ) -> dict[AtPNode, tuple[float, float]]:
+        """For the top-K nodes by |score|, run real patch_site patching (ground truth)
+        and return {node: (atp_score, true_patch_effect)}.
+
+        Uses runner.bruteforce_node_scores for ground-truth independent patch_site
+        interventions. Note: bruteforce_node_scores uses the HF path (self._layers_list);
+        calling this on a TL-backed runner is not supported.
+        """
+        top_nodes = self.top_k(k)
+        nodes = [node for node, _ in top_nodes]
+        true_effects = runner.bruteforce_node_scores(
+            clean_inputs, corrupted_inputs, metric, nodes=nodes
+        )
+        result: dict[AtPNode, tuple[float, float]] = {}
+        for node, atp_score in top_nodes:
+            true_effect = true_effects.get(node, 0.0)
+            result[node] = (atp_score, true_effect)
+        return result
+
 
 # ---------------------------------------------------------------------------
 # GQA helper (mirrors EAP's _kv_head_for)
@@ -88,25 +115,41 @@ class AtPRunner:
         self.model = model
         self.resolver = resolver
 
-        # Locate layers list (support both model.model.layers and model.layers)
-        self._layers_list = self._locate_layers(model)
-        n_layers = len(self._layers_list)
-        n_heads = getattr(resolver, "n_heads", 0) if resolver is not None else 0
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        d_model = getattr(resolver, "d_model", None) if resolver is not None else None
-        self.head_dim = (d_model // n_heads) if (d_model is not None and n_heads > 0) else None
+        # Detect TransformerLens path via TLSiteResolver (lazy — no TL import here).
+        from circuitry.patching.sites import TLSiteResolver  # local import to avoid cycle
+        self._tl: bool = isinstance(resolver, TLSiteResolver)
 
-        # GQA: number of key/value heads (defaults to n_heads for MHA)
-        self.n_kv_heads: int = n_heads
-        if resolver is not None and n_heads > 0:
-            hf_cfg = getattr(model, "config", None)
-            if hf_cfg is not None:
-                self.n_kv_heads = getattr(hf_cfg, "num_key_value_heads", n_heads)
+        if self._tl:
+            # TL path: read topology from model.cfg (HookedTransformerConfig)
+            cfg = model.cfg  # type: ignore[attr-defined]
+            n_layers: int = cfg.n_layers
+            n_heads: int = cfg.n_heads
+            self.n_heads = n_heads
+            self.n_kv_heads: int = n_heads  # TL exposes MHA; no GQA back-map needed
+            self.head_dim: int | None = cfg.d_model // n_heads
+            self.n_layers = n_layers
+            self._layers_list = None  # unused in TL path
+            self._has_rope: bool = False  # TL handles position encoding internally
+        else:
+            # HF/toy path: locate layers list the existing way
+            self._layers_list = self._locate_layers(model)
+            n_layers = len(self._layers_list)
+            n_heads = getattr(resolver, "n_heads", 0) if resolver is not None else 0
+            self.n_layers = n_layers
+            self.n_heads = n_heads
+            d_model = getattr(resolver, "d_model", None) if resolver is not None else None
+            self.head_dim = (d_model // n_heads) if (d_model is not None and n_heads > 0) else None
 
-        # Detect HF model with RoPE (has model.model.rotary_emb)
-        inner = getattr(model, "model", None)
-        self._has_rope: bool = (inner is not None and hasattr(inner, "rotary_emb"))
+            # GQA: number of key/value heads (defaults to n_heads for MHA)
+            self.n_kv_heads = n_heads
+            if resolver is not None and n_heads > 0:
+                hf_cfg = getattr(model, "config", None)
+                if hf_cfg is not None:
+                    self.n_kv_heads = getattr(hf_cfg, "num_key_value_heads", n_heads)
+
+            # Detect HF model with RoPE (has model.model.rotary_emb)
+            inner = getattr(model, "model", None)
+            self._has_rope = (inner is not None and hasattr(inner, "rotary_emb"))
 
     # ------------------------------------------------------------------
     # Module locator helpers
@@ -763,6 +806,352 @@ class AtPRunner:
         return scores
 
     # ------------------------------------------------------------------
+    # TransformerLens-specific collect methods
+    # ------------------------------------------------------------------
+
+    def _cache_node_acts_tl(self, inputs: Tensor) -> dict[AtPNode, Tensor]:
+        """No-grad forward caching node activations via TL native hooks.
+
+        Captures:
+          hook_embed            → AtPNode(Node("embed"), None)
+          blocks.{L}.hook_mlp_out → AtPNode(Node("mlp", L), None)
+          blocks.{L}.attn.hook_v[:,:,h,:] → AtPNode(Node("attn_head",L,h), "v")
+
+        Returns detached activation tensors.
+        """
+        acts: dict[AtPNode, Tensor] = {}
+        n_heads = self.n_heads
+        n_layers = self.n_layers
+
+        def _embed_hook(tensor: Tensor, hook: Any) -> None:
+            acts[AtPNode(Node("embed"), None)] = tensor.detach()
+
+        fwd_hooks: list[tuple[str, Any]] = [("hook_embed", _embed_hook)]
+
+        for L in range(n_layers):
+            mlp_out_key = f"blocks.{L}.hook_mlp_out"
+
+            def _mlp_out_hook(tensor: Tensor, hook: Any, _L: int = L) -> None:
+                acts[AtPNode(Node("mlp", _L), None)] = tensor.detach()
+
+            fwd_hooks.append((mlp_out_key, _mlp_out_hook))
+
+            # v per-head: hook_v shape is (b, s, n_heads, head_dim)
+            v_key = f"blocks.{L}.attn.hook_v"
+
+            def _v_hook(tensor: Tensor, hook: Any, _L: int = L) -> None:
+                for _h in range(n_heads):
+                    acts[AtPNode(Node("attn_head", _L, _h), "v")] = (
+                        tensor[:, :, _h, :].detach().clone()
+                    )
+
+            fwd_hooks.append((v_key, _v_hook))
+
+        with torch.no_grad():
+            self.model.run_with_hooks(inputs, fwd_hooks=fwd_hooks)  # type: ignore[attr-defined]
+
+        return acts
+
+    def _collect_clean_grads_tl(
+        self,
+        inputs: Tensor,
+        metric: Callable[[Any], Tensor],
+    ) -> tuple[dict[AtPNode, Tensor], dict[AtPNode, Tensor | None], dict[int, Tensor], dict[int, Tensor]]:
+        """Forward + backward collecting clean node activations AND their gradients
+        via TL native hooks.
+
+        Gradient seeding: hook_embed returns a detached leaf with requires_grad_(True),
+        seeding the computation graph at activation level (no param grad leakage).
+        retain_grad() on mlp_out, hook_v, hook_q, hook_k tensors lets us read .grad
+        after backward.
+
+        Vanilla AtP q/k scoring on TL path:
+          hook_q[:,:,h,:] and hook_k[:,:,h,:] carry gradients from the retain_grad
+          substitution. Scoring: Σ(Δq_h ⊙ grad_q_h) in head_dim space.
+          (Full QK-fix with attention-pattern recomputation is not implemented on the
+          TL path; the HF path carries the full QK fix.)
+
+        Returns (node_acts, node_grads, qhook_outs, khook_outs):
+          node_acts: AtPNode → Tensor (the live tensor in the autograd graph)
+          node_grads: AtPNode → Tensor | None (.grad read after backward)
+          qhook_outs: layer_idx → full (b,s,n_heads,head_dim) hook_q output (with retain_grad)
+          khook_outs: layer_idx → full (b,s,n_heads,head_dim) hook_k output (with retain_grad)
+        """
+        node_acts: dict[AtPNode, Tensor] = {}
+        qhook_outs: dict[int, Tensor] = {}
+        khook_outs: dict[int, Tensor] = {}
+        # Storage for v_hook outputs (full tensor, retain_grad, per-layer)
+        v_hook_outs: dict[int, Tensor] = {}
+        n_heads = self.n_heads
+        n_layers = self.n_layers
+
+        embed_node = AtPNode(Node("embed"), None)
+
+        def _embed_hook_grad(tensor: Tensor, hook: Any) -> Tensor:
+            # Seed computation graph at activation level — detach then requires_grad
+            seeded = tensor.detach().requires_grad_(True)
+            seeded.retain_grad()
+            node_acts[embed_node] = seeded
+            return seeded
+
+        fwd_hooks: list[tuple[str, Any]] = [("hook_embed", _embed_hook_grad)]
+
+        for L in range(n_layers):
+            mlp_out_key = f"blocks.{L}.hook_mlp_out"
+
+            def _mlp_out_hook_grad(tensor: Tensor, hook: Any, _L: int = L) -> Tensor:
+                tensor.retain_grad()
+                node_acts[AtPNode(Node("mlp", _L), None)] = tensor
+                return tensor
+
+            fwd_hooks.append((mlp_out_key, _mlp_out_hook_grad))
+
+            # v per-head via hook_v
+            v_key = f"blocks.{L}.attn.hook_v"
+
+            def _v_hook_grad(
+                tensor: Tensor, hook: Any, _L: int = L,
+                _store: dict = v_hook_outs,
+            ) -> Tensor:
+                tensor.retain_grad()
+                _store[_L] = tensor
+                # Store per-head refs (the full tensor; we'll read .grad per head later)
+                for _h in range(n_heads):
+                    node_acts[AtPNode(Node("attn_head", _L, _h), "v")] = (tensor, _h)  # type: ignore[assignment]
+                return tensor
+
+            fwd_hooks.append((v_key, _v_hook_grad))
+
+            # q/k hooks for vanilla q/k scoring
+            q_key = f"blocks.{L}.attn.hook_q"
+            k_key = f"blocks.{L}.attn.hook_k"
+
+            def _q_hook_grad(
+                tensor: Tensor, hook: Any, _L: int = L,
+                _store: dict = qhook_outs,
+            ) -> Tensor:
+                tensor.retain_grad()
+                _store[_L] = tensor
+                return tensor
+
+            def _k_hook_grad(
+                tensor: Tensor, hook: Any, _L: int = L,
+                _store: dict = khook_outs,
+            ) -> Tensor:
+                tensor.retain_grad()
+                _store[_L] = tensor
+                return tensor
+
+            fwd_hooks.append((q_key, _q_hook_grad))
+            fwd_hooks.append((k_key, _k_hook_grad))
+
+        with torch.enable_grad():
+            logits = self.model.run_with_hooks(inputs, fwd_hooks=fwd_hooks)  # type: ignore[attr-defined]
+            metric(logits).backward()
+
+        # Extract gradients
+        node_grads: dict[AtPNode, Tensor | None] = {}
+
+        # embed grad
+        embed_act = node_acts.get(embed_node)
+        if embed_act is not None and isinstance(embed_act, Tensor):
+            node_grads[embed_node] = embed_act.grad
+
+        # mlp grads
+        for L in range(n_layers):
+            mlp_node = AtPNode(Node("mlp", L), None)
+            mlp_act = node_acts.get(mlp_node)
+            if mlp_act is not None and isinstance(mlp_act, Tensor):
+                node_grads[mlp_node] = mlp_act.grad
+
+        # v grads (from full v_hook output grad, sliced per head)
+        for L in range(n_layers):
+            for h in range(n_heads):
+                node = AtPNode(Node("attn_head", L, h), "v")
+                stored = node_acts.get(node)
+                if stored is not None and isinstance(stored, tuple):
+                    v_full, h_idx = stored
+                    if v_full.grad is not None:
+                        node_grads[node] = v_full.grad[:, :, h_idx, :].detach().clone()
+                    else:
+                        node_grads[node] = None
+                else:
+                    node_grads[node] = None
+
+        return node_acts, node_grads, qhook_outs, khook_outs
+
+    def _compute_vanilla_qk_scores_tl(
+        self,
+        clean_qhook_outs: dict[int, Tensor],
+        clean_khook_outs: dict[int, Tensor],
+        corr_qhook_outs: dict[int, Tensor],
+        corr_khook_outs: dict[int, Tensor],
+    ) -> dict[AtPNode, float]:
+        """Vanilla q/k scoring on the TL path.
+
+        TL hook_q/hook_k have shape (b, s, n_heads, head_dim).
+        score(q_h) = Σ(Δq_h ⊙ grad_q_h)  where Δq_h = corr_q_h − clean_q_h
+        score(k_h) = Σ(Δk_h ⊙ grad_k_h)
+
+        NOTE: This is vanilla Δq·grad, NOT the QK fix (attention-pattern recomputation).
+        The QK fix is implemented on the HF path only. On TL, q/k scores are a linear
+        first-order approximation without the softmax-pattern correction.
+        """
+        scores: dict[AtPNode, float] = {}
+        n_heads = self.n_heads
+
+        for L in range(self.n_layers):
+            clean_q = clean_qhook_outs.get(L)
+            corr_q = corr_qhook_outs.get(L)
+            clean_k = clean_khook_outs.get(L)
+            corr_k = corr_khook_outs.get(L)
+
+            for h in range(n_heads):
+                # Q score
+                if (clean_q is not None and corr_q is not None
+                        and clean_q.grad is not None):
+                    delta_q = (corr_q[:, :, h, :] - clean_q[:, :, h, :]).detach()
+                    grad_q = clean_q.grad[:, :, h, :].detach()
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = float(
+                        (delta_q * grad_q).sum().item()
+                    )
+                else:
+                    scores[AtPNode(Node("attn_head", L, h), "q")] = 0.0
+
+                # K score
+                if (clean_k is not None and corr_k is not None
+                        and clean_k.grad is not None):
+                    delta_k = (corr_k[:, :, h, :] - clean_k[:, :, h, :]).detach()
+                    grad_k = clean_k.grad[:, :, h, :].detach()
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = float(
+                        (delta_k * grad_k).sum().item()
+                    )
+                else:
+                    scores[AtPNode(Node("attn_head", L, h), "k")] = 0.0
+
+        return scores
+
+    def _run_tl(
+        self,
+        clean_inputs: Tensor,
+        corrupted_inputs: Tensor,
+        metric: Callable[[Any], Tensor],
+        *,
+        graddrop: bool = False,
+    ) -> AtPResult:
+        """AtP* on a TransformerLens HookedTransformer.
+
+        Vanilla AtP + vanilla q/k scoring (NOT full QK fix — softmax-pattern
+        recomputation is not implemented on the TL path; use the HF path for that).
+
+        Steps:
+          1. Enable TL hooks needed; restore in finally.
+          2. Corrupted forward (no grad): cache node activations.
+          3. Clean forward + backward: retain_grad on activations, seed via embed hook.
+          4. score(node) = Σ(Δact ⊙ grad); GradDrop: Σ|per-pos contribution|.
+          5. q/k: vanilla Σ(Δq_h ⊙ grad_q_h) in head_dim space.
+          6. Return AtPResult. neurons=False (TL path, no per-neuron scoring).
+        """
+        # Save and enable required TL flags
+        _prior_attn_result = self.model.cfg.use_attn_result  # type: ignore[attr-defined]
+        self.model.set_use_attn_result(True)  # type: ignore[attr-defined]
+
+        try:
+            # Step 1: cache corrupted activations (no grad)
+            corrupted_acts = self._cache_node_acts_tl(corrupted_inputs)
+
+            # Step 2: cache corrupted q/k hook outputs for vanilla scoring (no-grad pass)
+            corr_qhook: dict[int, Tensor] = {}
+            corr_khook: dict[int, Tensor] = {}
+            n_heads = self.n_heads
+
+            # Actually capture q/k from corrupted pass in a single run
+            # TL calls hooks as hook(tensor, hook=hook_point) — use **kwargs to absorb it.
+            corr_qk_capture: dict[str, dict[int, Tensor]] = {"q": {}, "k": {}}
+
+            corr_qk_fwd_hooks: list[tuple[str, Any]] = []
+            for L in range(self.n_layers):
+                def _cq(t: Tensor, _L: int = L, **kwargs: Any) -> None:
+                    corr_qk_capture["q"][_L] = t.detach()
+                def _ck(t: Tensor, _L: int = L, **kwargs: Any) -> None:
+                    corr_qk_capture["k"][_L] = t.detach()
+                corr_qk_fwd_hooks.append((f"blocks.{L}.attn.hook_q", _cq))
+                corr_qk_fwd_hooks.append((f"blocks.{L}.attn.hook_k", _ck))
+
+            with torch.no_grad():
+                self.model.run_with_hooks(corrupted_inputs, fwd_hooks=corr_qk_fwd_hooks)  # type: ignore[attr-defined]
+
+            corr_qhook = corr_qk_capture["q"]
+            corr_khook = corr_qk_capture["k"]
+
+            # Step 3: clean forward + backward with grad seeding
+            clean_node_acts, clean_node_grads, clean_qhook, clean_khook = (
+                self._collect_clean_grads_tl(clean_inputs, metric)
+            )
+
+            # Step 4: build clean_acts dict (detached values for Δact computation)
+            clean_acts: dict[AtPNode, Tensor] = {}
+
+            embed_node = AtPNode(Node("embed"), None)
+            embed_act = clean_node_acts.get(embed_node)
+            if embed_act is not None and isinstance(embed_act, Tensor):
+                clean_acts[embed_node] = embed_act.detach()
+
+            for L in range(self.n_layers):
+                mlp_node = AtPNode(Node("mlp", L), None)
+                mlp_act = clean_node_acts.get(mlp_node)
+                if mlp_act is not None and isinstance(mlp_act, Tensor):
+                    clean_acts[mlp_node] = mlp_act.detach()
+
+            # v clean acts (extract from stored (tensor, h_idx) tuples)
+            for L in range(self.n_layers):
+                for h in range(n_heads):
+                    node = AtPNode(Node("attn_head", L, h), "v")
+                    stored = clean_node_acts.get(node)
+                    if stored is not None and isinstance(stored, tuple):
+                        v_full, h_idx = stored
+                        clean_acts[node] = v_full.detach()[:, :, h_idx, :].clone()
+
+            # Step 5: q/k vanilla scoring
+            qk_scores = self._compute_vanilla_qk_scores_tl(
+                clean_qhook, clean_khook, corr_qhook, corr_khook
+            )
+
+            # Step 6: score each node
+            scores: dict[AtPNode, float] = {}
+            all_nodes = enumerate_nodes(self.n_layers, n_heads, d_mlp=None)
+
+            for atp_node in all_nodes:
+                if atp_node.slot in ("q", "k"):
+                    scores[atp_node] = qk_scores.get(atp_node, 0.0)
+                    continue
+
+                if atp_node.node.kind == "mlp_neuron":
+                    # neurons not supported on TL path
+                    scores[atp_node] = 0.0
+                    continue
+
+                corr_act = corrupted_acts.get(atp_node)
+                cln_act = clean_acts.get(atp_node)
+                grad = clean_node_grads.get(atp_node)
+
+                if corr_act is None or cln_act is None or grad is None:
+                    scores[atp_node] = 0.0
+                    continue
+
+                delta = corr_act - cln_act
+                if graddrop:
+                    per_pos = (delta * grad).sum(dim=tuple(range(2, delta.dim())))
+                    score = float(per_pos.abs().sum().item())
+                else:
+                    score = float((delta * grad).sum().item())
+                scores[atp_node] = score
+
+            return AtPResult(scores)
+        finally:
+            self.model.set_use_attn_result(_prior_attn_result)  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -787,7 +1176,25 @@ class AtPRunner:
           5. score(node) = float((Δact * grad).sum()) — sum over ALL dims.
           6. q/k nodes: QK fix (attn-pattern recomputation) or vanilla Δq·grad.
           7. Return AtPResult over enumerate_nodes.
+
+        TL path: dispatches to _run_tl() for TransformerLens HookedTransformer models.
+          - Vanilla AtP on embed/mlp/v nodes.
+          - Vanilla q/k scoring (Σ(Δq_h ⊙ grad_q_h)); full QK fix not implemented on TL.
+          - neurons=True is ignored on TL (mlp_neuron nodes not scored).
+          - qk_fix=True is silently used as vanilla q/k on TL.
         """
+        if self._tl:
+            was_training, orig_rg = self._freeze_eval()
+            try:
+                return self._run_tl(
+                    clean_inputs,  # type: ignore[arg-type]
+                    corrupted_inputs,  # type: ignore[arg-type]
+                    metric,
+                    graddrop=graddrop,
+                )
+            finally:
+                self._restore(was_training, orig_rg)
+
         need_qk = self.n_heads > 0 and self.head_dim is not None
         was_training, orig_rg = self._freeze_eval()
         try:
