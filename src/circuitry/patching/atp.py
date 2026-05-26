@@ -156,18 +156,12 @@ class AtPRunner:
 
     @staticmethod
     def _locate_layers(model: nn.Module) -> nn.ModuleList:
-        """Return the transformer layers list: tries model.model.layers then model.layers."""
-        inner = getattr(model, "model", None)
-        if inner is not None and hasattr(inner, "layers"):
-            return inner.layers  # type: ignore[return-value]
-        return model.layers  # type: ignore[return-value]
+        from circuitry.patching._layout import locate_layers
+        return locate_layers(model)
 
     def _embed(self) -> nn.Module:
-        """Return the embedding module."""
-        inner = getattr(self.model, "model", None)
-        if inner is not None and hasattr(inner, "embed_tokens"):
-            return inner.embed_tokens
-        return self.model.embed_tokens  # type: ignore[return-value]
+        from circuitry.patching._layout import locate_embed
+        return locate_embed(self.model)
 
     # ------------------------------------------------------------------
     # Input dispatch helpers
