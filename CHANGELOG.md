@@ -2,7 +2,18 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] — 2026-05-26
+
+### Fixed
+- HF patching backend now honors `config.head_dim`; EAP/AtP*/ACDC run on Gemma-2/3
+  (previously crashed when `head_dim != hidden_size / num_attention_heads`).
+
+### Added
+- `circuitry.patching.to_hooked_transformer(hf_model, model_name, ...)` — bridge a
+  loaded HF model into TransformerLens so non-Llama architectures (GPT-2, …) are
+  usable with the TL patching backend.
+- Clear `ValueError` (pointing to `to_hooked_transformer`) when the HF backend is
+  given an unsupported (non-Llama) layout, replacing a cryptic `AttributeError`.
 
 ## [1.0.0] — 2026-05-25
 

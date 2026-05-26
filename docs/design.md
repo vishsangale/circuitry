@@ -98,7 +98,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 - `recipes/` MUST NOT import from `cli/`.
 - `patching/` may import from `core/` and `recipes/`; MUST NOT import from `cli/`.
 - The package MUST NOT import from any downstream user codebase. `circuitry` is the consumed dependency, never the consumer.
-- `transformer_lens` and `transformers` are approved optional dependencies (lazy import only; `circuitry` must install and run without them). `transformers` is imported lazily by the AtP\* QK fix (HF Llama RoPE recomputation, eager-only); `transformer_lens` by the optional TL backends.
+- `transformer_lens` and `transformers` are approved optional dependencies (lazy import only; `circuitry` must install and run without them). `transformers` is imported lazily by the AtP\* QK fix (HF Llama RoPE recomputation, eager-only); `transformer_lens` by the optional TL backends, including `patching/tl_bridge.py` (imported inside the function body; the `test_layering` allowlist is unchanged).
 
 A simple `import-linter` config or hand-rolled AST test enforces this.
 
@@ -327,6 +327,16 @@ Attribution methods (EAP, AtP\*, ACDC) and SAE-feature circuits build on this pr
 **AtP\* (sub-spec 3, shipped).** `AtPRunner(model, resolver).run(clean_inputs, corrupted_inputs, metric, neurons=False, graddrop=False, qk_fix=True)` → `AtPResult` of per-node attribution scores (`circuitry.patching.atp`: `AtPNode`, `AtPResult`). Nodes are embed + per-head (q/k/v slots) + mlp per layer + optionally mlp_neuron per neuron. Scoring: `score(node) = Σ(Δact_node ⊙ grad_node)` summed over all dims; q/k nodes use the **QK fix** (attention-pattern recomputation in `d_model` space against `grad_attn_out`) when `qk_fix=True`; `graddrop=True` replaces summation with `Σ|per-position contribution|`. On a fully linear model vanilla AtP is exact (equals brute-force `patch_site` at 1e-4). The differentiable metric (`logit_diff_t` / `kl_divergence_t` / `ce_loss_t`) is required. Backends: HF (eager, Llama-family, GQA-aware — full QK fix implemented) and TransformerLens (native TL hooks — vanilla q/k scoring only; full QK fix with softmax-pattern recomputation is HF-path only). `AtPResult.verify_top_k(k, clean_inputs, corrupted_inputs, metric, resolver, runner)` calibrates the top-K nodes against real `patch_site` ground truth, returning `{node: (atp_score, true_patch_effect)}`.
 
 **ACDC (sub-spec 4, shipped).** `ACDCRunner(model, resolver).run(clean_inputs, corrupted_inputs, tau, ordering="topo", position=-1, metric=None)` → `ACDCResult` of the pruned circuit edges (`circuitry.patching.acdc`: `ACDCRunner`, `ACDCResult`). Greedy forward-only reverse-topological edge pruning with corrupted-resample set ablation: ablated edges feed corrupted-run activations (cached once), kept edges propagate live (current-circuit) activations, deltas injected **pre-LayerNorm** per reader/slot (per-head rebuild on HF eager, native on TransformerLens). Recovery metric: last-token KL to the clean distribution (default, configurable `position`; custom metric callable accepted). Single-threshold pruning via `tau` (per-edge tolerance) and a `sweep(taus)` Pareto helper returning `[(τ, n_kept, final_kl), …]`. Traversal orderings: `"topo"` (reverse-topological determinism with tie-break key) or `"eap"` (lowest `|EAP score|` first, consumes `EAPResult.scores`). Backends: HF (eager, Llama-family, GQA k/v at group granularity) and TransformerLens. Empty- and full-ablation anchors are exact under corrupted−live + pre-LN injection; v1.0 ships edge-traversal ordering only (EAP-score skip speedup is a documented follow-on).
+
+**Backend scope (v1.1):** the HF-eager patching backend (EAP / AtP* / ACDC)
+targets Llama-family layouts (`model.model.layers` + `self_attn.{q,k,v,o}_proj`)
+and honors an explicit `config.head_dim` (so Gemma-2/3, where `head_dim !=
+hidden_size/num_attention_heads`, work). For GPT-2 and other architectures,
+wrap the loaded model with `circuitry.patching.to_hooked_transformer(model,
+"<tl-name>")` and use the TransformerLens backend (`TLSiteResolver`); pointing
+the HF backend at an unsupported layout raises a `ValueError` directing you
+there. TransformerLens folds LayerNorm / centers weights, so patching runs on
+the TL-processed (logit-equivalent) model.
 
 ## 5. Recipe internals — worked example
 
