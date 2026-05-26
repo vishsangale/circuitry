@@ -14,6 +14,7 @@ from circuitry.patching.graph import Edge, Node
 from circuitry.patching.intervene import PatchHandle, patch_site
 from circuitry.patching.runner import PatchResult, PatchRunner
 from circuitry.patching.sites import Site
+from circuitry.patching.tl_bridge import to_hooked_transformer
 
 __all__ = [
     "ACDCResult",
@@ -30,4 +31,5 @@ __all__ = [
     "PatchRunner",
     "Site",
     "patch_site",
+    "to_hooked_transformer",
 ]
