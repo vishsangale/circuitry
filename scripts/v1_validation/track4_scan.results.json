@@ -1,0 +1,16 @@
+{
+  "checkpoints": [
+    0,
+    59
+  ],
+  "params_moved": 39,
+  "max_delta": 114.0356,
+  "scan_rows": 432,
+  "effective_rank_tags": 30,
+  "moving_across_ckpts": 30,
+  "cli": {
+    "list_recipes": "ok",
+    "report": "ok",
+    "scan": "documented stub (exit 2, points to scan_run)"
+  }
+}

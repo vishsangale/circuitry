@@ -1,0 +1,29 @@
+{
+  "model": "google/gemma-2-2b",
+  "release": "gemma-scope-2b-pt-res",
+  "sae_id": "layer_8/width_16k/average_l0_71",
+  "layer": 8,
+  "n_tokens": 112,
+  "bos_norm": 1312.0,
+  "non_bos_mean_norm": 114.0,
+  "metrics_all": {
+    "recon_mse": 140.4759,
+    "l0": 124.7857,
+    "l1": 1316.3115,
+    "frac_alive": 0.4722,
+    "ce_recovered_proxy": -10.2901
+  },
+  "metrics_ex_bos": {
+    "recon_mse": 0.6563,
+    "l0": 71.3063,
+    "l1": 386.2454,
+    "frac_alive": 0.155,
+    "ce_recovered_proxy": 0.8874
+  },
+  "baseline_v0.9_4tok": {
+    "l0": 1293,
+    "recon_mse": 3130,
+    "ce_recovered_proxy": -19.1,
+    "frac_alive": 0.384
+  }
+}

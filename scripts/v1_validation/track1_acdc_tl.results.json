@@ -1,0 +1,56 @@
+{
+  "n_prompts": 12,
+  "seed": 0,
+  "n_edges": 32491,
+  "sweep": [
+    {
+      "tau": 0.05,
+      "n_kept_edges": 10,
+      "final_kl": 0.71533,
+      "n_kept_heads": 8,
+      "heads_in_circuit": 8
+    }
+  ],
+  "kept_heads_tau0.05": [
+    [
+      5,
+      5,
+      "induction"
+    ],
+    [
+      8,
+      6,
+      "s_inhibition"
+    ],
+    [
+      8,
+      10,
+      "s_inhibition"
+    ],
+    [
+      9,
+      6,
+      "name_mover"
+    ],
+    [
+      9,
+      9,
+      "name_mover"
+    ],
+    [
+      10,
+      0,
+      "name_mover"
+    ],
+    [
+      10,
+      7,
+      "negative_name_mover"
+    ],
+    [
+      10,
+      10,
+      "name_mover"
+    ]
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "condition_number": 46.703,
+  "singular_values": {
+    "n": 512,
+    "max": 18.042
+  },
+  "attention_head_rank": {
+    "n_heads": 12,
+    "min": 58.01,
+    "max": 63.56
+  },
+  "activation": {
+    "dead_fraction": 0.8865,
+    "participation_ratio": 12919.703,
+    "norm_stats_mean": -0.0547,
+    "kurtosis_mean": 212.369,
+    "gate_frac_active": 0.9988
+  },
+  "signal_propagation_depth": {
+    "depth": 12,
+    "n_layers": 12
+  },
+  "spectral": {
+    "esd_bins": 51,
+    "rank_trajectory_params": 51,
+    "rank_trajectory_sample": [
+      431.59,
+      432.63
+    ]
+  }
+}

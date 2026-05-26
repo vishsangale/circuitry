@@ -1,0 +1,138 @@
+{
+  "device": "cuda",
+  "steps": 600,
+  "batch": 16,
+  "seqlen": 128,
+  "lr": 0.0003,
+  "n_params": 28355328,
+  "loss_start": 10.865116119384766,
+  "loss_end": 3.4765355587005615,
+  "wall_baseline": 9.08,
+  "wall_recorded": 11.24,
+  "overhead_frac": 0.2378,
+  "eager_only_tags_emitted": [
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_0",
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_1",
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_2",
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_3",
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_0",
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_1",
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_2",
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_3",
+    "activation/attention_pattern_entropy/model.layers.2.self_attn/head_0",
+    "activation/attention_pattern_entropy/model.layers.2.self_attn/head_1"
+  ],
+  "n_diagnostic_tags": 352,
+  "moving_tags_sample": {
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_0": {
+      "first_step": 0,
+      "first": 2.9657,
+      "last_step": 500,
+      "last": 2.9401
+    },
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_1": {
+      "first_step": 0,
+      "first": 2.9649,
+      "last_step": 500,
+      "last": 2.9526
+    },
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_2": {
+      "first_step": 0,
+      "first": 2.9649,
+      "last_step": 500,
+      "last": 2.9585
+    },
+    "activation/attention_pattern_entropy/model.layers.0.self_attn/head_3": {
+      "first_step": 0,
+      "first": 2.9647,
+      "last_step": 500,
+      "last": 2.9559
+    },
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_0": {
+      "first_step": 0,
+      "first": 2.9672,
+      "last_step": 500,
+      "last": 1.6199
+    },
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_1": {
+      "first_step": 0,
+      "first": 2.9662,
+      "last_step": 500,
+      "last": 2.2824
+    },
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_2": {
+      "first_step": 0,
+      "first": 2.9665,
+      "last_step": 500,
+      "last": 1.9846
+    },
+    "activation/attention_pattern_entropy/model.layers.1.self_attn/head_3": {
+      "first_step": 0,
+      "first": 2.9664,
+      "last_step": 500,
+      "last": 1.8844
+    },
+    "activation/attention_pattern_entropy/model.layers.2.self_attn/head_0": {
+      "first_step": 0,
+      "first": 2.9679,
+      "last_step": 500,
+      "last": 1.7653
+    },
+    "activation/attention_pattern_entropy/model.layers.2.self_attn/head_1": {
+      "first_step": 0,
+      "first": 2.9674,
+      "last_step": 500,
+      "last": 2.943
+    },
+    "activation/attention_pattern_entropy/model.layers.2.self_attn/head_2": {
+      "first_step": 0,
+      "first": 2.9676,
+      "last_step": 500,
+      "last": 2.5304
+    },
+    "activation/attention_pattern_entropy/model.layers.2.self_attn/head_3": {
+      "first_step": 0,
+      "first": 2.9639,
+      "last_step": 500,
+      "last": 2.7614
+    },
+    "activation/attention_pattern_entropy/model.layers.3.self_attn/head_0": {
+      "first_step": 0,
+      "first": 2.9683,
+      "last_step": 500,
+      "last": 2.3293
+    },
+    "activation/attention_pattern_entropy/model.layers.3.self_attn/head_1": {
+      "first_step": 0,
+      "first": 2.9662,
+      "last_step": 500,
+      "last": 2.5466
+    },
+    "activation/attention_pattern_entropy/model.layers.3.self_attn/head_2": {
+      "first_step": 0,
+      "first": 2.9683,
+      "last_step": 500,
+      "last": 2.9482
+    },
+    "activation/attention_pattern_entropy/model.layers.3.self_attn/head_3": {
+      "first_step": 0,
+      "first": 2.9651,
+      "last_step": 500,
+      "last": 2.798
+    },
+    "activation/induction_score/model.layers.0.self_attn/head_0": {
+      "first_step": 0,
+      "first": 0.0288,
+      "last_step": 500,
+      "last": 0.0283
+    },
+    "activation/induction_score/model.layers.0.self_attn/head_1": {
+      "first_step": 0,
+      "first": 0.0268,
+      "last_step": 500,
+      "last": 0.0264
+    }
+  },
+  "report_path": "runs/v1_track2/recorded/inspect/report.md",
+  "run_dir": "runs/v1_track2/recorded"
+}

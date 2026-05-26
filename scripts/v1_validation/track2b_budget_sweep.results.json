@@ -1,0 +1,31 @@
+{
+  "steps": 600,
+  "baseline_s": 8.92,
+  "device": "cuda",
+  "sweep": [
+    {
+      "every_n": 50,
+      "recipe": "llm-full",
+      "wall_s": 13.33,
+      "overhead": 0.4944
+    },
+    {
+      "every_n": 100,
+      "recipe": "llm-full",
+      "wall_s": 11.11,
+      "overhead": 0.246
+    },
+    {
+      "every_n": 200,
+      "recipe": "llm-full",
+      "wall_s": 10.05,
+      "overhead": 0.1266
+    },
+    {
+      "every_n": 200,
+      "recipe": "llm-no-induction",
+      "wall_s": 10.05,
+      "overhead": 0.1264
+    }
+  ]
+}

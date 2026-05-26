@@ -1,0 +1,17 @@
+{
+  "vision": {
+    "tags": 17,
+    "report_ok": true
+  },
+  "two_tower": {
+    "tags": 14,
+    "report_ok": true
+  },
+  "tensorboard_writer": {
+    "event_files": 1,
+    "ok": true
+  },
+  "scan_strict": {
+    "strict_true": "passed (all matched HookPoints resolved)"
+  }
+}

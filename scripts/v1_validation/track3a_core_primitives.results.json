@@ -1,0 +1,85 @@
+{
+  "model": "gpt2",
+  "device": "cuda",
+  "n_params": 124439808,
+  "weight_layer0_mlp": {
+    "shape": [
+      768,
+      3072
+    ],
+    "effective_rank": 431.46,
+    "stable_rank": 24.49,
+    "heavy_tail_alpha": 1.082
+  },
+  "logit_lens_kl_per_layer": [
+    16.1122,
+    5.6993,
+    5.4777,
+    5.4401,
+    4.8987,
+    4.1664,
+    3.4053,
+    2.751,
+    2.4099,
+    2.0336,
+    1.3515,
+    0.537,
+    2.6486
+  ],
+  "lens_falls_toward_final": true,
+  "induction_top6": [
+    [
+      5,
+      1,
+      0.918
+    ],
+    [
+      5,
+      5,
+      0.907
+    ],
+    [
+      6,
+      9,
+      0.888
+    ],
+    [
+      7,
+      10,
+      0.864
+    ],
+    [
+      7,
+      2,
+      0.78
+    ],
+    [
+      10,
+      7,
+      0.564
+    ]
+  ],
+  "known_induction_in_top6": 2,
+  "attn_entropy_layer0": [
+    1.756,
+    0.246,
+    1.711,
+    0.53,
+    1.155,
+    0.784,
+    1.658,
+    1.55,
+    1.597,
+    1.85,
+    1.807,
+    1.778
+  ],
+  "token_similarity_layer6": 0.5338,
+  "total_grad_norm": 41.2225,
+  "update_delta_sample": {
+    "transformer.wte.weight": 0.02581
+  },
+  "direction_cosine_sample": {
+    "transformer.wte.weight": 0.2989
+  }
+}
