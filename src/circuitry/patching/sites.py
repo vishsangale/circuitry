@@ -146,6 +146,7 @@ class HFSiteResolver:
         d_model: int,
         d_mlp: int | None = None,
         *,
+        head_dim: int | None = None,
         layer_pattern: str = "model.layers.{L}",
         attn_module: str = "self_attn.o_proj",
         mlp_module: str = "mlp",
@@ -154,7 +155,7 @@ class HFSiteResolver:
         self.n_heads = n_heads
         self.d_model = d_model
         self.d_mlp = d_mlp
-        self.head_dim = d_model // n_heads
+        self.head_dim = head_dim if head_dim is not None else d_model // n_heads
         self.layer_pattern = layer_pattern
         self.attn_module = attn_module
         self.mlp_module = mlp_module
@@ -169,7 +170,8 @@ class HFSiteResolver:
                 "Config must have num_attention_heads and hidden_size"
             )
         d_mlp = getattr(config, "intermediate_size", None)
-        return cls(n_heads=n_heads, d_model=d_model, d_mlp=d_mlp)
+        head_dim = getattr(config, "head_dim", None)
+        return cls(n_heads=n_heads, d_model=d_model, d_mlp=d_mlp, head_dim=head_dim)
 
     def _layer_module(self, model: nn.Module, layer: int) -> nn.Module:
         path = self.layer_pattern.replace("{L}", str(layer))
