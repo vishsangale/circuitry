@@ -88,7 +88,7 @@ class EAPRunner:
             n_heads: int = cfg.n_heads
             self.n_heads = n_heads
             self.n_kv_heads: int = n_heads  # TL input hooks expose MHA; no GQA back-map needed
-            self.head_dim = cfg.d_model // n_heads
+            self.head_dim = getattr(cfg, "d_head", None) or (cfg.d_model // n_heads)
             self._layers_list = None  # unused in TL path
             self._rms_norm_eps: float = 1e-6  # unused in TL path
         else:
@@ -103,7 +103,7 @@ class EAPRunner:
                 hf_cfg = getattr(model, "config", None)
                 if hf_cfg is not None:
                     self.n_kv_heads = getattr(hf_cfg, "num_key_value_heads", n_heads)
-            self.head_dim = (resolver.d_model // resolver.n_heads) if resolver is not None and n_heads > 0 else None
+            self.head_dim = resolver.head_dim if (resolver is not None and n_heads > 0) else None
             # RMSNorm eps from config (used for ln_scale; only relevant for HF models)
             hf_cfg = getattr(model, "config", None)
             self._rms_norm_eps = getattr(hf_cfg, "rms_norm_eps", 1e-6) if hf_cfg is not None else 1e-6

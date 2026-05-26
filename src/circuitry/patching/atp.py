@@ -126,7 +126,7 @@ class AtPRunner:
             n_heads: int = cfg.n_heads
             self.n_heads = n_heads
             self.n_kv_heads: int = n_heads  # TL exposes MHA; no GQA back-map needed
-            self.head_dim: int | None = cfg.d_model // n_heads
+            self.head_dim: int | None = getattr(cfg, "d_head", None) or (cfg.d_model // n_heads)
             self.n_layers = n_layers
             self._layers_list = None  # unused in TL path
             self._has_rope: bool = False  # TL handles position encoding internally
@@ -137,8 +137,7 @@ class AtPRunner:
             n_heads = getattr(resolver, "n_heads", 0) if resolver is not None else 0
             self.n_layers = n_layers
             self.n_heads = n_heads
-            d_model = getattr(resolver, "d_model", None) if resolver is not None else None
-            self.head_dim = (d_model // n_heads) if (d_model is not None and n_heads > 0) else None
+            self.head_dim = resolver.head_dim if (resolver is not None and n_heads > 0) else None
 
             # GQA: number of key/value heads (defaults to n_heads for MHA)
             self.n_kv_heads = n_heads
