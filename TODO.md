@@ -1,8 +1,7 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through v1.2.0 (2026-05-30);
-all tags + GitHub Releases v0.1.0 → v1.2.0 are published. v1.3.0 (training-dynamics
-diagnostics) is in progress on `feat/v1.3-training-dynamics`. The design contract is
+Tracking doc for open work and future improvements. Released through v1.3.0 (2026-05-30);
+all tags + GitHub Releases v0.1.0 → v1.3.0 are published. The design contract is
 `docs/design.md` — any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
