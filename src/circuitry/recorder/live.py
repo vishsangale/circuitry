@@ -152,6 +152,11 @@ class Recorder:
         self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
+        # Cross-step weight snapshots for training-dynamics diagnostics (v1.3).
+        # Detached CPU copies of ctx.weights from prior emit steps.
+        # Empty at attach(); populated after each emit; cleared in detach().
+        self._prev_weights: dict[str, torch.Tensor] = {}
+        self._prev_prev_weights: dict[str, torch.Tensor] = {}
 
     # ---- internal helpers ------------------------------------------------
 
@@ -523,6 +528,9 @@ class Recorder:
         for h in self._hook_handles:
             h.remove()
         self._hook_handles.clear()
+        # Release cross-step snapshots to free RAM (v1.3).
+        self._prev_weights.clear()
+        self._prev_prev_weights.clear()
         self._restore_output_attentions()
         if self._writer is not None:
             self._writer.flush()
@@ -585,6 +593,15 @@ class Recorder:
         self._run_diagnostics(ctx)
         # Discard activations now that we've consumed them.
         self._captured_activations.clear()
+        # Roll cross-step weight snapshots forward (v1.3 training-dynamics).
+        # copy=True is load-bearing: ctx.weights holds detached *views* of the live
+        # params, and .cpu() is a no-op on a CPU model, so without a forced copy the
+        # snapshot would alias the live storage and silently track in-place optimizer
+        # updates — making update_delta/direction_cosine identically zero on CPU.
+        self._prev_prev_weights = self._prev_weights
+        self._prev_weights = {
+            name: t.detach().to("cpu", copy=True) for name, t in ctx.weights.items()
+        }
 
     def _enabled(self, name: str) -> bool:
         return self.recipe.enabled.get(name, True)
@@ -650,6 +667,34 @@ class Recorder:
                         self._writer.add_histogram(
                             f"spectral/per_param/{mod_name}/sv_histogram",
                             _sv(w), ctx.step)
+            elif name == "update_delta":
+                if not self._prev_weights:
+                    continue  # first emit step — no prior snapshot yet
+                deltas = _w.update_delta(ctx.weights, self._prev_weights)
+                for mod_name, val in deltas.items():
+                    self._writer.add_scalar(
+                        f"weight/update_delta/{mod_name}", val, ctx.step
+                    )
+            elif name == "direction_cosine":
+                if not self._prev_weights or not self._prev_prev_weights:
+                    continue  # need two prior snapshots; skip first two emit steps
+                cosines = _w.direction_cosine(
+                    ctx.weights, self._prev_weights, self._prev_prev_weights
+                )
+                for mod_name, val in cosines.items():
+                    self._writer.add_scalar(
+                        f"weight/direction_cosine/{mod_name}", val, ctx.step
+                    )
+            elif name == "rank_trajectory":
+                if not self._prev_weights:
+                    continue  # first emit step
+                # Reuse the per-step SVD cache (_sv) to avoid a redundant SVD.
+                # Equivalent to rank_trajectory([prev, now])[-1] but zero extra SVD cost.
+                for mod_name, w in ctx.weights.items():
+                    rank_now = _w._effective_rank_from_sv(_sv(w))
+                    self._writer.add_scalar(
+                        f"weight/rank_trajectory/{mod_name}", rank_now, ctx.step
+                    )
             else:
                 fn = _WEIGHT_DIAGS.get(name)
                 if fn is None:
