@@ -286,7 +286,7 @@ Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns
 >
 > Because the probe requires a second forward pass, it adds overhead proportional to
 > the probe batch size. It is off by default so it adds zero overhead at default
-> settings; see §10 for the pending GPU cost characterisation.
+> settings; see §10 for measured overhead.
 
 > **ACDC run/sweep kwargs (v1.4).** `ACDCRunner.run()` and `.sweep()` gained two new
 > optional kwargs:
@@ -492,23 +492,24 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 
 The most likely 6-month failure mode is "this is cool, but it doubled my training time." The design defends against this with explicit constraints:
 
-- **Wall-clock budget (design target):** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead SHOULD be ≤10% of baseline training step time on a 50M-param transformer. This is the design target and CI regression gate; it is **not yet validated on GPU** (see below).
+- **Wall-clock budget (design target):** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead SHOULD be ≤10% of baseline training step time on a 50M-param transformer. This is the design target and CI regression gate. **Validated on GPU at a realistic training step: +5.3%** (RTX 5080, batch 16 × seq 512) — see measurements below.
 - **Per-diagnostic toggle:** every entry in `weight_diagnostics` / `activation_diagnostics` / `gradient_diagnostics` can be disabled via recipe override. The expensive ones (`heavy_tail_alpha`, `singular_values` on large weights) are documented as such.
 - **Subsampling knobs:** weight-space diagnostics support `max_dim` to truncate SVD to top-k singular values, and `sample_axis` to compute on a random column subset. Default `max_dim=512` keeps SVD cost bounded on wide LLM matrices. In v1.4, `singular_values` gained a `seed` kwarg (CPU-deterministic subsample, fixing the unseeded-randperm determinism violation) and a `use_gram='auto'` fast path (eigvalsh(W^T W) for strongly-rectangular matrices); `condition_number` always uses the full SVD to preserve exact max/min singular-value ratio. The Gram fast path reduces SVD cost for matrices where columns << rows (narrowly-rectangular weight matrices not wide enough to trigger the >512 subsample); matrices wider than max_dim=512 are subsampled and fall back to `svdvals` regardless.
 - **Lazy hooks:** activation hooks only run the forward pass capture on the emit step (every N steps). The hook checks `self._should_capture()` and is a no-op otherwise, avoiding per-step allocation cost.
 - **Async writer option:** `MetricWriter` adapters MAY implement non-blocking writes (a background thread draining a queue). The TB adapter does this by default; tests use the synchronous null writer.
-- **Drift probe overhead:** the v1.4 `drift_probe` diagnostic requires a second forward pass on `probe_batch` per emit step. It is **off by default** (`enabled={"drift_probe": False}`) and adds zero overhead at default settings. Its per-emit cost is proportional to probe batch size and has not yet been characterised on GPU; benchmarking should be done alongside the §10 GPU re-validation below.
+- **Drift probe overhead:** the v1.4 `drift_probe` diagnostic requires a second forward pass on `probe_batch` per emit step. It is **off by default** (`enabled={"drift_probe": False}`) and adds zero overhead at default settings. Its per-emit cost is proportional to probe batch size and is not separately characterised here — benchmark it if you enable it in production.
 
-**On-record measurements (CPU only, v0.2.0a0 snapshot, 88M-param decoder):**
+**Measured overhead** (88M-param decoder, full `llm` recipe, `every_n_steps=200`):
 
-| run | baseline | instrumented | overhead |
-| --- | -------: | -----------: | -------: |
-| 1   |  23.90 s |      27.46 s |   +14.9% |
-| 2   |  21.15 s |      24.26 s |   +14.7% |
+| device | training step | baseline | instrumented | overhead |
+| --- | --- | -------: | -----------: | -------: |
+| RTX 5080 | batch 16 × seq 512 (8192 tok) | 124.0 s | 130.6 s | **+5.3%** |
+| RTX 5080 | batch 4 × seq 64 (256 tok) | 25.2 s | 36.5 s | +45.3% |
+| CPU 16-core (v0.2.0a0) | batch 4 × seq 64 (256 tok) | 23.9 s | 27.5 s | +14.9% |
 
-These CPU numbers **exceed the ≤10% budget** (+14.9% / +14.7%). However, CPU measurements are a pessimistic proxy for the GPU production scenario the budget targets: on GPU, the training step is dominated by compute (matrix multiplications), while `circuitry`'s diagnostic cost is largely independent of training-step speed — so the overhead ratio shrinks relative to the same absolute diagnostic cost. Run-to-run noise on CPU is also high (±5% typical, occasional 30% spikes when the bench shares cores). **GPU re-validation on the rtx host (via Ray) is still pending (A3).**
+**At a realistic training step the budget holds: +5.3% on GPU** (RTX 5080, batch 16 × seq 512), within the ≤10% target. The overhead ratio is dominated by the roughly *fixed* per-emit diagnostic cost (the shared SVD set + `logit_lens_kl` + `induction_score`, ≈1.3 s/emit on this model/GPU), so it is highly sensitive to how heavy the baseline step is. At the tiny default batch (256 tokens, ≈12 ms/step on GPU) that same fixed cost balloons the ratio to +45%; CPU's slow-but-cheap step lands at +15%. Production training (large batches, hundreds of ms/step) amortises the fixed cost well — which the realistic GPU measurement confirms. On small/fast steps, raise `every_n_steps` or drop the expensive diagnostics via `Recipe.disable` / `Recipe.only`.
 
-The bench harness default cadence (`every_n_steps=25`) used in earlier GPU experiments is more pessimistic than the budget scenario (`every_n_steps=200`): at cadence 25 the emission cost amortises over only 25 steps rather than 200, so the measured overhead ratio is ~8× worse than the budget scenario even at identical per-emission cost.
+(The bench harness defaults to `every_n_steps=25` — 8× more pessimistic than the budget's 200 — and `--batch-size 4 --seq-len 64`. Pass `--every-n-steps 200 --batch-size 16 --seq-len 512` to reproduce the budget-scenario row above.)
 
 Reference benchmark workload: a 50M-param decoder-only transformer on synthetic data, 100 steps, with and without `circuitry` attached, full LLM recipe, `every_n_steps=200`.
 

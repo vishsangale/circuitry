@@ -13,15 +13,16 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
 
 ## v1.4.x follow-ups / pending validation
 
-- [ ] **[val] §10 GPU budget re-validation (A3).** Run `scripts/bench_50m.py` on the
-  `rtx` host (via Ray) at `every_n_steps=200` with the full LLM recipe to get the first
-  GPU overhead measurement. The only on-record numbers are CPU (+14.9% / +14.7% at
-  v0.2.0a0), which exceed the ≤10% budget and are CPU-inflated. GPU re-validation is
-  the primary open §10 task — do not claim the budget is met until this runs.
-- [ ] **[val] Drift probe forward-pass cost on GPU.** When the §10 GPU re-validation
-  runs, also benchmark the opt-in drift probe (`Recipe.probe_batch` set, `"drift_probe"`
-  enabled) to characterise the second-forward-pass cost at representative probe batch
-  sizes. This should be a parallel measurement in the same Ray job.
+- [x] **[val] §10 GPU budget re-validation (A3).** Done (2026-05-30, RTX 5080, 88M decoder,
+  full llm recipe, `every_n_steps=200`): **+5.3% at a realistic step (batch 16 × seq 512)** —
+  within the ≤10% budget. The tiny default batch (4 × 64) shows +45% because the baseline step
+  is ~10× cheaper and the fixed per-emit diagnostic cost dominates the ratio. §10 + README
+  updated. (Also surfaced + fixed a GPU device-mismatch crash in update_delta/direction_cosine,
+  shipped as v1.4.1.)
+- [ ] **[val] Drift probe forward-pass cost on GPU.** Not yet characterised — the drift probe
+  is off by default so it wasn't in the A3 run. Benchmark the opt-in second forward pass
+  (`Recipe.probe_batch` set, `"drift_probe"` enabled) at representative probe batch sizes when
+  someone enables it in production.
 
 ## v1.3.x follow-ups
 

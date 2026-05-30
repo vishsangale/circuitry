@@ -61,21 +61,22 @@ circuitry compare runs/run_a runs/run_b
 
 ## Performance
 
-Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer. This is the design budget (see `docs/design.md` §10); **it has not yet been validated on GPU**.
+Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a ~50M-param decoder transformer. **At a realistic training step the budget holds — +5.3% on GPU** (RTX 5080, 88M-param decoder, batch 16 × seq 512, full `llm` recipe).
 
-**Only on-record measurements are CPU (v0.2.0a0 snapshot).** 88M-param decoder, 100 steps, `every_n_steps=200`, CPU on a 16-core consumer machine (`scripts/bench_50m.py --n-layers 8 --d-model 768`):
+Measured overhead (88M decoder, `every_n_steps=200`):
 
-| run | baseline | instrumented | overhead |
-| --- | -------: | -----------: | -------: |
-| 1   |  23.90 s |      27.46 s |   +14.9% |
-| 2   |  21.15 s |      24.26 s |   +14.7% |
+| device | training step | overhead |
+| --- | --- | -------: |
+| RTX 5080 | batch 16 × seq 512 (8192 tok) | **+5.3%** |
+| RTX 5080 | batch 4 × seq 64 (256 tok) | +45.3% |
+| CPU 16-core (v0.2.0a0) | batch 4 × seq 64 | +14.9% |
 
-These numbers **exceed the ≤10% budget**. CPU measurements are a pessimistic proxy for the GPU production scenario the budget targets: on GPU the training step is dominated by fast matrix-multiply compute, so `circuitry`'s diagnostic overhead amortises more favourably. Run-to-run noise on CPU is also high (±5% typical). The v1.4 Gram fast path (`use_gram='auto'`) reduces SVD cost for strongly-rectangular weight matrices that are not wide enough to trigger the >512-column subsample; the drift probe is off by default and adds zero overhead at default settings. GPU re-validation on the rtx host (via Ray) is still pending.
+The overhead is dominated by the roughly *fixed* per-emit diagnostic cost (the SVD set + logit-lens + induction-score), so the **ratio** is very sensitive to how heavy the baseline step is: a tiny 256-token step on GPU (~12 ms) inflates it to +45%, while a realistic 8192-token step amortises it to +5.3%. On small/fast steps, raise `every_n_steps` or trim diagnostics with `Recipe.disable` / `Recipe.only`. The v1.4 Gram fast path (`use_gram='auto'`) helps narrowly-rectangular matrices; the drift probe is off by default (zero overhead at default settings).
 
-Run the harness yourself:
+Run the harness yourself (defaults to the tiny batch; pass a realistic one for the budget scenario):
 
 ```bash
-.venv/bin/python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
+.venv/bin/python scripts/bench_50m.py --device cuda --steps 1000 --every-n-steps 200 --batch-size 16 --seq-len 512
 ```
 
 ## Known limits

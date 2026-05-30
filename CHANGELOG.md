@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] — 2026-05-30
+
+### Changed
+- `scripts/bench_50m.py` gained `--batch-size` / `--seq-len` (default 4 / 64, unchanged) so the
+  §10 overhead can be measured at a realistic training step rather than the tiny default.
+
+### Documentation
+- **§10 performance budget validated on GPU.** First GPU measurement (RTX 5080, 88M-param
+  decoder, full `llm` recipe, `every_n_steps=200`): **+5.3% at a realistic training step**
+  (batch 16 × seq 512) — within the ≤10% budget. The overhead ratio is dominated by the
+  roughly-fixed per-emit diagnostic cost (SVD set + logit-lens + induction-score), so it is
+  highly sensitive to baseline step weight: the tiny default batch (4 × 64, ~12 ms/step on GPU)
+  inflates it to +45%. `docs/design.md` §10 and the README Performance section now report the
+  measured numbers and the small-/fast-step caveat instead of "GPU validation pending".
+
 ## [1.4.1] — 2026-05-30
 
 ### Fixed
