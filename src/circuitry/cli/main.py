@@ -7,6 +7,7 @@ import sys
 
 from circuitry import __version__
 from circuitry.recipes import list_recipes
+from circuitry.recorder.compare import build_compare_report
 from circuitry.recorder.report import build_report
 
 
@@ -17,7 +18,18 @@ def _cmd_list_recipes(_: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    out = build_report(run_dir=args.run, out_path=args.out)
+    out = build_report(run_dir=args.run, out_path=args.out, compact=args.compact)
+    print(f"wrote {out}")
+    return 0
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    out = build_compare_report(
+        run_a=args.run_a,
+        run_b=args.run_b,
+        out_path=args.out,
+        compact=args.compact,
+    )
     print(f"wrote {out}")
     return 0
 
@@ -49,7 +61,23 @@ def main(argv: list[str] | None = None) -> int:
     p_report = sub.add_parser("report", help="build markdown report from a run")
     p_report.add_argument("--run", required=True, help="run directory")
     p_report.add_argument("--out", default=None, help="report output path")
+    p_report.add_argument(
+        "--compact", action="store_true", default=False,
+        help="emit only Summary + Flags, suppress per-tag tables",
+    )
     p_report.set_defaults(func=_cmd_report)
+
+    p_compare = sub.add_parser(
+        "compare", help="compare two runs at family/diagnostic granularity"
+    )
+    p_compare.add_argument("run_a", help="first run directory")
+    p_compare.add_argument("run_b", help="second run directory")
+    p_compare.add_argument("--out", default=None, help="output path (default: run_a/../compare.md)")
+    p_compare.add_argument(
+        "--compact", action="store_true", default=False,
+        help="accepted for API symmetry; currently a no-op for compare",
+    )
+    p_compare.set_defaults(func=_cmd_compare)
 
     p_scan = sub.add_parser("scan", help="retrospective scan of checkpoints")
     p_scan.add_argument("--run", required=True)

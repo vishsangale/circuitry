@@ -31,7 +31,8 @@ def test_graddrop_geq_plain_magnitude(linear_mlp_toy):
 
 def test_no_param_grad_leak_graddrop(linear_mlp_toy):
     for p in linear_mlp_toy.parameters():
-        p.requires_grad_(True); p.grad = None
+        p.requires_grad_(True)
+        p.grad = None
     resolver = HFSiteResolver(n_heads=1, d_model=linear_mlp_toy.d, d_mlp=linear_mlp_toy.d,
                               layer_pattern="layers.{L}")
     AtPRunner(linear_mlp_toy, resolver).run(

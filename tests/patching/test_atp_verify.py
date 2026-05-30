@@ -15,10 +15,10 @@ def test_verify_top_k_matches_direct_patch(linear_attn_toy):
                               d_mlp=linear_attn_toy.d, layer_pattern="layers.{L}")
     runner = AtPRunner(linear_attn_toy, resolver)
     result = runner.run(clean_inputs=clean, corrupted_inputs=corrupted,
-                        metric=lambda l: logit_diff_t(l, 0, 1), neurons=False)
+                        metric=lambda lg: logit_diff_t(lg, 0, 1), neurons=False)
     verified = result.verify_top_k(
         k=3, clean_inputs=clean, corrupted_inputs=corrupted,
-        metric=lambda l: logit_diff_t(l, 0, 1), resolver=resolver, runner=runner)
+        metric=lambda lg: logit_diff_t(lg, 0, 1), resolver=resolver, runner=runner)
     assert len(verified) == 3
     for node, (atp_score, true_effect) in verified.items():
         assert isinstance(atp_score, float) and isinstance(true_effect, float)

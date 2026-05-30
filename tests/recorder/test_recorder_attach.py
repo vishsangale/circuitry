@@ -835,7 +835,7 @@ def _attn_entropy_model(output_attentions_default=False):
     config.output_attentions (not a forward kwarg) — exactly the wrapper shape
     that broke the old kwarg-injection."""
     import types
-    import torch
+
 
     d_model, n_heads = 8, 2
 

@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-05-21
+**Last updated:** 2026-05-30
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -16,13 +16,13 @@ The library bundles primitives that get re-implemented project-by-project (effec
 
 ### Naming clarity
 
-`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. Lens-style and attribution primitives (logit lens, activation patching, SAE probes) are on the future-work list — today's surface is statistical and modality-agnostic. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
+`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6) and SAE-reconstruction metrics (`circuitry.sae`) have since shipped. Tuned lens and SAE-feature circuit extraction remain future work. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
 
 ### Non-goals
 
-- We do **not** rebuild SAE training (SAELens does this well).
-- We do **not** rebuild causal interventions / activation patching (pyvene, nnsight cover it).
+- We do **not** rebuild SAE training (SAELens does this well). SAE *reconstruction* metrics shipped in v0.9 (`circuitry.sae`); training is still out of scope.
 - We do **not** attempt to be a complete post-hoc interp framework. We focus on monitoring + diagnostics.
+- Causal interventions / activation patching shipped as `circuitry.patching` in v1.0 (§4.6) and are now in scope.
 
 ## 2. Decisions locked in brainstorming
 
@@ -166,6 +166,7 @@ Invariants for everything in `core/`:
 
 ```python
 from circuitry import Recorder, scan_run, build_report
+from circuitry.recorder.compare import compare_runs, build_compare_report
 
 recorder = Recorder(
     model,
@@ -189,18 +190,24 @@ scan_run(
 build_report(
     run_dir="runs/my_run",
     out_path="runs/my_run/inspect/report.md",
+    compact=False,   # True → Summary + Flags only; suppresses per-tag tables (v1.2)
 )
+
+# Compare two runs at family/diagnostic granularity (v1.2)
+deltas = compare_runs("runs/run_a", "runs/run_b")   # list[FamilyDelta]
+build_compare_report("runs/run_a", "runs/run_b", out_path="runs/compare.md")
 ```
 
 ### 4.3 CLI
 
 ```bash
-circuitry scan   --run runs/my_run --recipe llm
-circuitry report --run runs/my_run
+circuitry scan    --run runs/my_run --recipe llm
+circuitry report  --run runs/my_run [--compact]
+circuitry compare run_a run_b [--out path] [--compact]
 circuitry list-recipes
 ```
 
-`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `findings.json` produced by `scan`.
+`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2).
 
 ### 4.4 `Recipe` and hook escape hatches
 
@@ -214,12 +221,15 @@ class Recipe:
     gradient_diagnostics: list[str]
     custom: list[DiagnosticFn] = field(default_factory=list)
     expected_min_matches: dict[str, int] = field(default_factory=dict)  # pattern → min modules
+    enabled: dict[str, bool] = field(default_factory=dict)  # name → False to suppress; absent = True
     module_prefix: str | None = None  # if set, only modules under this dotted prefix are matched
 ```
 
 Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e.g. `get_recipe("llm").with_prefix("model.language_model")` for multimodal HF models). Returns a new `Recipe` via `dataclasses.replace`; the original is not mutated. Latest-wins: calling `.with_prefix("a").with_prefix("b")` yields `module_prefix="b"`. If `expected_min_matches` is set, lower the thresholds after scoping — whole-model counts don't hold after a prefix filter.
 
 Use `Recipe.with_sae(mapping)` (v0.9) to attach SAE checkpoints: `mapping` is a `dict[str, tuple[str, str]]` of `module_name → (release, sae_id)`. Returns a new `Recipe` with `sae_checkpoints` populated. SAE checkpoints are loaded lazily at `attach()` time; the user must also add `"sae_reconstruction"` to `activation_diagnostics` to incur per-step encode+decode cost.
+
+Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns a new `Recipe` with those names set to `False` in `enabled`. Use `Recipe.only(names)` to keep only the listed diagnostics and disable the rest. Both raise `ValueError` on any name not in `weight_diagnostics + activation_diagnostics + gradient_diagnostics`; custom `DiagnosticFn` callables are not name-addressable and are unaffected.
 
 `HookPoint` supports three target specifications:
 
@@ -387,10 +397,10 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 ## 8. Explicitly out of scope today
 
 - SAE training (interop with SAELens later if demand surfaces).
-- Causal interventions / activation patching (pyvene, nnsight already cover this).
 - JAX / Flax support.
 - DDP / FSDP-aware reductions — current releases are single-process; non-zero ranks no-op. See §11 for the additive future-release path.
-- Logit lens / tuned lens beyond a stretch in `core/lens.py`.
+- Logit lens / tuned lens beyond `core/lens.py`'s `logit_lens_kl`; SAE-feature circuit extraction (SAE *reconstruction* metrics shipped in v0.9 and are in scope; full circuit extraction over SAE features is future work).
+- **Note:** causal interventions / activation patching shipped as the `circuitry.patching` subsystem in v1.0 — see §4.6. It is no longer out of scope.
 - Web dashboard. TB + markdown report is the UI.
 - Differentiability guarantees through diagnostics. Primitives may use non-differentiable ops (`torch.linalg.svd`).
 

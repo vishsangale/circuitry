@@ -20,6 +20,10 @@ from __future__ import annotations
 import json
 import pathlib
 from collections import defaultdict
+from collections.abc import Callable
+
+from circuitry.recorder._metrics import group as _group
+from circuitry.recorder._metrics import stats as _stats
 
 HERO_SECTIONS = frozenset({
     "weight/effective_rank",
@@ -36,16 +40,68 @@ HERO_SECTIONS = frozenset({
 
 GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
 
+# Declarative flag rules: (section_prefix, flag_label, predicate(last, signed), message_template)
+# NOTE: ``signed = last - first`` (signed trend), NOT the range-delta from _stats.
+# The _stats ``delta`` field is the unsigned range (vmax - vmin) and must NOT be used
+# for trend-direction predicates (rank_collapsing / dead_rising would never fire).
+FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
+    (
+        "activation/dead_fraction",
+        "dead_rising",
+        lambda last, signed: signed > 0 and last > 0.05,
+        "dead_fraction rising (last={last:.3f}, Δ={signed:+.4g})",
+    ),
+    (
+        "weight/effective_rank",
+        "rank_collapsing",
+        lambda last, signed: signed < 0 and last < 10.0,
+        "effective_rank collapsing (last={last:.2f}, Δ={signed:+.4g})",
+    ),
+    (
+        "grad/global",
+        "grad_norm_spiking",
+        lambda last, signed: signed > 0 and last > 10.0,
+        "grad_norm spiking (last={last:.4g}, Δ={signed:+.4g})",
+    ),
+    (
+        "weight/attention_head_rank",
+        "attn_rank_low",
+        lambda last, signed: last < 2.0,
+        "attention_head_rank critically low (last={last:.2f})",
+    ),
+]
 
-def _group(rows: list[dict]) -> dict[str, list[tuple[int, float]]]:
-    by_tag: dict[str, list[tuple[int, float]]] = defaultdict(list)
-    for r in rows:
-        if r.get("kind") != "scalar":
-            continue
-        by_tag[r["tag"]].append((int(r["step"]), float(r["value"])))
-    for v in by_tag.values():
-        v.sort()
-    return by_tag
+
+def _build_flags(
+    grouped: dict[str, list[tuple[int, float]]],
+    step_count: int,
+) -> list[str]:
+    """Return markdown lines for the ## Flags block, or [] if step_count <= 1."""
+    if step_count <= 1:
+        return []
+
+    fired: list[tuple[str, str, str]] = []  # (prefix, flag_label, detail)
+    for prefix, flag_label, predicate, msg_template in FLAG_RULES:
+        # Collect all tags whose section matches this prefix.
+        for tag, series in grouped.items():
+            section, _ = _section_and_row(tag)
+            if section != prefix:
+                continue
+            first, last, _vmin, _vmax, _delta = _stats(series)
+            signed = last - first  # signed trend (last − first), NOT the range delta
+            if predicate(last, signed):
+                detail = msg_template.format(last=last, signed=signed)
+                fired.append((prefix, flag_label, detail))
+                break  # one flag per rule is enough; stop scanning tags for this rule
+
+    lines: list[str] = ["## Flags", "", "| family | flag | detail |", "| --- | --- | --- |"]
+    if fired:
+        for prefix, flag_label, detail in fired:
+            lines.append(f"| {prefix} | {flag_label} | {detail} |")
+    else:
+        lines.append("| — | — | no flags |")
+    lines.append("")
+    return lines
 
 
 def _section_and_row(tag: str) -> tuple[str, str]:
@@ -61,13 +117,6 @@ def _section_and_row(tag: str) -> tuple[str, str]:
     if len(parts) == 2:
         return parts[0], parts[1]
     return "/".join(parts[:2]), "/".join(parts[2:])
-
-
-def _stats(series: list[tuple[int, float]]) -> tuple[float, float, float, float, float]:
-    """Return (first, last, vmin, vmax, delta) over a sorted time series."""
-    vals = [v for _, v in series]
-    vmin, vmax = min(vals), max(vals)
-    return vals[0], vals[-1], vmin, vmax, vmax - vmin
 
 
 def _render_section(
@@ -137,6 +186,8 @@ def _render_section(
 def build_report(
     run_dir: str | pathlib.Path,
     out_path: str | pathlib.Path | None = None,
+    *,
+    compact: bool = False,
 ) -> pathlib.Path:
     run_dir = pathlib.Path(run_dir)
     out_path = pathlib.Path(out_path) if out_path else run_dir / "inspect" / "report.md"
@@ -164,7 +215,7 @@ def build_report(
     lines.append("")
 
     matched_path = run_dir / "circuitry" / "matched_modules.txt"
-    if matched_path.exists():
+    if not compact and matched_path.exists():
         lines.append("## Matched modules")
         lines.append("")
         lines.append("```")
@@ -201,6 +252,13 @@ def build_report(
             "training-dynamics signal, run multiple steps."
         )
     lines.append("")
+
+    # ## Flags verdict block — inserted after ## Summary, gated on step_count > 1.
+    lines.extend(_build_flags(grouped, step_count))
+
+    if compact:
+        out_path.write_text("\n".join(lines))
+        return out_path
 
     # Attach summary — written by Recorder.attach(); skip silently if absent (older runs).
     attach_summary_path = run_dir / "circuitry" / "attach_summary.json"

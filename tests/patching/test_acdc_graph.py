@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from circuitry.patching.graph import (
-    Node, build_graph, reverse_topo_readers, edge_sort_key,
+    Node,
+    build_graph,
+    edge_sort_key,
+    reverse_topo_readers,
 )
 
 

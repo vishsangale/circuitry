@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-05-30
+
+### Added
+- **`Recipe.disable(names)` / `Recipe.only(names)`** selection helpers
+  (`recipes/__init__.py`). Both return a new `Recipe` via `dataclasses.replace`,
+  writing into the existing `enabled: dict[str, bool]` field. `disable` marks each
+  name `False`; `only` disables every name *not* in the list. Fail-fast: unknown
+  name → `ValueError` at construction (not silently at step time). Custom
+  `DiagnosticFn` callables are not name-addressable and are unaffected.
+- **`build_report` per-family `## Flags` verdict block** (`recorder/report.py`).
+  Declarative `FLAG_RULES` table checks four families (`activation/dead_fraction`,
+  `weight/effective_rank`, `grad/global`, `weight/attention_head_rank`) using
+  signed trend (last − first). Block suppressed when `step_count ≤ 1` (no
+  false alarms on single-step or static runs). Renders "no flags" row when all
+  predicates are clear.
+- **`build_report` compact mode** (`recorder/report.py`, `cli/main.py`).
+  `build_report(..., compact=True)` renders only the header, `## Summary`, and
+  `## Flags` blocks; suppresses `## Matched modules`, per-tag `## …` table
+  sections, and the `<details>` advanced-metrics block. CLI: `circuitry report
+  --compact`.
+- **`circuitry compare run_a run_b`** CLI subcommand + `compare_runs` /
+  `build_compare_report` in `circuitry.recorder.compare` (`recorder/compare.py`,
+  new; `recorder/_metrics.py` shared helpers). Compares two runs at
+  family/diagnostic granularity (first two tag segments); per-module comparison is
+  intentionally omitted (cross-architecture module-name mismatch makes it
+  ill-posed). Returns one `FamilyDelta` per (section, diagnostic) present in
+  either run; families absent from one side get `NaN` last values. Trend direction
+  computed from intra-run signed delta (last − first). Robust to a missing,
+  empty, or malformed `metrics.jsonl` (clear `ValueError` rather than a silent
+  all-`NaN` report or a bare traceback); `trend_agrees` is `False` when a family
+  is present on only one side.
+
+### Changed
+- **`ruff` pinned to `==0.15.15`** (was `>=0.4`) in the `dev` extra. The unpinned
+  range silently drifted newer ruff lint rules into CI; the pin makes `ruff check
+  src tests` deterministic. Cleared the pre-existing rot it had surfaced in
+  `tests/patching` / `tests/recorder` (import sorting, unused imports, ambiguous
+  `l`, a semicolon compound statement; the `pytest.importorskip` E402 pattern via
+  `[tool.ruff.lint.per-file-ignores]`).
+
+### Docs
+- `docs/design.md`: §4.2 documents `compact` kwarg on `build_report` and the new
+  `compare_runs` / `build_compare_report` public surface; §4.3 adds the
+  `circuitry compare` CLI line + `--compact` flag and corrects the stale
+  `findings.json` reference (scan writes `metrics.jsonl` when `writer="jsonl"`,
+  not a separate `findings.json`); §4.4 adds `enabled` field and `disable` /
+  `only` to the `Recipe` code block and documents them in prose; §1 ("Naming
+  clarity" + non-goals) and §8 reconciled so the shipped activation-patching
+  pillar (v1.0, §4.6) and SAE reconstruction metrics are no longer listed as
+  out-of-scope. "Last updated" bumped to 2026-05-30.
+- `README.md`: status `v0.3.0 (alpha)` → `v1.2.0 (beta)`; scope statement updated
+  (activation patching + SAE shipped); CLI gains `circuitry compare` and `report
+  --compact`; stale `findings.json` → `metrics.jsonl`; renamed primitive
+  `layer_norm` → `grad_norm_per_module`; new patching/attribution + ergonomics
+  bullets.
+- `pyproject.toml` classifier: `Development Status :: 3 - Alpha` →
+  `4 - Beta`.
+
 ## [1.1.0] — 2026-05-26
 
 ### Fixed

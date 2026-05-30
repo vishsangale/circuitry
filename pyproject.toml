@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "circuitry"
-version = "1.1.0"
+version = "1.2.0"
 description = "Mechanistic-interpretability diagnostics for PyTorch — live during training or post-hoc on a checkpoint (LLM / vision / recsys)."
 readme = "README.md"
 license = "MIT"
@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Vishwanath Sangale" }]
 requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -31,7 +31,7 @@ dev = [
     "pytest>=8",
     "pytest-benchmark>=4",
     "import-linter>=2",
-    "ruff>=0.4",
+    "ruff==0.15.15",  # pinned: unpinned ruff drifts new lint rules into CI (v1.2.0)
 ]
 
 [project.scripts]
@@ -57,3 +57,9 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# These tests guard an optional dep with pytest.importorskip(), which must run
+# before the dependent imports — so module-level imports legitimately follow it.
+"tests/patching/test_atp_qk.py" = ["E402"]
+"tests/patching/test_atp_tl.py" = ["E402"]

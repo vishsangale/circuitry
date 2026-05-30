@@ -69,6 +69,50 @@ class Recipe:
         """
         return dataclasses.replace(self, sae_checkpoints=mapping)
 
+    def disable(self, names: list[str]) -> Recipe:
+        """Return a new Recipe with each name in *names* disabled.
+
+        *names* must be a subset of the recipe's own
+        ``weight_diagnostics + activation_diagnostics + gradient_diagnostics``.
+        Raises ``ValueError`` for any name not present in those lists.
+
+        Custom ``DiagnosticFn`` callables in ``self.custom`` are not
+        name-addressable and are unaffected by this helper.
+        """
+        _all = set(
+            self.weight_diagnostics + self.activation_diagnostics + self.gradient_diagnostics
+        )
+        unknown = set(names) - _all
+        if unknown:
+            raise ValueError(
+                f"Recipe {self.name!r}: unknown diagnostic name(s) {sorted(unknown)}. "
+                f"Available: {sorted(_all)}"
+            )
+        new_enabled = {**self.enabled, **{n: False for n in names}}
+        return dataclasses.replace(self, enabled=new_enabled)
+
+    def only(self, names: list[str]) -> Recipe:
+        """Return a new Recipe running *only* the diagnostics in *names*.
+
+        The complement (everything in
+        ``weight_diagnostics + activation_diagnostics + gradient_diagnostics``
+        not in *names*) is disabled. Raises ``ValueError`` for any name
+        not present in those lists.
+
+        Custom ``DiagnosticFn`` callables are unaffected.
+        """
+        _all = set(
+            self.weight_diagnostics + self.activation_diagnostics + self.gradient_diagnostics
+        )
+        unknown = set(names) - _all
+        if unknown:
+            raise ValueError(
+                f"Recipe {self.name!r}: unknown diagnostic name(s) {sorted(unknown)}. "
+                f"Available: {sorted(_all)}"
+            )
+        new_enabled = {**self.enabled, **{n: (n in set(names)) for n in _all}}
+        return dataclasses.replace(self, enabled=new_enabled)
+
 
 _REGISTRY: dict[str, Recipe] = {}
 

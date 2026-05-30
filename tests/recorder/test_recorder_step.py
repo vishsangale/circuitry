@@ -289,6 +289,7 @@ def test_attention_entropy_warns_once_on_unnormalized_rows(tmp_path, caplog):
     warns once that entropy is over the normalized shape."""
     import logging
     import types
+
     import torch
     import torch.nn as nn
 
@@ -360,6 +361,7 @@ def test_attention_entropy_warns_once_on_unnormalized_rows(tmp_path, caplog):
 
 def _lens_model_and_recipe(lens_max_tokens=None):
     import torch.nn as nn
+
     from circuitry import HookPoint, Recipe, TensorSource
 
     d_model, vocab = 8, 16
@@ -399,6 +401,7 @@ def _lens_model_and_recipe(lens_max_tokens=None):
 
 def test_lens_max_tokens_caps_sequence_dim(tmp_path, monkeypatch):
     import torch
+
     import circuitry.core.lens as lens_mod
     from circuitry import Recorder
 
@@ -422,7 +425,9 @@ def test_lens_max_tokens_caps_sequence_dim(tmp_path, monkeypatch):
 
 def test_logit_lens_kl_oom_is_survived(tmp_path, monkeypatch, caplog):
     import logging
+
     import torch
+
     import circuitry.core.lens as lens_mod
     from circuitry import Recorder
 
@@ -445,8 +450,9 @@ def test_logit_lens_kl_oom_is_survived(tmp_path, monkeypatch, caplog):
 
 
 def test_non_oom_runtimeerror_still_propagates(tmp_path, monkeypatch):
-    import torch
     import pytest
+    import torch
+
     import circuitry.core.lens as lens_mod
     from circuitry import Recorder
 

@@ -1,7 +1,7 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through v0.9.2 (2026-05-23);
-all tags + GitHub Releases v0.1.0 → v0.9.2 are published. The design contract is
+Tracking doc for open work and future improvements. Released through v1.1.0 (2026-05-26);
+all tags + GitHub Releases v0.1.0 → v1.1.0 are published. v1.2.0 is in progress on `main`. The design contract is
 `docs/design.md` — any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
@@ -50,14 +50,21 @@ grouping is a proposal, not yet decided.
 
 **Ergonomics (informs the v1.0 surface):**
 
-- [ ] **[feat] No easy way to disable / select a single diagnostic.** Dropping `logit_lens_kl`
+- [x] **[feat] No easy way to disable / select a single diagnostic.** Dropping `logit_lens_kl`
   required `dataclasses.replace(get_recipe("llm"), activation_diagnostics=[…])`. Fix: a
-  `disable=[...]` / `only=[...]` argument on `Recorder` / recipe.
-- [ ] **[feat] `report` is a flat dump with no summary; no A/B compare.** A live run renders 80 KB+
+  `disable=[...]` / `only=[...]` argument on `Recorder` / recipe. — Done (v1.2.0): `Recipe.disable(names)` and `Recipe.only(names)` methods added (`recipes/__init__.py`); immutable helpers over the existing `enabled` dict, fail-fast on unknown names, custom callables unaffected.
+- [x] **[feat] `report` is a flat dump with no summary; no A/B compare.** A live run renders 80 KB+
   enumerating every module × diagnostic × step — fine for one model, unusable for comparison. Fix:
   a top-of-report summary/verdict (per-family final value + trend + flags), a compact mode, and a
   `circuitry compare run_a run_b` (per-family deltas, seed aggregation) — otherwise every comparison
-  user re-writes a jsonl parser, as the reporter did.
+  user re-writes a jsonl parser, as the reporter did. — Done (v1.2.0): `build_report` gains a `## Flags` verdict block (declarative rules, gated on >1 step) + `compact=True` / `--compact` mode; `circuitry compare run_a run_b` subcommand added (`recorder/compare.py`: `compare_runs` / `build_compare_report`), family/diagnostic-granular deltas + trend agreement.
+- [ ] **[bug] `build_report` per-tag `Δ` column shows the unsigned *range* (`vmax − vmin`), not the
+  signed `last − first`.** Surfaced during the v1.2.0 review: a monotonically *decreasing* metric
+  (e.g. `effective_rank: 15 → 5`) renders `Δ = 10` in the table, reading like an increase. Pre-existing
+  (`_stats` in `recorder/_metrics.py`); the new v1.2 `## Flags` block and `compare` correctly use a signed
+  `last − first`, so the table is now the only place with range semantics. Deferred: fixing it changes
+  existing report output and the `test_report` golden expectations — schedule as a v1.2.x point-fix with a
+  test update, not folded into the feature release.
 
 **Trivial / docs (✅ SHIPPED in v0.9.2):**
 
