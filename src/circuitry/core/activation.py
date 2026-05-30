@@ -99,6 +99,252 @@ def token_similarity(h: torch.Tensor) -> torch.Tensor:
     return off_diag.mean()
 
 
+def repr_drift(
+    ref: torch.Tensor,
+    cur: torch.Tensor,
+    method: str = "linear_cka",
+    *,
+    max_samples: int = 256,
+    eps: float = 1e-10,
+    seed: int = 0,
+) -> float:
+    """Representational drift between reference and current activation tensors.
+
+    Parameters
+    ----------
+    ref, cur:
+        Activation tensors with the same shape semantics. Accepted shapes:
+        ``(n, d)``, ``(batch, seq, d)``, or any higher-rank tensor; all but
+        the last dimension are flattened into a single row dimension.
+    method:
+        Similarity kernel used to compute drift.  Three options:
+
+        ``"linear_cka"`` (default)
+            Linear CKA via column-centering: ``||Xc^T Yc||_F^2 /
+            (||Xc^T Xc||_F * ||Yc^T Yc||_F)``.  Invariant to orthogonal
+            rotation and isotropic rescaling — so LayerNorm-scale growth and
+            uniform LR-warmup scaling do **not** show up as drift.
+            Drift = ``1 - CKA``.
+
+        ``"cosine"``
+            Mean per-sample cosine similarity between matching rows of
+            ``ref`` and ``cur``.  Cheaper (O(n d)) but **not** invariant to
+            mean shifts: adding a constant offset to all rows of ``cur``
+            changes per-sample directions and therefore changes drift, even
+            though the relative geometry is unchanged.  Linear CKA's column-
+            centering makes it robust to such offsets.
+            Drift = ``(1 - mean_cosine) / 2`` (ranges in ``[0, 1]``:
+            identical→0, orthogonal→0.5, anti-correlated→1.0).
+
+        ``"rbf_cka"``
+            RBF-kernel CKA with median-heuristic bandwidth (no tunable
+            hyperparameter).  Drift = ``1 - CKA``.  More sensitive to
+            nonlinear structure than linear CKA; slightly more expensive.
+
+    max_samples:
+        Row cap before Gram computation.  CKA is O(n^2 d); subsampling
+        ``n`` rows to ``max_samples`` keeps cost bounded.  Rows are drawn
+        with a **seeded** generator (``seed``) so two calls with the same
+        inputs return the same value (CPU-deterministic).
+
+    Notes on minimum row counts
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ``"linear_cka"`` and ``"rbf_cka"`` require **at least 2 rows** after
+    flattening (column-centering collapses a single row to all-zeros).
+    A ``ValueError`` is raised if ``n < 2`` for these methods.
+    ``"cosine"`` works with any ``n >= 1``.
+    eps:
+        Denominator guard added to the CKA normalisation to prevent
+        division by zero on degenerate (all-zero / constant) layers.
+        When both inputs are degenerate the returned drift is ``0.0``
+        (convention: a dead layer has not drifted from itself).
+    seed:
+        Seed for the subsampling generator.  Has no effect when
+        ``n_rows <= max_samples`` (no subsampling occurs).
+
+    Returns
+    -------
+    float
+        Drift score in ``[0.0, 1.0]`` where ``0.0`` means identical
+        representation and larger values indicate more drift.  The output
+        is always finite (never NaN).
+
+    Notes
+    -----
+    All Gram products are accumulated in **float64** to prevent CKA values
+    from floating outside ``[0, 1]`` due to float32 rounding.  The output
+    is cast back to a Python ``float`` at the end.
+
+    This function is **pure**: no hooks, no logging, no ``.cuda()`` calls.
+    Device is taken from the input tensors.
+    """
+    _VALID_METHODS = {"linear_cka", "cosine", "rbf_cka"}
+    if method not in _VALID_METHODS:
+        raise ValueError(f"method must be one of {_VALID_METHODS!r}, got {method!r}")
+
+    # --- reshape to (n_rows, d_features) ---------------------------------
+    def _flatten(t: torch.Tensor) -> torch.Tensor:
+        if t.dim() == 1:
+            return t.unsqueeze(0)  # (1, d)
+        return t.reshape(-1, t.shape[-1])  # (n, d)
+
+    ref_2d = _flatten(ref)
+    cur_2d = _flatten(cur)
+
+    n = ref_2d.shape[0]
+    if n != cur_2d.shape[0]:
+        raise ValueError(
+            f"ref and cur must have the same number of rows after flattening; "
+            f"got {n} vs {cur_2d.shape[0]}"
+        )
+
+    if method in {"linear_cka", "rbf_cka"} and n < 2:
+        raise ValueError(
+            f"linear_cka/rbf_cka require >= 2 rows after flattening; got {n}"
+        )
+
+    # --- subsample rows if n > max_samples --------------------------------
+    if n > max_samples:
+        g = torch.Generator(device=ref_2d.device).manual_seed(seed)
+        idx = torch.randperm(n, device=ref_2d.device, generator=g)[:max_samples]
+        ref_2d = ref_2d[idx]
+        cur_2d = cur_2d[idx]
+
+    # promote to float64 for numerically stable Gram products
+    R = ref_2d.to(dtype=torch.float64)
+    C = cur_2d.to(dtype=torch.float64)
+
+    if method == "cosine":
+        return _drift_cosine(R, C, eps)
+    elif method == "linear_cka":
+        return _drift_linear_cka(R, C, eps)
+    else:  # rbf_cka
+        return _drift_rbf_cka(R, C, eps)
+
+
+def _center_columns(X: torch.Tensor) -> torch.Tensor:
+    """Column-center a matrix (subtract column means)."""
+    return X - X.mean(dim=0, keepdim=True)
+
+
+def _frobenius_inner_product(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    """||A^T B||_F^2 computed as sum of element-wise products of A^T B."""
+    # Equivalent to trace((A^T B)(A^T B)^T) = ||A^T B||_F^2
+    # For (n,d) matrices: A^T B is (d,d); cost O(n d^2).
+    # Better to compute as ||A^T B||_F^2 = sum((A^T B)**2)
+    AtB = A.T @ B  # (d, d)
+    return (AtB * AtB).sum()
+
+
+def _drift_linear_cka(R: torch.Tensor, C: torch.Tensor, eps: float) -> float:
+    """Drift = 1 - linear_CKA(R, C).  R and C are float64 (n, d).
+
+    Convention: if both inputs are degenerate (zero/constant), return 0.0
+    (no drift — identical degenerate state).  If only one is degenerate,
+    return 1.0 (fully drifted).
+
+    Degeneracy is tested scale-invariantly: hsic_xx <= eps * raw_xx where
+    raw_xx = ||R^T R||_F^2 (uncentered), so the test is relative to the
+    input magnitude rather than an absolute threshold.
+    """
+    Rc = _center_columns(R)
+    Cc = _center_columns(C)
+
+    hsic_xx = _frobenius_inner_product(Rc, Rc)
+    hsic_yy = _frobenius_inner_product(Cc, Cc)
+
+    # Scale-invariant degeneracy test: compare centered HSIC to uncentered magnitude.
+    raw_xx = _frobenius_inner_product(R, R)
+    raw_yy = _frobenius_inner_product(C, C)
+    x_degen = float(hsic_xx.item()) <= eps * float(raw_xx.item())
+    y_degen = float(hsic_yy.item()) <= eps * float(raw_yy.item())
+
+    if x_degen and y_degen:
+        return 0.0
+    if x_degen or y_degen:
+        return 1.0
+
+    hsic_xy = _frobenius_inner_product(Rc, Cc)
+    denom = (hsic_xx * hsic_yy).sqrt()  # both > 0 here; no absolute eps needed
+    cka = float((hsic_xy / denom).clamp(0.0, 1.0).item())
+    return float(1.0 - cka)
+
+
+def _drift_cosine(R: torch.Tensor, C: torch.Tensor, eps: float) -> float:
+    """Drift = 1 - mean_per_sample_cosine(R, C).  R and C are float64 (n, d).
+
+    Convention: if both inputs are all-zero (zero-norm rows), return 0.0.
+    """
+    # Compute per-row norms; rows with near-zero norm get cosine = 1.0 (no drift)
+    r_norms = R.norm(dim=-1, keepdim=True)  # (n, 1)
+    c_norms = C.norm(dim=-1, keepdim=True)  # (n, 1)
+
+    # Rows where either norm is degenerate: treat as identical → cosine = 1.0
+    degenerate = (r_norms.squeeze(-1) < 1e-12) | (c_norms.squeeze(-1) < 1e-12)
+
+    r_unit = R / r_norms.clamp_min(1e-12)
+    c_unit = C / c_norms.clamp_min(1e-12)
+
+    cos_sim = (r_unit * c_unit).sum(dim=-1)  # (n,)
+    # Degenerate rows contribute 1.0 (no drift)
+    cos_sim = torch.where(degenerate, torch.ones_like(cos_sim), cos_sim)
+    mean_cos = float(cos_sim.mean().clamp(-1.0, 1.0).item())
+    return float((1.0 - mean_cos) / 2.0)
+
+
+def _drift_rbf_cka(R: torch.Tensor, C: torch.Tensor, eps: float) -> float:
+    """Drift = 1 - rbf_CKA(R, C).  Bandwidth via median heuristic.  R and C are float64 (n, d)."""
+    n = R.shape[0]
+
+    def _rbf_gram(X: torch.Tensor) -> torch.Tensor:
+        """RBF Gram matrix K_{ij} = exp(-||x_i - x_j||^2 / (2 sigma^2))
+        with sigma^2 = median of pairwise squared distances / 2."""
+        # pairwise squared distances: (n, n)
+        sq_dists = torch.cdist(X, X, p=2).pow(2)  # (n, n)
+        # median heuristic: sigma^2 = median(off-diagonal squared distances) / 2
+        off_diag_mask = ~torch.eye(n, dtype=torch.bool, device=X.device)
+        off_diag_dists = sq_dists[off_diag_mask]
+        if off_diag_dists.numel() == 0 or float(off_diag_dists.median().item()) < 1e-30:
+            # degenerate: all points identical → K = all-ones → centered K = 0
+            return torch.zeros(n, n, dtype=X.dtype, device=X.device)
+        sigma2 = float(off_diag_dists.median().item()) / 2.0
+        K = torch.exp(-sq_dists / (2.0 * sigma2))
+        return K
+
+    Kx = _rbf_gram(R)
+    Ky = _rbf_gram(C)
+
+    # Double-center the Gram matrices (equivalent to HSIC with RBF kernel)
+    def _double_center(K: torch.Tensor) -> torch.Tensor:
+        row_mean = K.mean(dim=1, keepdim=True)
+        col_mean = K.mean(dim=0, keepdim=True)
+        grand_mean = K.mean()
+        return K - row_mean - col_mean + grand_mean
+
+    Kxc = _double_center(Kx)
+    Kyc = _double_center(Ky)
+
+    # HSIC: (1/(n-1)^2) * ||Kxc * Kyc||_F^2  — constant cancels in CKA ratio
+    hsic_xx = (Kxc * Kxc).sum()
+    hsic_yy = (Kyc * Kyc).sum()
+
+    # Degeneracy guard: RBF Gram entries are in [0,1] so hsic values are bounded
+    # by n^2 — compare directly against eps (absolute scale is fine here).
+    x_degen = float(hsic_xx.item()) < eps
+    y_degen = float(hsic_yy.item()) < eps
+
+    if x_degen and y_degen:
+        return 0.0
+    if x_degen or y_degen:
+        return 1.0
+
+    hsic_xy = (Kxc * Kyc).sum()
+    # Both > 0 here; a small eps floor is fine since RBF values are bounded.
+    denom = (hsic_xx * hsic_yy).sqrt().clamp_min(eps)
+    cka = float((hsic_xy / denom).clamp(0.0, 1.0).item())
+    return float(1.0 - cka)
+
+
 def gate_stats(x: ArrayLike, eps: float = 1e-6) -> dict[str, float]:
     """Statistics on a post-gate MLP activation tensor.
 
