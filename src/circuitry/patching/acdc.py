@@ -74,21 +74,52 @@ class ACDCRunner:
     # Corrupted writer-activation cache (reuse EAP's collector)
     # ------------------------------------------------------------------
 
-    def _cache_corrupted_acts(self, corrupted_inputs: _Inputs) -> dict[Node, Tensor]:
+    def _cache_corrupted_acts(
+        self,
+        corrupted_inputs: _Inputs,
+        ablation_mode: str = "corrupted",
+    ) -> dict[Node, Tensor]:
         """Cache each writer's corrupted-run residual contribution (once).
 
         TL writer contributions come from ``attn.hook_result`` / ``hook_mlp_out``
         / ``hook_embed`` — the same hooks the TL live-capture forward reads, so
         ``corr_act`` and ``live`` live in the same space.
+
+        Args:
+            corrupted_inputs: The corrupted inputs to run through the model.
+            ablation_mode: How to produce ablation activations.
+                ``"corrupted"`` (default): today's exact behavior — run the
+                corrupted inputs and use the resulting writer activations.
+                ``"zero"``: substitute zero tensors for each writer activation.
+                ``"mean"``: substitute the per-writer mean activation (mean over
+                the batch and sequence dimensions, broadcast back).
         """
         if self._tl:
             prior = self.model.cfg.use_attn_result
             self.model.set_use_attn_result(True)
             try:
-                return self._eap._collect_writer_acts_tl(corrupted_inputs)
+                corr_act = self._eap._collect_writer_acts_tl(corrupted_inputs)
             finally:
                 self.model.set_use_attn_result(prior)
-        return self._eap.writer_activations(corrupted_inputs)
+        else:
+            corr_act = self._eap.writer_activations(corrupted_inputs)
+
+        if ablation_mode == "corrupted":
+            return corr_act
+        if ablation_mode == "zero":
+            return {node: torch.zeros_like(act) for node, act in corr_act.items()}
+        if ablation_mode == "mean":
+            result: dict[Node, Tensor] = {}
+            for node, act in corr_act.items():
+                # Compute mean over all dims except the last (feature dim),
+                # then broadcast back to original shape.
+                mean_val = act.mean(dim=list(range(act.ndim - 1)), keepdim=True)
+                result[node] = mean_val.expand_as(act)
+            return result
+        raise ValueError(
+            f"Unknown ablation_mode {ablation_mode!r}. "
+            "Expected 'corrupted', 'zero', or 'mean'."
+        )
 
     @staticmethod
     def _slice_pos(logits: Tensor, position: int | None) -> Tensor:
@@ -369,12 +400,35 @@ class ACDCRunner:
         eap_scores: dict[Edge, float] | None = None,
         position: int | None = -1,
         metric: Callable[[Tensor, Tensor], float] | None = None,
+        ablation_mode: str = "corrupted",
+        eap_skip_threshold: float | None = None,
     ) -> ACDCResult:
-        """Greedy reverse-topo edge pruning. Returns the surviving circuit."""
+        """Greedy reverse-topo edge pruning. Returns the surviving circuit.
+
+        Args:
+            clean_inputs: Clean inputs to discover the circuit for.
+            corrupted_inputs: Corrupted (counterfactual) inputs.
+            tau: KL-divergence tolerance for accepting an edge removal.
+            ordering: Edge visit order — ``"topo"`` or ``"eap"`` (default:
+                ``"eap"`` when ``eap_scores`` is provided, else ``"topo"``).
+            eap_scores: Pre-computed EAP scores, keyed by ``Edge``.
+            position: Token position to evaluate KL at (default ``-1`` = last).
+            metric: Custom recovery metric; receives ``(circuit_logits,
+                clean_logits)`` and returns a float. Overrides KL if provided.
+            ablation_mode: How to produce ablation activations. One of
+                ``"corrupted"`` (default, back-compat), ``"zero"``, or
+                ``"mean"``. See ``_cache_corrupted_acts`` for details.
+            eap_skip_threshold: Optional float. When set, any edge whose
+                ``abs(eap_scores[edge])`` exceeds this threshold is treated as
+                KEPT (skips the ablation test entirely). Requires ``eap_scores``
+                to be provided; edges missing from ``eap_scores`` are treated as
+                having score 0.0 and will be tested normally. ``None`` (default)
+                tests every edge — today's behavior.
+        """
         if ordering is None:
             ordering = "eap" if eap_scores is not None else "topo"
 
-        corr_act = self._cache_corrupted_acts(corrupted_inputs)
+        corr_act = self._cache_corrupted_acts(corrupted_inputs, ablation_mode)
         with torch.no_grad():
             full_clean_logits = _logits_of(self._eap._call_model(clean_inputs))
 
@@ -387,6 +441,15 @@ class ACDCRunner:
         current = 0.0
         for reader, slot in reverse_topo_readers(self.graph):
             for edge in self._incoming_in_order(reader, slot, ordering, eap_scores):
+                # A4b: if |EAP score| exceeds the skip threshold, assume this
+                # edge is important (kept) without running the ablation test.
+                if (
+                    eap_skip_threshold is not None
+                    and eap_scores is not None
+                    and abs(eap_scores.get(edge, 0.0)) > eap_skip_threshold
+                ):
+                    continue  # assume kept; do not test
+
                 removed.add(edge)
                 logits = self._forward(clean_inputs, removed, corr_act)
                 new_kl = recovery(logits)
@@ -411,12 +474,16 @@ class ACDCRunner:
         eap_scores: dict[Edge, float] | None = None,
         position: int | None = -1,
         metric: Callable[[Tensor, Tensor], float] | None = None,
+        ablation_mode: str = "corrupted",
+        eap_skip_threshold: float | None = None,
     ) -> list[tuple[float, int, float]]:
         """Run ACDC at each τ; return the Pareto frontier [(τ, n_kept, final_kl)]."""
         out: list[tuple[float, int, float]] = []
         for tau in taus:
             r = self.run(clean_inputs=clean_inputs, corrupted_inputs=corrupted_inputs,
                          tau=tau, ordering=ordering, eap_scores=eap_scores,
-                         position=position, metric=metric)
+                         position=position, metric=metric,
+                         ablation_mode=ablation_mode,
+                         eap_skip_threshold=eap_skip_threshold)
             out.append((tau, r.n_kept(), r.final_kl))
         return out
