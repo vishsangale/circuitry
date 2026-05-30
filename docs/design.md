@@ -119,6 +119,11 @@ weight.singular_values(W: Tensor, k: int | None = None) -> Tensor
 weight.heavy_tail_alpha(W: Tensor) -> float
 weight.attention_head_rank(W: Tensor, n_heads: int, head_dim: int, axis: int = 0) -> Tensor
 
+# weight-space dynamics (v1.3 — shipped in core/; now wired live)
+weight.update_delta(sd_now: Mapping[str, Tensor], sd_prev: Mapping[str, Tensor]) -> dict[str, float]
+weight.direction_cosine(sd_now: Mapping[str, Tensor], sd_prev: Mapping[str, Tensor],
+                        sd_prev_prev: Mapping[str, Tensor]) -> dict[str, float]
+
 # activation-space
 activation.dead_fraction(x: Tensor, threshold: float = 0.0) -> float
 activation.kurtosis(x: Tensor, dim: int | tuple = -1) -> Tensor
@@ -134,6 +139,7 @@ gradient.signal_propagation_depth(grads_by_depth: list[Tensor]) -> int
 # spectral
 spectral.esd(W: Tensor, bins: int = 100) -> tuple[Tensor, Tensor]
 spectral.rank_trajectory(state_dicts: list[dict]) -> dict[str, list[float]]
+# Note: rank_trajectory is now wired live in the Recorder (v1.3) via the SVD cache.
 
 # lens (v0.9)
 from circuitry.core import lens
@@ -230,6 +236,15 @@ Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e
 Use `Recipe.with_sae(mapping)` (v0.9) to attach SAE checkpoints: `mapping` is a `dict[str, tuple[str, str]]` of `module_name → (release, sae_id)`. Returns a new `Recipe` with `sae_checkpoints` populated. SAE checkpoints are loaded lazily at `attach()` time; the user must also add `"sae_reconstruction"` to `activation_diagnostics` to incur per-step encode+decode cost.
 
 Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns a new `Recipe` with those names set to `False` in `enabled`. Use `Recipe.only(names)` to keep only the listed diagnostics and disable the rest. Both raise `ValueError` on any name not in `weight_diagnostics + activation_diagnostics + gradient_diagnostics`; custom `DiagnosticFn` callables are not name-addressable and are unaffected.
+
+> The `Recorder` maintains two internal CPU weight snapshots (`_prev_weights`,
+> `_prev_prev_weights`) to support cross-step weight-dynamics primitives. Both are
+> empty at `attach()`, populated (detached CPU copies of matched-module weight tensors)
+> after each emit step, and cleared in `detach()`. The cross-step diagnostics
+> `update_delta`, `direction_cosine`, and `rank_trajectory` silently skip emission on
+> the first emit step (or first two, for `direction_cosine`) until enough snapshots
+> exist. This is the only internal recorder state change in v1.3; `StepContext` shape
+> is unchanged.
 
 `HookPoint` supports three target specifications:
 
@@ -369,7 +384,9 @@ RECIPE = Recipe(
         HookPoint(pattern=r"lm_head$",    source=TensorSource.WEIGHT),
         HookPoint(pattern=r".*\.attn\.(q|k|v|o)_proj$", source=TensorSource.GRAD),
     ],
-    weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank", "heavy_tail_alpha"],
+    weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank",
+                    "heavy_tail_alpha", "sv_histogram",
+                    "update_delta", "rank_trajectory", "direction_cosine"],
     activation_diagnostics=["gate_stats", "dead_fraction", "kurtosis", "participation_ratio"],
     gradient_diagnostics=["grad_norm_per_module"],
 )

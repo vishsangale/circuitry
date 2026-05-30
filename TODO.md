@@ -1,11 +1,22 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through v1.1.0 (2026-05-26);
-all tags + GitHub Releases v0.1.0 → v1.1.0 are published. v1.2.0 is in progress on `main`. The design contract is
+Tracking doc for open work and future improvements. Released through v1.2.0 (2026-05-30);
+all tags + GitHub Releases v0.1.0 → v1.2.0 are published. v1.3.0 (training-dynamics
+diagnostics) is in progress on `feat/v1.3-training-dynamics`. The design contract is
 `docs/design.md` — any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
 **[val]** validation / benchmarking · **[docs]** documentation · **[hygiene]** repo housekeeping.
+
+---
+
+## v1.3.x follow-ups
+
+- **[debt] `update_delta_vanishing` flag uses an absolute L2-norm threshold** (`1e-6` in
+  `recorder/report.py` `FLAG_RULES`). This is scale-dependent: a healthy step on a large
+  matrix can exceed it while a healthy step on a tiny one can fall below it. Consider
+  normalizing by parameter element count or by `‖W‖` before thresholding. Non-blocking;
+  flagged in the v1.3 adversarial review.
 
 ---
 

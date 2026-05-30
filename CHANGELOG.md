@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-05-30
+
+### Added
+- Cross-step weight snapshot holder in `Recorder` (`_prev_weights`, `_prev_prev_weights`):
+  detached CPU copies of matched-module weights from prior emit steps. Populated after each
+  emit; cleared in `detach()`. First-step and second-step guards suppress cross-step
+  diagnostics until sufficient history exists.
+- `weight/update_delta/<module>` live diagnostic: L2 norm of per-module weight delta between
+  consecutive emit steps. Wires the existing `core/weight.update_delta` primitive.
+- `weight/direction_cosine/<module>` live diagnostic: cosine similarity between two
+  consecutive parameter update vectors. Wires `core/weight.direction_cosine`. Emits from
+  the third emit step onward (requires two prior snapshots).
+- `weight/rank_trajectory/<module>` live diagnostic: effective rank of each weight matrix at
+  each emit step, reusing the per-step SVD cache (zero extra SVD cost). Wires the logic of
+  `core/spectral.rank_trajectory` inline via the SVD cache.
+- `llm` recipe now includes `update_delta`, `rank_trajectory`, `direction_cosine` in
+  `weight_diagnostics`.
+- `build_report`: `HERO_SECTIONS` extended with `weight/update_delta`,
+  `weight/rank_trajectory`, `weight/direction_cosine` (rendered above `<details>`).
+- `build_report`: three new `FLAG_RULES` — `rank_collapse_trend` (declining rank_trajectory),
+  `update_delta_vanishing` (near-zero update norm), `direction_reversal` (strongly negative
+  cosine).
+
+### Documentation
+- `docs/design.md §4.1`: added `update_delta` and `direction_cosine` to the public primitive
+  catalog; added note that `rank_trajectory` is now wired live.
+- `docs/design.md §4.4`: added prose on the cross-step snapshot lifecycle.
+- `docs/design.md §5`: updated llm recipe example `weight_diagnostics` list.
+
+### Deferred (Option B — representational drift probe)
+- A probe-based representational drift primitive (CKA / cosine of activations vs a stored
+  reference) is explicitly deferred to v1.3.1 or v1.4. It requires a second forward pass
+  per emit step and must be opt-in (default off) due to the §10 GPU budget constraint.
+  The cross-step snapshot infrastructure shipped in this release is the foundation it reuses.
+
 ## [1.2.0] — 2026-05-30
 
 ### Added
