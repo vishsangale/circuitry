@@ -27,21 +27,89 @@ def singular_values(
     W: ArrayLike,
     k: int | None = None,
     max_dim: int | None = 512,
+    *,
+    seed: int | None = None,
+    use_gram: bool | str = "auto",
 ) -> torch.Tensor:
     """Singular values of ``W`` in descending order.
 
     ``max_dim`` caps the SVD cost on wide matrices by truncating to a
-    ``max_dim``-column random subsample before the decomposition. Pass
-    ``max_dim=None`` to disable. ``k`` truncates the returned vector.
+    ``max_dim``-column random subsample before the decomposition.  Pass
+    ``max_dim=None`` to disable.  ``k`` truncates the returned vector.
+
+    Args:
+        seed: When not ``None``, the subsample draw uses a seeded
+            ``torch.Generator`` so results are reproducible across calls on
+            the same matrix.  Default ``None`` preserves the previous
+            unseeded (non-deterministic) behaviour.
+        use_gram: Control the ``eigvalsh(Gram)`` fast path for strongly
+            rectangular matrices.
+
+            * ``"auto"`` (default) — engage the Gram path when the aspect
+              ratio is large enough to win (larger dim ≥ 3·smaller dim)
+              *and* no subsampling was required (both dimensions ≤
+              ``max_dim``).  Falls back to ``torch.linalg.svdvals`` when the
+              matrix is near-square or when subsampling was applied (the
+              post-sample matrix is already bounded and svdvals is fine).
+            * ``True`` — always use the Gram path on the (possibly
+              subsampled) matrix.
+            * ``False`` — always use ``torch.linalg.svdvals`` (today's
+              behaviour).
+
+            **Numerical note:** the Gram path promotes to float64 internally
+            to recover precision, but small singular values (below
+            ``~sqrt(eps) · sigma_max``) are still unreliable.  Prefer
+            ``use_gram=False`` (or the hard override in
+            :func:`condition_number`) whenever accurate ``sigma_min`` is
+            required.
     """
     M = _as_2d(W)
+    subsampled = False
     if max_dim is not None and min(M.shape) > max_dim:
         # Sample columns from the longer axis to keep SVD bounded.
         axis = 1 if M.shape[1] > M.shape[0] else 0
         n = M.shape[axis]
-        idx = torch.randperm(n, device=M.device)[:max_dim]
+        if seed is not None:
+            g = torch.Generator(device=M.device).manual_seed(int(seed))
+            idx = torch.randperm(n, device=M.device, generator=g)[:max_dim]
+        else:
+            idx = torch.randperm(n, device=M.device)[:max_dim]
         M = M.index_select(axis, idx)
-    s = torch.linalg.svdvals(M)
+        subsampled = True
+
+    # Gram fast path: cheaper than full SVD for strongly rectangular matrices.
+    # sigma_i(M) = sqrt(lambda_i(M M^T))  (or M^T M for the smaller Gram).
+    # Promote to float64 to partially recover the precision lost by squaring.
+    # Auto policy: only engage when both dims are within max_dim (no subsampling
+    # already occurred) AND the aspect ratio is >= 3:1.
+    use_gram_bool: bool
+    if use_gram is True:
+        use_gram_bool = True
+    elif use_gram is False:
+        use_gram_bool = False
+    else:  # "auto"
+        if subsampled:
+            # Post-sample matrix is already bounded; svdvals is fine.
+            use_gram_bool = False
+        else:
+            a, b = M.shape[0], M.shape[1]
+            smaller, larger = (a, b) if a <= b else (b, a)
+            use_gram_bool = larger >= 3 * smaller
+
+    if use_gram_bool:
+        orig_dtype = M.dtype
+        Mf = M.to(torch.float64)
+        a, b = Mf.shape
+        if a <= b:
+            G = Mf @ Mf.T  # (a, a)
+        else:
+            G = Mf.T @ Mf  # (b, b)
+        eig = torch.linalg.eigvalsh(G).clamp_min(0.0)
+        s_f64 = eig.sqrt()
+        s = s_f64.to(orig_dtype)
+    else:
+        s = torch.linalg.svdvals(M)
+
     s, _ = torch.sort(s, descending=True)
     if k is not None:
         s = s[:k]
@@ -80,8 +148,13 @@ def _stable_rank_from_sv(s: torch.Tensor) -> float:
 def condition_number(W: ArrayLike, eps: float = 1e-12) -> float:
     """``sigma_max / sigma_min``. Returns ``+inf`` if the smallest singular
     value is below ``eps``.
+
+    Always uses the full SVD path (``use_gram=False``) because accurate
+    ``sigma_min`` is the numerically sensitive quantity and the Gram path
+    squares the condition number, destroying precision for small singular
+    values.
     """
-    return _condition_number_from_sv(singular_values(W), eps)
+    return _condition_number_from_sv(singular_values(W, use_gram=False), eps)
 
 
 def _condition_number_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:

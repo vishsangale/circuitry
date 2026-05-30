@@ -148,3 +148,151 @@ def test_singular_values_on_cuda():
     s = weight.singular_values(W)
     assert s.numel() > 0
     assert torch.isfinite(s).all()
+
+
+# ---------------------------------------------------------------------------
+# A1 — randperm determinism
+# ---------------------------------------------------------------------------
+
+def test_singular_values_seed_is_reproducible():
+    """A seeded call on a matrix whose smaller dim > 512 must return identical
+    results across two independent calls."""
+    torch.manual_seed(99)
+    W = torch.randn(700, 1500)  # min(shape)=700 > default max_dim=512 → subsample fires
+    s1 = weight.singular_values(W, seed=0)
+    s2 = weight.singular_values(W, seed=0)
+    assert torch.allclose(s1, s2), "seeded singular_values must be bit-exact reproducible"
+
+
+def test_singular_values_unseeded_path_runs():
+    """seed=None preserves the old unseeded path — it must still run and return
+    a valid tensor (we do not assert two unseeded calls differ)."""
+    torch.manual_seed(7)
+    W = torch.randn(700, 1500)
+    s = weight.singular_values(W, seed=None)
+    assert s.numel() > 0
+    assert torch.isfinite(s).all()
+
+
+def test_singular_values_different_seeds_may_differ():
+    """Two different seeds can produce different singular-value vectors because
+    the subsample draws a different set of columns."""
+    torch.manual_seed(42)
+    W = torch.randn(700, 1500)
+    s0 = weight.singular_values(W, seed=0)
+    s1 = weight.singular_values(W, seed=1)
+    # They are likely different (probabilistically true for large random matrices).
+    # We only assert shape consistency and finiteness here — correctness, not equality.
+    assert s0.shape == s1.shape
+    assert torch.isfinite(s0).all()
+    assert torch.isfinite(s1).all()
+
+
+# ---------------------------------------------------------------------------
+# A2 — Gram fast path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("shape,dtype,rtol", [
+    # strongly rectangular, float64 — tight tolerance
+    ((32, 1024), torch.float64, 1e-5),
+    ((16, 2000), torch.float64, 1e-5),
+    # strongly rectangular, float32 — looser tolerance for large singular values
+    ((32, 1024), torch.float32, 1e-3),
+    ((16, 2000), torch.float32, 1e-3),
+])
+def test_gram_path_top_sv_match_svdvals(shape, dtype, rtol):
+    """use_gram=True top singular values must be close to svdvals reference."""
+    torch.manual_seed(0)
+    W = torch.randn(*shape, dtype=dtype)
+    s_ref = weight.singular_values(W, max_dim=None, use_gram=False)
+    s_gram = weight.singular_values(W, max_dim=None, use_gram=True)
+    # Compare the top-k values (Gram gives no accuracy guarantee for the tail)
+    k = min(shape[0], shape[1], 10)
+    assert torch.allclose(s_ref[:k], s_gram[:k], rtol=rtol, atol=0), (
+        f"Gram path top-{k} sv mismatch for shape={shape} dtype={dtype}: "
+        f"max_err={((s_ref[:k] - s_gram[:k]).abs() / s_ref[:k].clamp_min(1e-30)).max()}"
+    )
+
+
+def test_gram_auto_falls_back_for_near_square():
+    """auto must use svdvals for near-square matrices (no aspect-ratio win)."""
+    torch.manual_seed(0)
+    W = torch.randn(64, 65)  # aspect ratio ~1 → Gram buys nothing → auto = svdvals
+    s_auto = weight.singular_values(W, max_dim=None, use_gram="auto")
+    s_ref = weight.singular_values(W, max_dim=None, use_gram=False)
+    assert torch.allclose(s_auto, s_ref), "auto should match svdvals on near-square matrices"
+
+
+def test_gram_auto_engages_for_wide_matrix():
+    """auto should engage the Gram path for a strongly rectangular matrix."""
+    torch.manual_seed(0)
+    W = torch.randn(20, 200)  # aspect ratio 10:1 → Gram should engage
+    s_auto = weight.singular_values(W, max_dim=None, use_gram="auto")
+    s_ref = weight.singular_values(W, max_dim=None, use_gram=False)
+    # Values should be close (Gram is numerically faithful for large sv)
+    assert torch.allclose(s_auto, s_ref, rtol=1e-4, atol=1e-6), (
+        "auto Gram path result not close to svdvals for wide matrix"
+    )
+
+
+def test_gram_auto_falls_back_when_subsampling_applied():
+    """auto must fall back to svdvals when max_dim subsampling was applied."""
+    torch.manual_seed(0)
+    # min(shape)=700 > 512 → subsampling fires → auto must use svdvals
+    W = torch.randn(700, 1500)
+    s_auto = weight.singular_values(W, seed=0, use_gram="auto")
+    s_ref = weight.singular_values(W, seed=0, use_gram=False)
+    assert torch.allclose(s_auto, s_ref), (
+        "auto should fall back to svdvals when subsampling was applied"
+    )
+
+
+def test_condition_number_unchanged_by_gram():
+    """condition_number must always use svdvals (use_gram=False), never the Gram
+    path — the Gram squares the condition number and wrecks sigma_min.
+
+    Built on an ILL-conditioned wide matrix (cond ~1e7) where the Gram path
+    genuinely disagrees with svdvals, so this test goes red if condition_number
+    ever silently switches to the Gram path. (A well-conditioned matrix would
+    let both paths agree to ~1e-16 and the test would prove nothing.)
+    """
+    torch.manual_seed(0)
+    k, n = 20, 200
+    u = torch.linalg.qr(torch.randn(k, k, dtype=torch.float64))[0]      # (k, k) orthonormal
+    v = torch.linalg.qr(torch.randn(n, k, dtype=torch.float64))[0]      # (n, k) orthonormal cols
+    s = torch.logspace(0, -7, k, dtype=torch.float64)                   # cond = 1 / 1e-7 = 1e7
+    w = (u * s) @ v.T                                                   # (k, n), singular values == s
+
+    cn_svd = weight._condition_number_from_sv(
+        weight.singular_values(w, max_dim=None, use_gram=False)
+    )
+    cn_gram = weight._condition_number_from_sv(
+        weight.singular_values(w, max_dim=None, use_gram=True)
+    )
+    # Precondition (teeth): on this ill-conditioned matrix the Gram path must
+    # genuinely differ from svdvals — else the assertion below is vacuous.
+    assert not math.isclose(cn_gram, cn_svd, rel_tol=1e-6), (
+        "test precondition broken: Gram path should diverge from svdvals on cond~1e7"
+    )
+    # condition_number must equal the svdvals reference, NOT the Gram result.
+    assert weight.condition_number(w) == pytest.approx(cn_svd, rel=1e-9)
+
+
+def test_gram_degenerate_all_zero_no_nan():
+    """Degenerate all-zero matrix must yield finite output (no NaN/inf)."""
+    W = torch.zeros(10, 100)
+    s = weight.singular_values(W, max_dim=None, use_gram=True)
+    assert torch.isfinite(s).all(), "all-zero matrix must not produce NaN/inf singular values"
+    assert (s == 0.0).all(), "all-zero matrix singular values must be 0"
+
+
+def test_gram_degenerate_rank_deficient_no_nan():
+    """Rank-deficient matrix with some zero singular values: finite output."""
+    torch.manual_seed(0)
+    # Rank-5 matrix in a 10×100 space
+    U = torch.randn(10, 5)
+    V = torch.randn(5, 100)
+    W = U @ V
+    s = weight.singular_values(W, max_dim=None, use_gram=True)
+    assert torch.isfinite(s).all()
+    assert s.numel() > 0

@@ -48,6 +48,12 @@ _GRAD_DIAGS = {
 
 _WRITERS: dict[str, Any] = {}  # name → factory; populated below
 
+# Fixed seed for the randperm subsample inside singular_values().  Using a
+# constant means every emit step draws the *same* column subset for a given
+# weight matrix, so cross-step comparisons (rank_trajectory, update_delta,
+# direction_cosine) reflect true weight changes rather than subsample churn.
+_SUBSAMPLE_SEED: int = 0
+
 
 class _AttnMeta:
     """Resolved attention head config for attention_head_rank dispatch.
@@ -619,7 +625,9 @@ class Recorder:
         def _sv(w: torch.Tensor) -> torch.Tensor:
             s = _sv_cache.get(id(w))
             if s is None:
-                s = _singular_values(w)
+                # Pass a fixed seed so cross-step rank/delta comparisons are
+                # not polluted by subsample churn (A1 determinism fix).
+                s = _singular_values(w, seed=_SUBSAMPLE_SEED)
                 _sv_cache[id(w)] = s
             return s
 
