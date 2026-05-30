@@ -163,6 +163,14 @@ class Recorder:
         # Empty at attach(); populated after each emit; cleared in detach().
         self._prev_weights: dict[str, torch.Tensor] = {}
         self._prev_prev_weights: dict[str, torch.Tensor] = {}
+        # v1.4 drift-probe: CPU copies of per-layer activations captured during
+        # the first probe forward pass (the "anchor").  None = not yet captured.
+        # Cleared in detach() and by reset_drift_reference().  copy=True is
+        # load-bearing (same lesson as _prev_weights v1.3: .to("cpu") is a no-op
+        # on CPU and would alias the live tensor).
+        self._ref_probe_activations: dict[str, torch.Tensor] | None = None
+        # Warn-once flag for errors during the drift-probe forward pass.
+        self._warned_probe_forward = False
 
     # ---- internal helpers ------------------------------------------------
 
@@ -537,11 +545,25 @@ class Recorder:
         # Release cross-step snapshots to free RAM (v1.3).
         self._prev_weights.clear()
         self._prev_prev_weights.clear()
+        # Release drift-probe reference activations (v1.4).
+        self._ref_probe_activations = None
         self._restore_output_attentions()
         if self._writer is not None:
             self._writer.flush()
             self._writer.close()
             self._writer = None
+
+    def reset_drift_reference(self) -> None:
+        """Clear the drift-probe reference anchor.
+
+        The next emit step after calling this method will capture a fresh
+        anchor (no drift tag emitted on that step), and subsequent steps will
+        compute drift relative to the new anchor.
+
+        Use this after resuming from a checkpoint, or after a learning-rate
+        phase change, to re-anchor the representational-drift baseline.
+        """
+        self._ref_probe_activations = None
 
     def step(self, step: int, loss: float | torch.Tensor | None = None, *,
              loss_components: dict[str, float | torch.Tensor] | None = None,
@@ -905,6 +927,117 @@ class Recorder:
                         self._writer.add_scalar(
                             f"activation/sae/{mn}/{sub}", val, ctx.step,
                         )
+                continue
+            if name == "drift_probe":
+                if self.recipe.probe_batch is None:
+                    continue
+                # Run a second forward pass on the fixed probe_batch to capture
+                # per-layer activations for representational-drift comparison.
+                # Template: induction_score block above (temporary hooks,
+                # inference_mode, try/finally removal).
+                from circuitry.core.activation import repr_drift as _repr_drift
+
+                # Collect all OUTPUT-source matched module names (same layers
+                # that produce main-pass activations) as the candidate set for
+                # comparison.  We use modules matched by OUTPUT HookPoints so
+                # the same layers that appear in ctx.activations are compared.
+                probe_module_names: dict[str, nn.Module] = {}
+                _name_to_mod = dict(self.model.named_modules())
+                for _idx, _hp in enumerate(self.recipe.hook_points):
+                    if _hp.source is not TensorSource.OUTPUT:
+                        continue
+                    for _mn in self._matched[_idx]:
+                        _mod = _name_to_mod.get(_mn)
+                        if _mod is not None:
+                            probe_module_names[_mn] = _mod
+
+                if not probe_module_names:
+                    continue
+
+                # Determine model dtype/device for probe casting.
+                _probe_dev = next(self.model.parameters()).device
+                _probe_dtype = next(self.model.parameters()).dtype
+
+                # Cast probe_batch: always move to the model's device, but cast
+                # dtype only for floating-point probes.  Integer token-ID probes
+                # must NOT be cast to the model's float dtype (that would corrupt
+                # the indices and crash the embedding lookup).
+                probe = self.recipe.probe_batch.to(device=_probe_dev)
+                if probe.is_floating_point():
+                    probe = probe.to(dtype=_probe_dtype)
+
+                # Apply drift_max_tokens cap (truncate token/seq dim).
+                _max_tok = self.recipe.drift_max_tokens
+                if _max_tok is not None and probe.dim() >= 2:
+                    probe = probe[:, :_max_tok]
+
+                # Register temporary hooks to capture OUTPUT activations.
+                _probe_captured: dict[str, torch.Tensor] = {}
+
+                def _mk_probe_hook(
+                    _mn: str,
+                    _cap: dict[str, torch.Tensor] = _probe_captured,
+                ):
+                    def _hook(_mod, _inp, _out):
+                        t = _out[0] if isinstance(_out, tuple) else _out
+                        _cap[_mn] = t.detach()
+                    return _hook
+
+                _probe_handles = [
+                    mod.register_forward_hook(_mk_probe_hook(mn))
+                    for mn, mod in probe_module_names.items()
+                ]
+                try:
+                    with torch.inference_mode():
+                        self.model(probe)
+                except Exception as _probe_err:
+                    if not self._warned_probe_forward:
+                        logger.warning(
+                            "circuitry: drift_probe forward pass failed (%s); "
+                            "skipping drift emission for this step. "
+                            "(Further warnings suppressed.)",
+                            _probe_err,
+                        )
+                        self._warned_probe_forward = True
+                    continue
+                finally:
+                    for _ph in _probe_handles:
+                        _ph.remove()
+
+                # First emit: store anchor; emit NO drift tag.
+                if self._ref_probe_activations is None:
+                    # copy=True is load-bearing: on a CPU model .to("cpu") is a
+                    # no-op and would alias the probe-captured tensor, silently
+                    # making CKA ~1.0 forever (same lesson as _prev_weights v1.3).
+                    self._ref_probe_activations = {
+                        mn: t.detach().to("cpu", copy=True)
+                        for mn, t in _probe_captured.items()
+                    }
+                    continue
+
+                # Subsequent emits: compute drift per layer and emit scalars.
+                for _mn, _cur_t in _probe_captured.items():
+                    _ref_t = self._ref_probe_activations.get(_mn)
+                    if _ref_t is None:
+                        continue
+                    # Bring reference to same device as current for comparison.
+                    _ref_on_dev = _ref_t.to(_cur_t.device)
+                    try:
+                        drift_val = _repr_drift(
+                            _ref_on_dev,
+                            _cur_t,
+                            self.recipe.drift_method,
+                            max_samples=256,
+                            seed=0,
+                        )
+                    except Exception as _e:
+                        logger.warning(
+                            "circuitry: drift_probe on %s failed: %s", _mn, _e
+                        )
+                        continue
+                    self._writer.add_scalar(
+                        f"activation/repr_drift/{_mn}", drift_val, ctx.step
+                    )
                 continue
             fn = _ACT_DIAGS.get(name)
             if fn is None:

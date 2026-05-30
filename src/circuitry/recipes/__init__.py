@@ -6,6 +6,8 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import torch
+
 from circuitry.recorder.hooks import HookPoint, StepContext
 
 DiagnosticFn = Callable[[StepContext], dict[str, float]]
@@ -25,6 +27,24 @@ class Recipe:
     sae_checkpoints: dict[str, tuple[str, str]] | None = None
     induction_probe_seq_len: int = 25
     lens_max_tokens: int | None = None
+    # v1.4 drift-probe config fields (Workstream B).
+    # probe_batch: fixed input tensor for the second forward pass that captures
+    # reference activations and computes representational drift.  None = no
+    # probe pass (drift_probe is also disabled by default via ``enabled``).
+    # Storage warning: reference activations are stored as float32 CPU copies,
+    # up to n_layers × max_samples × d_model × 4 bytes (~270 MB for a large LLM
+    # at max_samples=256, d_model=4096, 32 layers).  Use drift_max_tokens to cap
+    # the token dimension and reduce storage.
+    #
+    # Shape requirement for CKA methods (linear_cka, rbf_cka): the captured
+    # activation must yield >= 2 rows after flattening all but the last dim.
+    # A single-token probe (batch=1, seq=1) will raise ValueError for CKA;
+    # use drift_method="cosine" for single-row probes, or pass >= 2 tokens.
+    # Integer (token-ID) probe_batch is supported; the recorder casts to device
+    # only (not dtype) so embedding lookups receive the correct integer type.
+    probe_batch: torch.Tensor | None = None
+    drift_method: str = "linear_cka"
+    drift_max_tokens: int | None = None
 
     def with_prefix(self, prefix: str) -> Recipe:
         """Return a new Recipe scoped to ``prefix``.

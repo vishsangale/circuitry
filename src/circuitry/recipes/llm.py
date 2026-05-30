@@ -41,8 +41,17 @@ RECIPE = Recipe(
                             "participation_ratio",
                             # v0.9 additions:
                             "logit_lens_kl", "induction_score",
-                            "attention_pattern_entropy"],
+                            "attention_pattern_entropy",
+                            # v1.4 drift probe: default OFF; opt in via
+                            # recipe.only(["drift_probe"]) or by clearing the
+                            # disable and supplying a probe_batch.
+                            "drift_probe"],
     gradient_diagnostics=["norms_per_param"],
+    # drift_probe is expensive (second forward pass per emit step) so it is
+    # gated OFF by default.  Users opt in via recipe.only(["drift_probe"]) or
+    # dataclasses.replace(recipe, enabled={**recipe.enabled, "drift_probe": True},
+    #                     probe_batch=my_tensor).
+    enabled={"drift_probe": False},
 )
 
 
