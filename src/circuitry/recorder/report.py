@@ -36,6 +36,10 @@ HERO_SECTIONS = frozenset({
     "activation/induction_score",
     "activation/attention_pattern_entropy",
     "activation/sae",
+    # v1.3 training-dynamics:
+    "weight/update_delta",
+    "weight/rank_trajectory",
+    "weight/direction_cosine",
 })
 
 GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
@@ -68,6 +72,24 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         "attn_rank_low",
         lambda last, signed: last < 2.0,
         "attention_head_rank critically low (last={last:.2f})",
+    ),
+    (
+        "weight/rank_trajectory",
+        "rank_collapse_trend",
+        lambda last, signed: signed < -1.0 and last < 8.0,
+        "rank_trajectory declining (last={last:.2f}, Δ={signed:+.4g})",
+    ),
+    (
+        "weight/update_delta",
+        "update_delta_vanishing",
+        lambda last, signed: last < 1e-6,
+        "update_delta near zero — possible gradient vanishing (last={last:.2g})",
+    ),
+    (
+        "weight/direction_cosine",
+        "direction_reversal",
+        lambda last, signed: last < -0.5,
+        "direction_cosine strongly negative — update direction reversal (last={last:.3f})",
     ),
 ]
 

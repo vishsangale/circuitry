@@ -134,3 +134,61 @@ def test_compact_includes_flags(tmp_path):
     assert "## Summary" in md
     assert "## Flags" in md
     assert "dead_rising" in md
+
+
+def test_rank_collapse_trend_flag(tmp_path):
+    """Declining rank_trajectory below threshold fires rank_collapse_trend."""
+    _write(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/rank_trajectory/mod", "value": 12.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/rank_trajectory/mod", "value": 6.0,  "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "report.md"
+    build_report(tmp_path, out)
+    md = out.read_text()
+    assert "## Flags" in md
+    assert "rank_collapse_trend" in md
+
+
+def test_update_delta_vanishing_flag(tmp_path):
+    """Near-zero update_delta fires update_delta_vanishing."""
+    _write(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/update_delta/mod", "value": 1e-8, "step": 0, "kind": "scalar"},
+        {"tag": "weight/update_delta/mod", "value": 5e-9, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "report.md"
+    build_report(tmp_path, out)
+    md = out.read_text()
+    assert "update_delta_vanishing" in md
+
+
+def test_direction_reversal_flag(tmp_path):
+    """Strongly negative direction_cosine fires direction_reversal."""
+    _write(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/direction_cosine/mod", "value": 0.1,  "step": 0, "kind": "scalar"},
+        {"tag": "weight/direction_cosine/mod", "value": -0.8, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "report.md"
+    build_report(tmp_path, out)
+    md = out.read_text()
+    assert "direction_reversal" in md
+
+
+def test_dynamics_tags_in_hero_sections(tmp_path):
+    """weight/update_delta and rank_trajectory render in hero (not in <details>)."""
+    _write(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/update_delta/mod",    "value": 0.1, "step": 0, "kind": "scalar"},
+        {"tag": "weight/rank_trajectory/mod", "value": 8.0, "step": 0, "kind": "scalar"},
+    ])
+    out = tmp_path / "report.md"
+    build_report(tmp_path, out)
+    md = out.read_text()
+    # Hero sections appear before <details>; advanced sections inside <details>.
+    assert "## weight/update_delta" in md
+    assert "## weight/rank_trajectory" in md
+    details_start = md.find("<details>")
+    update_delta_start = md.find("## weight/update_delta")
+    rank_traj_start = md.find("## weight/rank_trajectory")
+    # Sections should appear before <details> (or <details> absent entirely)
+    if details_start >= 0:
+        assert update_delta_start < details_start
+        assert rank_traj_start < details_start
