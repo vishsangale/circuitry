@@ -10,12 +10,21 @@ Reports wall-clock ratio with and without circuitry attached. The budget is
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import time
 
 import torch
 import torch.nn as nn
 
-from circuitry import Recorder
+# Run from a source checkout without requiring an editable install: put the
+# repo's src/ first on the path so `import circuitry` resolves to THIS checkout
+# (overriding any older installed build — e.g. when shipped to a Ray worker).
+_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+if os.path.isdir(_SRC):
+    sys.path.insert(0, _SRC)
+
+from circuitry import Recorder  # noqa: E402  (must follow the src-path shim above)
 
 
 class Attn(nn.Module):
