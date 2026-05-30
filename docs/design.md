@@ -115,7 +115,10 @@ from circuitry.core import weight, activation, gradient, spectral
 weight.effective_rank(W: Tensor, eps: float = 1e-12) -> float
 weight.stable_rank(W: Tensor) -> float
 weight.condition_number(W: Tensor) -> float
-weight.singular_values(W: Tensor, k: int | None = None) -> Tensor
+weight.singular_values(W: Tensor, k: int | None = None, *, seed: int | None = None, use_gram: bool | str = 'auto') -> Tensor
+# seed: if not None, seeds the random subsample (>max_dim columns) for CPU-deterministic cross-step comparison.
+# use_gram: 'auto' uses eigvalsh(W^T W) fast path for strongly-rectangular matrices; False forces full SVD.
+# condition_number always uses the full SVD (use_gram=False) to preserve the exact max/min singular-value ratio.
 weight.heavy_tail_alpha(W: Tensor) -> float
 weight.attention_head_rank(W: Tensor, n_heads: int, head_dim: int, axis: int = 0) -> Tensor
 
@@ -130,6 +133,15 @@ activation.kurtosis(x: Tensor, dim: int | tuple = -1) -> Tensor
 activation.participation_ratio(x: Tensor) -> float
 activation.norm_stats(x: Tensor) -> NormStats   # mean, std, max, frac>k*median
 activation.gate_stats(x: Tensor, eps: float = 1e-6) -> GateStats  # frac_active, mean_abs, std
+activation.repr_drift(ref: Tensor, cur: Tensor, method: str = 'linear_cka', *,
+                      max_samples: int = 256, eps: float = 1e-10, seed: int = 0) -> float
+# Representational drift between two activation snapshots. Returns a float in [0, 1] where 0 means
+# identical representation and larger values indicate more drift.  Three configurable methods:
+#   "linear_cka" (default) — invariant to orthogonal rotation and isotropic rescaling; CKA requires >= 2 rows.
+#   "cosine"               — mean per-sample cosine distance; O(n d), not scale-invariant.
+#   "rbf_cka"              — RBF-kernel CKA with median-heuristic bandwidth; nonlinear; CKA requires >= 2 rows.
+# Rows are subsampled (seeded, CPU-deterministic) to max_samples before Gram computation.
+# Recorder emits per-layer tags: activation/repr_drift/<module>.
 
 # gradient-space
 gradient.grad_norm_per_module(grads: dict[str, Tensor]) -> dict[str, float]
@@ -245,6 +257,50 @@ Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns
 > the first emit step (or first two, for `direction_cosine`) until enough snapshots
 > exist. This is the only internal recorder state change in v1.3; `StepContext` shape
 > is unchanged.
+
+> **Representational drift probe (v1.4).** `Recipe` gains three new fields for opt-in
+> drift monitoring:
+>
+> ```python
+> probe_batch: torch.Tensor | None = None      # if set, enables the drift probe
+> drift_method: str = "linear_cka"             # "linear_cka" | "cosine" | "rbf_cka"
+> drift_max_tokens: int | None = None          # row cap for the probe; None = all tokens
+> ```
+>
+> The `llm` recipe lists `"drift_probe"` in `activation_diagnostics` with
+> `enabled={"drift_probe": False}` (default OFF). To enable, pass a
+> `Recipe.probe_batch` tensor — a small representative input batch held constant
+> across emit steps. When `probe_batch` is set and `"drift_probe"` is not suppressed
+> via `enabled`, the Recorder runs a **second forward pass** on `probe_batch` at each
+> emit step (frozen model, no grad, CPU clone). On the **first emit step**, the
+> captured per-module activations are stored as the reference snapshot (a detached CPU
+> copy); subsequent steps compare live activations to this reference using
+> `activation.repr_drift`. The reference snapshot is cleared in `detach()`.
+>
+> Call `recorder.reset_drift_reference()` at any time to discard the current reference
+> snapshot and re-anchor at the next emit step (e.g. after a phase change or a
+> checkpoint reload).
+>
+> Per-layer drift is written as `activation/repr_drift/<module>` scalars via the
+> configured `MetricWriter`.
+>
+> Because the probe requires a second forward pass, it adds overhead proportional to
+> the probe batch size. It is off by default so it adds zero overhead at default
+> settings; see §10 for the pending GPU cost characterisation.
+
+> **ACDC run/sweep kwargs (v1.4).** `ACDCRunner.run()` and `.sweep()` gained two new
+> optional kwargs:
+>
+> - `ablation_mode: str = "corrupted"` — controls what value is injected for ablated
+>   edges. `"corrupted"` (default) feeds the cached corrupted-run activation (matching
+>   the original ACDC paper). `"zero"` injects a zero tensor. `"mean"` injects each
+>   writer's corrupted activation averaged over the batch/sequence positions (a
+>   spatially-constant per-feature mean).
+> - `eap_skip_threshold: float | None = None` — if provided along with `eap_scores`,
+>   edges whose `|EAP score|` **exceeds** this threshold are assumed important and kept
+>   **without** running their ablation test (skipping that forward pass), accelerating
+>   circuit discovery on large graphs. `None` (default) tests every edge. This is the
+>   EAP-score skip speedup documented as a v1.0 follow-on.
 
 `HookPoint` supports three target specifications:
 
@@ -436,13 +492,25 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 
 The most likely 6-month failure mode is "this is cool, but it doubled my training time." The design defends against this with explicit constraints:
 
-- **Wall-clock budget:** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead MUST be ≤10% of baseline training step time on a 50M-param transformer and ≤5% on a 350M-param transformer. This is benchmarked in CI on a fixed reference workload; regressions block merge.
+- **Wall-clock budget (design target):** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead SHOULD be ≤10% of baseline training step time on a 50M-param transformer. This is the design target and CI regression gate; it is **not yet validated on GPU** (see below).
 - **Per-diagnostic toggle:** every entry in `weight_diagnostics` / `activation_diagnostics` / `gradient_diagnostics` can be disabled via recipe override. The expensive ones (`heavy_tail_alpha`, `singular_values` on large weights) are documented as such.
-- **Subsampling knobs:** weight-space diagnostics support `max_dim` to truncate SVD to top-k singular values, and `sample_axis` to compute on a random column subset. Default `max_dim=512` keeps SVD cost bounded on wide LLM matrices.
+- **Subsampling knobs:** weight-space diagnostics support `max_dim` to truncate SVD to top-k singular values, and `sample_axis` to compute on a random column subset. Default `max_dim=512` keeps SVD cost bounded on wide LLM matrices. In v1.4, `singular_values` gained a `seed` kwarg (CPU-deterministic subsample, fixing the unseeded-randperm determinism violation) and a `use_gram='auto'` fast path (eigvalsh(W^T W) for strongly-rectangular matrices); `condition_number` always uses the full SVD to preserve exact max/min singular-value ratio. The Gram fast path reduces SVD cost for matrices where columns << rows (narrowly-rectangular weight matrices not wide enough to trigger the >512 subsample); matrices wider than max_dim=512 are subsampled and fall back to `svdvals` regardless.
 - **Lazy hooks:** activation hooks only run the forward pass capture on the emit step (every N steps). The hook checks `self._should_capture()` and is a no-op otherwise, avoiding per-step allocation cost.
 - **Async writer option:** `MetricWriter` adapters MAY implement non-blocking writes (a background thread draining a queue). The TB adapter does this by default; tests use the synchronous null writer.
+- **Drift probe overhead:** the v1.4 `drift_probe` diagnostic requires a second forward pass on `probe_batch` per emit step. It is **off by default** (`enabled={"drift_probe": False}`) and adds zero overhead at default settings. Its per-emit cost is proportional to probe batch size and has not yet been characterised on GPU; benchmarking should be done alongside the §10 GPU re-validation below.
 
-Reference benchmark workload: a 50M-param decoder-only transformer on synthetic data, 100 steps, with and without `circuitry` attached, full LLM recipe, `every_n_steps=200`. Numbers go in the README.
+**On-record measurements (CPU only, v0.2.0a0 snapshot, 88M-param decoder):**
+
+| run | baseline | instrumented | overhead |
+| --- | -------: | -----------: | -------: |
+| 1   |  23.90 s |      27.46 s |   +14.9% |
+| 2   |  21.15 s |      24.26 s |   +14.7% |
+
+These CPU numbers **exceed the ≤10% budget** (+14.9% / +14.7%). However, CPU measurements are a pessimistic proxy for the GPU production scenario the budget targets: on GPU, the training step is dominated by compute (matrix multiplications), while `circuitry`'s diagnostic cost is largely independent of training-step speed — so the overhead ratio shrinks relative to the same absolute diagnostic cost. Run-to-run noise on CPU is also high (±5% typical, occasional 30% spikes when the bench shares cores). **GPU re-validation on the rtx host (via Ray) is still pending (A3).**
+
+The bench harness default cadence (`every_n_steps=25`) used in earlier GPU experiments is more pessimistic than the budget scenario (`every_n_steps=200`): at cadence 25 the emission cost amortises over only 25 steps rather than 200, so the measured overhead ratio is ~8× worse than the budget scenario even at identical per-emission cost.
+
+Reference benchmark workload: a 50M-param decoder-only transformer on synthetic data, 100 steps, with and without `circuitry` attached, full LLM recipe, `every_n_steps=200`.
 
 ## 11. Multi-process (DDP / FSDP) design notes
 

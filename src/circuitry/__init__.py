@@ -4,7 +4,7 @@ Public surface re-exports below are the v0.6.0 stable API. Anything not re-expor
 here is an internal implementation detail and may change without notice.
 """
 
-from circuitry.core.activation import token_similarity
+from circuitry.core.activation import repr_drift, token_similarity
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.weight import direction_cosine, update_delta
 from circuitry.recipes import Recipe, register_recipe
@@ -15,7 +15,7 @@ from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 __all__ = [
     "HookPoint",
@@ -31,6 +31,7 @@ __all__ = [
     "direction_cosine",
     "discover",
     "register_recipe",
+    "repr_drift",
     "scan_run",
     "token_similarity",
     "update_delta",

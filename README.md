@@ -4,7 +4,7 @@
 
 Mechanistic-interpretability diagnostics for PyTorch — works across LLMs, vision (CNNs / ViTs), and recsys models with a single API, live during training or post-hoc on a checkpoint.
 
-**Status:** v1.3.0 (beta). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md).
+**Status:** v1.4.0 (beta). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md).
 
 ## Install
 
@@ -52,29 +52,30 @@ circuitry compare runs/run_a runs/run_b
 
 ## What you get
 
-- **Primitives** (`circuitry.core.*`) — `effective_rank`, `stable_rank`, `heavy_tail_alpha`, `dead_fraction`, `kurtosis`, `participation_ratio`, `grad_norm_per_module`, ESD, rank trajectory, cross-step weight dynamics (`update_delta`, `direction_cosine`), and more.
-- **Recorder** — attach to a training loop, write TensorBoard events every N steps, dump a markdown report at the end. Live **training-dynamics** diagnostics (`weight/update_delta`, `weight/direction_cosine`, `weight/rank_trajectory`) track weight formation/collapse across emit steps with no extra forward pass. `Recipe.disable(names)` / `Recipe.only(names)` select diagnostics; `circuitry report --compact` renders Summary + Flags only; `circuitry compare` diffs two runs at family/diagnostic granularity.
+- **Primitives** (`circuitry.core.*`) — `effective_rank`, `stable_rank`, `heavy_tail_alpha`, `dead_fraction`, `kurtosis`, `participation_ratio`, `grad_norm_per_module`, ESD, rank trajectory, cross-step weight dynamics (`update_delta`, `direction_cosine`), **representational drift** (`repr_drift` — configurable linear-CKA / cosine / RBF-CKA), and more.
+- **Recorder** — attach to a training loop, write TensorBoard events every N steps, dump a markdown report at the end. Live **training-dynamics** diagnostics (`weight/update_delta`, `weight/direction_cosine`, `weight/rank_trajectory`) track weight formation/collapse across emit steps with no extra forward pass. `Recipe.disable(names)` / `Recipe.only(names)` select diagnostics; `circuitry report --compact` renders Summary + Flags only; `circuitry compare` diffs two runs at family/diagnostic granularity. **Opt-in representational-drift probe** (`Recipe.probe_batch`): pass a fixed probe batch to track per-layer `activation/repr_drift/<module>` across training — requires a second forward pass per emit step, off by default.
 - **Recipes** — `llm` / `vision` / `two_tower` plug the right hooks and diagnostics into your model; subclass `Recipe` or `register_recipe(...)` for custom architectures.
-- **Activation patching / attribution** (`circuitry.patching`) — opt-in causal activation patching (`patch_site`, `PatchRunner`) plus EAP, AtP\*, and ACDC circuit-attribution over a frozen model. HF-eager (Llama-family + `head_dim`-aware) and TransformerLens backends; `to_hooked_transformer` bridge for non-Llama HF models.
+- **Activation patching / attribution** (`circuitry.patching`) — opt-in causal activation patching (`patch_site`, `PatchRunner`) plus EAP, AtP\*, and ACDC circuit-attribution over a frozen model. HF-eager (Llama-family + `head_dim`-aware) and TransformerLens backends; `to_hooked_transformer` bridge for non-Llama HF models. ACDC `run()`/`sweep()` gained `ablation_mode` (`"corrupted"` / `"zero"` / `"mean"`) and `eap_skip_threshold` for faster circuit discovery.
+- **Deterministic SVD subsample** — `weight.singular_values` gained a `seed` kwarg (CPU-deterministic column subsample for cross-step comparison) and a `use_gram='auto'` Gram fast path for strongly-rectangular matrices (eigvalsh(W^T W) path; `condition_number` stays on full SVD).
 - **MetricWriter protocol** — TB by default; `jsonl` (storage format for the `scan` / `report` workflow) and `null` (test plumbing) adapters ship in-tree. Bring-your-own writer is a ~50-LOC subclass of `MetricWriter`.
 
 ## Performance
 
-Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer (see `docs/design.md` §10).
+Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a 50M-param decoder transformer. This is the design budget (see `docs/design.md` §10); **it has not yet been validated on GPU**.
 
-**Measured at v0.2.0a0** (the v0.3.0 wandb removal does not touch perf-sensitive code paths, so these numbers remain representative). 88M-param decoder, 100 steps, `every_n_steps=200`, CPU on a 16-core consumer machine (`scripts/bench_50m.py --n-layers 8 --d-model 768`):
+**Only on-record measurements are CPU (v0.2.0a0 snapshot).** 88M-param decoder, 100 steps, `every_n_steps=200`, CPU on a 16-core consumer machine (`scripts/bench_50m.py --n-layers 8 --d-model 768`):
 
 | run | baseline | instrumented | overhead |
 | --- | -------: | -----------: | -------: |
 | 1   |  23.90 s |      27.46 s |   +14.9% |
 | 2   |  21.15 s |      24.26 s |   +14.7% |
 
-Run-to-run noise on CPU is high (±5% typical, occasional 30% spikes when the bench shares cores), and CPU inflates the ratio versus the GPU production scenario the budget was sized against. GPU re-measurement is on the to-do list.
+These numbers **exceed the ≤10% budget**. CPU measurements are a pessimistic proxy for the GPU production scenario the budget targets: on GPU the training step is dominated by fast matrix-multiply compute, so `circuitry`'s diagnostic overhead amortises more favourably. Run-to-run noise on CPU is also high (±5% typical). The v1.4 Gram fast path (`use_gram='auto'`) reduces SVD cost for strongly-rectangular weight matrices that are not wide enough to trigger the >512-column subsample; the drift probe is off by default and adds zero overhead at default settings. GPU re-validation on the rtx host (via Ray) is still pending.
 
 Run the harness yourself:
 
 ```bash
-venv/bin/python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
+.venv/bin/python scripts/bench_50m.py --n-layers 8 --d-model 768 --steps 100
 ```
 
 ## Known limits

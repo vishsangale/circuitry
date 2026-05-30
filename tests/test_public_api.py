@@ -20,6 +20,7 @@ def test_public_surface():
         "direction_cosine",
         "discover",
         "register_recipe",
+        "repr_drift",
         "scan_run",
         "token_similarity",
         "update_delta",
@@ -37,8 +38,9 @@ def test_version_is_a_string():
 
 def test_v02_surface_exports():
     import circuitry
-    assert circuitry.__version__ == "1.3.0"
+    assert circuitry.__version__ == "1.4.0"
     assert hasattr(circuitry, "token_similarity")
     assert hasattr(circuitry, "update_delta")
     assert hasattr(circuitry, "direction_cosine")
     assert hasattr(circuitry, "discover")
+    assert hasattr(circuitry, "repr_drift")

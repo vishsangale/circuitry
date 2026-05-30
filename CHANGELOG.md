@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-05-30
+
+### Added
+- **`activation.repr_drift` primitive** (`core/activation.py`). Pure function returning
+  representational drift in `[0, 1]` (0 = identical, 1 = fully drifted) between two
+  activation snapshots. Three configurable methods: `"linear_cka"` (default — invariant
+  to orthogonal rotation and isotropic rescaling; requires ≥2 rows), `"cosine"` (mean
+  per-sample cosine distance; works with any row count), `"rbf_cka"` (RBF-kernel CKA
+  with median-heuristic bandwidth; requires ≥2 rows). Row count is capped at `max_samples`
+  (default 256) with a **seeded, CPU-deterministic** subsample before Gram computation.
+  Re-exported as `circuitry.repr_drift` in the public surface.
+- **`Recipe.probe_batch` / `drift_method` / `drift_max_tokens`** fields on `Recipe`.
+  Pass `probe_batch` (a fixed representative input tensor) to enable the opt-in drift probe.
+  The `llm` recipe lists `"drift_probe"` in `activation_diagnostics` with
+  `enabled={"drift_probe": False}` (default OFF).
+- **Drift probe in `Recorder`** (opt-in, default off). When `probe_batch` is set and
+  `"drift_probe"` is enabled: at each emit step the Recorder runs a second forward pass
+  on `probe_batch` (frozen model, no grad). On the first emit step the captured
+  per-module activations are stored as a detached CPU reference snapshot. Subsequent
+  steps call `activation.repr_drift` to compare the live probe to the reference and emit
+  `activation/repr_drift/<module>` scalars. The reference is cleared in `detach()`.
+- **`Recorder.reset_drift_reference()`** — discards the current drift reference and
+  re-anchors at the next emit step.
+- **`weight.singular_values` `seed` kwarg** — seeds the random column subsample for
+  matrices wider than `max_dim=512`. Ensures cross-step SVD subsamples are identical,
+  making `effective_rank` / `stable_rank` / `sv_histogram` / `heavy_tail_alpha`
+  numerically comparable across emit steps. The `Recorder` passes a fixed
+  `_SUBSAMPLE_SEED` constant.
+- **`weight.singular_values` `use_gram` fast path** — `use_gram='auto'` (default) uses
+  `eigvalsh(W^T W)` for strongly-rectangular matrices (fewer columns than rows), reducing
+  SVD cost. `condition_number` always uses the full SVD path (`use_gram=False`) to
+  preserve the exact max/min singular-value ratio.
+- **ACDC `ablation_mode` kwarg** on `ACDCRunner.run()` and `.sweep()`. `"corrupted"`
+  (default) feeds cached corrupted-run activations (matching the original paper).
+  `"zero"` injects zeros. `"mean"` injects each writer's corrupted activation averaged
+  over the batch/sequence positions (a spatially-constant per-feature mean).
+- **ACDC `eap_skip_threshold` kwarg** on `ACDCRunner.run()` and `.sweep()`. When
+  `eap_scores` are provided and a float threshold is given, edges whose `|EAP score|`
+  **exceeds** the threshold are assumed important and kept **without** running their
+  ablation test (skipping that forward pass), accelerating circuit discovery on large
+  graphs. `None` (default) tests every edge. This is the EAP-score skip speedup
+  documented as a v1.0 follow-on.
+
+### Changed
+- `circuitry.__version__` bumped to `"1.4.0"`.
+- `circuitry.repr_drift` added to `__all__` and the public export surface
+  (alongside `token_similarity`, `update_delta`, `direction_cosine`).
+
+### Fixed
+- **Unseeded randperm in `weight.singular_values`** violated the CPU-deterministic
+  invariant (design.md §4.1 Tier 1 contract). The column subsample drawn for matrices
+  wider than `max_dim=512` used an unseeded `torch.randperm`, so consecutive emit steps
+  could sample different column subsets — making `effective_rank` / `stable_rank` /
+  `heavy_tail_alpha` values incomparable across steps. Fixed by the new `seed` kwarg;
+  the `Recorder` now passes a fixed seed for all SVD-derived diagnostics.
+
+### Documentation
+- `docs/design.md §4.1`: added `activation.repr_drift` to the primitive catalog
+  (signature, three methods, row-count constraint, tag name). Updated
+  `weight.singular_values` signature to show `seed` and `use_gram` kwargs with notes.
+  All references to the earlier working name `repr_drift_cka` are replaced with
+  `repr_drift` (the shipped name).
+- `docs/design.md §4.4`: documented `Recipe.probe_batch` / `drift_method` /
+  `drift_max_tokens`, the `"drift_probe"` default-OFF gate, the second-forward-pass
+  probe, the first-emit reference anchor, `reset_drift_reference()`, reference lifecycle
+  (detached CPU copy; cleared in `detach()`). Documented ACDC `ablation_mode` and
+  `eap_skip_threshold`.
+- `docs/design.md §10`: updated performance section with honest framing — ≤10% is the
+  design budget/target; the only on-record measurements are CPU (+14.9% / +14.7% at
+  v0.2.0a0), which exceed the budget and are CPU-inflated relative to the GPU scenario
+  the budget targets; GPU re-validation (A3) is still pending. Notes the Gram fast path
+  and drift probe scope.
+
 ## [1.3.0] — 2026-05-30
 
 ### Added

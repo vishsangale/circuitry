@@ -1,13 +1,27 @@
 # circuitry — TODO / open items
 
 Tracking doc for open work and future improvements. Released through v1.3.0 (2026-05-30);
-all tags + GitHub Releases v0.1.0 → v1.3.0 are published. The design contract is
-`docs/design.md` — any change to a CI-enforced invariant must amend it first.
+v1.4.0 is in progress on `feat/v1.4-drift-and-perf` (drift probe + SVD determinism +
+Gram fast path + ACDC ablation modes). All tags + GitHub Releases v0.1.0 → v1.3.0 are
+published. The design contract is `docs/design.md` — any change to a CI-enforced
+invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
 **[val]** validation / benchmarking · **[docs]** documentation · **[hygiene]** repo housekeeping.
 
 ---
+
+## v1.4.x follow-ups / pending validation
+
+- [ ] **[val] §10 GPU budget re-validation (A3).** Run `scripts/bench_50m.py` on the
+  `rtx` host (via Ray) at `every_n_steps=200` with the full LLM recipe to get the first
+  GPU overhead measurement. The only on-record numbers are CPU (+14.9% / +14.7% at
+  v0.2.0a0), which exceed the ≤10% budget and are CPU-inflated. GPU re-validation is
+  the primary open §10 task — do not claim the budget is met until this runs.
+- [ ] **[val] Drift probe forward-pass cost on GPU.** When the §10 GPU re-validation
+  runs, also benchmark the opt-in drift probe (`Recipe.probe_batch` set, `"drift_probe"`
+  enabled) to characterise the second-forward-pass cost at representative probe batch
+  sizes. This should be a parallel measurement in the same Ray job.
 
 ## v1.3.x follow-ups
 
