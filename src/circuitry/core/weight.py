@@ -201,8 +201,12 @@ def update_delta(
     for name in sd_now:
         if name not in sd_prev:
             continue
-        diff = (sd_now[name].to(torch.float32) - sd_prev[name].to(torch.float32))
-        out[name] = float(diff.norm().item())
+        # Align devices: in the live Recorder, sd_now holds GPU weights while the
+        # prior snapshot (sd_prev) is a CPU copy — subtracting across devices
+        # raises. Move sd_prev onto sd_now's device.
+        a = sd_now[name].to(torch.float32)
+        b = sd_prev[name].to(device=a.device, dtype=torch.float32)
+        out[name] = float((a - b).norm().item())
     return out
 
 
@@ -222,8 +226,13 @@ def direction_cosine(
     for name in sd_now:
         if name not in sd_prev or name not in sd_prev_prev:
             continue
-        u2 = (sd_now[name].to(torch.float32) - sd_prev[name].to(torch.float32)).flatten()
-        u1 = (sd_prev[name].to(torch.float32) - sd_prev_prev[name].to(torch.float32)).flatten()
+        # Align devices onto sd_now's (the live Recorder keeps prior snapshots on
+        # CPU while current weights are on GPU — cross-device math raises).
+        now = sd_now[name].to(torch.float32)
+        prev = sd_prev[name].to(device=now.device, dtype=torch.float32)
+        prev_prev = sd_prev_prev[name].to(device=now.device, dtype=torch.float32)
+        u2 = (now - prev).flatten()
+        u1 = (prev - prev_prev).flatten()
         n2 = float(u2.norm().item())
         n1 = float(u1.norm().item())
         if n1 == 0.0 or n2 == 0.0:

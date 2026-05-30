@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] — 2026-05-30
+
+### Fixed
+- **GPU crash in the cross-step weight-dynamics diagnostics** (regression since v1.3.0).
+  `weight.update_delta` and `weight.direction_cosine` subtracted the current weights
+  against the prior snapshot without aligning devices. In the live `Recorder` the current
+  weights are on the model's device (e.g. CUDA) while `_prev_weights` is a CPU copy, so on
+  GPU the stock `llm` recipe crashed at the second emit step with "Expected all tensors to
+  be on the same device". The primitives now move the prior snapshot onto the current
+  tensor's device before the delta. CPU-only runs were unaffected (which is why the
+  CPU test suite did not catch it); added CUDA-gated regression tests.
+
 ## [1.4.0] — 2026-05-30
 
 ### Added

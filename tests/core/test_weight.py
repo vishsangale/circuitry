@@ -141,6 +141,27 @@ def test_direction_cosine_opposite_updates():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_update_delta_cross_device():
+    # Regression (v1.4.1): the live Recorder holds current weights on GPU but the
+    # prior snapshot on CPU; subtracting across devices raised. update_delta must
+    # align devices and return a correct norm.
+    now = {"w": torch.randn(8, 8, device="cuda")}
+    prev = {"w": torch.zeros(8, 8)}  # CPU snapshot, as the Recorder stores it
+    out = weight.update_delta(now, prev)
+    assert out["w"] == pytest.approx(now["w"].float().norm().item(), rel=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_direction_cosine_cross_device():
+    # Regression (v1.4.1): same cross-device guard for direction_cosine.
+    now = {"w": torch.randn(8, 8, device="cuda")}
+    prev = {"w": torch.zeros(8, 8)}       # CPU
+    prev_prev = {"w": torch.ones(8, 8)}   # CPU
+    out = weight.direction_cosine(now, prev, prev_prev)
+    assert -1.0 - 1e-6 <= out["w"] <= 1.0 + 1e-6
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_singular_values_on_cuda():
     # Regression (v0.9.1): the max_dim subsample built a CPU randperm index and
     # index_select'd a CUDA matrix → device mismatch. 768 > max_dim 512 triggers it.
