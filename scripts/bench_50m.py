@@ -97,7 +97,14 @@ class TinyTransformer(nn.Module):
         return self.lm_head(self.model(tokens))
 
 
-def _run(model, steps: int, recorder: Recorder | None, device: str) -> float:
+def _run(
+    model,
+    steps: int,
+    recorder: Recorder | None,
+    device: str,
+    batch_size: int = 4,
+    seq_len: int = 64,
+) -> float:
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     if recorder is not None:
         recorder.attach()
@@ -105,7 +112,7 @@ def _run(model, steps: int, recorder: Recorder | None, device: str) -> float:
         torch.cuda.synchronize()  # mandatory: don't time async kernel launches
     t0 = time.perf_counter()
     for s in range(steps):
-        tokens = torch.randint(0, 8192, (4, 64), device=device)
+        tokens = torch.randint(0, 8192, (batch_size, seq_len), device=device)
         logits = model(tokens)
         loss = logits.mean()
         opt.zero_grad()
@@ -130,6 +137,8 @@ def main() -> int:
     # default 100 steps) — a realistic periodic-diagnostic schedule, not a
     # gate-cost-only measurement.
     p.add_argument("--every-n-steps", type=int, default=25)
+    p.add_argument("--batch-size", type=int, default=4)
+    p.add_argument("--seq-len", type=int, default=64)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                    choices=["cpu", "cuda"])
     p.add_argument("--run-dir", default="runs/bench")
@@ -139,12 +148,15 @@ def main() -> int:
     model = TinyTransformer(args.n_layers, args.d_model).to(args.device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"params: {n_params/1e6:.1f}M  device={args.device}  "
+          f"batch={args.batch_size}x{args.seq_len} ({args.batch_size * args.seq_len} tokens/step)  "
           f"every_n_steps={args.every_n_steps} (~{args.steps // args.every_n_steps} emissions)")
 
-    baseline = _run(model, args.steps, recorder=None, device=args.device)
+    baseline = _run(model, args.steps, recorder=None, device=args.device,
+                    batch_size=args.batch_size, seq_len=args.seq_len)
     rec = Recorder(model, run_dir=args.run_dir, recipe="llm",
                    writer="null", every_n_steps=args.every_n_steps, strict=False)
-    instrumented = _run(model, args.steps, recorder=rec, device=args.device)
+    instrumented = _run(model, args.steps, recorder=rec, device=args.device,
+                        batch_size=args.batch_size, seq_len=args.seq_len)
 
     overhead = (instrumented / baseline) - 1.0
     print(f"baseline:     {baseline:7.2f}s")
