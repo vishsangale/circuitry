@@ -34,7 +34,9 @@ RECIPE = Recipe(
                   pattern=r".*\.layers\.\d+$"),
     ],
     weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank",
-                        "heavy_tail_alpha", "sv_histogram"],
+                        "heavy_tail_alpha", "sv_histogram",
+                        # v1.3 training-dynamics:
+                        "update_delta", "rank_trajectory", "direction_cosine"],
     activation_diagnostics=["gate_stats", "dead_fraction", "kurtosis",
                             "participation_ratio",
                             # v0.9 additions:
