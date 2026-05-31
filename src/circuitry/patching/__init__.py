@@ -29,17 +29,29 @@ __all__ = [
     "EAPResult",
     "EAPRunner",
     "Edge",
+    "FeatureACDCRunner",
     "Node",
     "PatchHandle",
     "PatchResult",
     "PatchRunner",
+    "SAEFeatureCircuit",
+    "SAEFeatureEdge",
+    "SAEFeatureEdgeGraph",
+    "SAEFeatureEdgeRunner",
     "SAEFeatureRunner",
     "Site",
     "patch_site",
     "to_hooked_transformer",
 ]
 
-_LAZY = {"SAEFeatureRunner": "circuitry.patching.sae_features"}
+_LAZY = {
+    "SAEFeatureRunner": "circuitry.patching.sae_features",
+    "SAEFeatureEdge": "circuitry.patching.sae_edges",
+    "SAEFeatureEdgeGraph": "circuitry.patching.sae_edges",
+    "SAEFeatureCircuit": "circuitry.patching.sae_edges",
+    "SAEFeatureEdgeRunner": "circuitry.patching.sae_edges",
+    "FeatureACDCRunner": "circuitry.patching.sae_edges",
+}
 
 
 def __getattr__(name: str) -> object:

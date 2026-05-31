@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-05-30
+
+### Added
+- **Feature→feature SAE circuits** — `circuitry.patching.SAEFeatureEdgeRunner` +
+  `FeatureACDCRunner`, building on the v1.5 node-level `SAEFeatureRunner`. Given a clean/corrupted
+  prompt pair, a differentiable metric, and `sae_sites` (resid_post → SAE), `run()` returns a
+  `SAEFeatureCircuit`: the v1.5 node `AtPResult`, a `dict[SAEFeatureEdge, float]` of feature→feature
+  edges, and a `SAEFeatureEdgeGraph`.
+  - **Two-stage tractability** (the feature×feature space is intractable — ~6e8 edges for one
+    adjacent pair at d_sae=24576): reuse `SAEFeatureRunner` to keep the top-K **active** survivors
+    per site, then enumerate edges only among survivors across ordered site-pairs
+    (`layer_pairs='adjacent'` default, `'all_forward'` opt-in; `max_edges` cap).
+  - **Edge formula** `edge(U:i→D:j) = Σ_pos Δf_U[i]·(∂f_D[j]/∂f_U[i])·gradf_D[j]`, `Δf_U =
+    f_U_corrupt − f_U_clean`. ALL sites in the span are spliced **simultaneously** in one clean
+    forward (upstream writer = detached-leaf seed, downstream reader = live encode, `eps` frozen at
+    every site), and the Jacobian factor is realized as a **per-downstream-survivor VJP** — never a
+    dense `d_sae×d_sae` matrix (each VJP is freed immediately). This is the full **live-autograd
+    Jacobian**, not the Marks/Anthropic frozen-attention-pattern Jacobian. On a linear-downstream
+    model the analytic edge equals the independent `bruteforce_feature_edge_scores` at 1e-4.
+  - **Opt-in error→feature edges** (`include_error_node=True`, default off) via an independent
+    upstream error leaf; **feature→error edges are structurally zero** (the downstream error is a
+    frozen detached leaf — Anthropic-style source-only error) and are not computed.
+  - **Circuit extraction:** `SAEFeatureCircuit.ranked()/top_k(n)/threshold(tau)` +
+    `prune(method='threshold'|'acdc'|'both', tau, ablation_mode='corrupted'|'zero'|'mean')`, and
+    `faithfulness()`/`completeness()` ((m(C)−m(∅))/(m(M)−m(∅)), Marks §3.2 — can exceed [0,1] under
+    anti-correlation, documented). Ablation is **NODE-set** (downstream features share a residual, so
+    edge-level ablation is unimplementable): non-circuit feature entries are replaced before decode.
+  - **`FeatureACDCRunner`** — greedy reverse-topological **node** pruning (accept a removal if
+    `KL_new − KL_current < tau`; `sweep(taus)` Pareto helper; `eap_skip_threshold`). Reuses
+    `ACDCRunner`'s control flow + `core.patching.kl_divergence`; the feature-basis set-ablation
+    forward is net-new.
+
+### Notes
+- `graph.py` / `EdgeGraph` / `_order` / `build_graph` and the v1.5 `SAEFeatureRunner` are **untouched**
+  — the feature circuit uses a dedicated `SAEFeatureEdgeGraph`. Scope inherited from v1.5: HF-eager +
+  `resid_post` only; `TLSiteResolver` / non-`resid_post` / transcoder|matching_pursuit|temporal SAEs
+  raise `NotImplementedError`; architectures standard/topk/jumprelu/gated.
+- Deferred follow-ons: the integrated-gradients edge variant (`variant` enum slot reserved),
+  per-position edges, `mlp_out`/`attn_out` sites, and the TransformerLens backend.
+- Designed and adversarially red-green reviewed via multi-agent workflows (the review caught and fixed
+  an error-edge honesty gap + 5 toothless tests before release).
+
 ## [1.5.0] — 2026-05-30
 
 ### Added

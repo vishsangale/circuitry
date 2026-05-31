@@ -38,7 +38,7 @@ def test_version_is_a_string():
 
 def test_v02_surface_exports():
     import circuitry
-    assert circuitry.__version__ == "1.5.0"
+    assert circuitry.__version__ == "1.6.0"
     assert hasattr(circuitry, "token_similarity")
     assert hasattr(circuitry, "update_delta")
     assert hasattr(circuitry, "direction_cosine")
@@ -100,3 +100,22 @@ def test_sae_feature_runner_accessible():
     assert result.stdout.strip() == "OK", (
         f"Unexpected subprocess output: {result.stdout!r}"
     )
+
+
+def test_sae_feature_edge_types_accessible():
+    """v1.6 feature-circuit types live under circuitry.patching (lazy-exported)."""
+    import circuitry.patching
+
+    for name in (
+        "SAEFeatureEdge",
+        "SAEFeatureEdgeGraph",
+        "SAEFeatureCircuit",
+        "SAEFeatureEdgeRunner",
+        "FeatureACDCRunner",
+    ):
+        assert hasattr(circuitry.patching, name), (
+            f"{name} not accessible as circuitry.patching.{name}"
+        )
+        assert name in circuitry.patching.__all__, (
+            f"{name} missing from circuitry.patching.__all__"
+        )
