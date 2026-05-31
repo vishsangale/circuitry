@@ -28,10 +28,10 @@ from circuitry.patching.atp import AtPNode, AtPResult
 from circuitry.patching.graph import Node
 from circuitry.patching.sae_features import (
     SAEFeatureRunner,
-    _extract_tensor,
     _freeze_sae,
-    _inject_tensor,
     _restore_sae,
+    _routed_extract,
+    _routed_inject,
 )
 from circuitry.patching.sites import Site
 from circuitry.sae.grad import assert_supported_sae, sae_decompose
@@ -49,7 +49,7 @@ def compute_f_per_site(
     model: nn.Module,
     inputs: _Inputs,
     sae_sites: dict[Site, Any],
-    resolver_layers: nn.ModuleList,
+    resolver: Any,
 ) -> dict[int, Tensor]:
     """Capture SAE feature activations per site in a single no_grad forward.
 
@@ -61,7 +61,9 @@ def compute_f_per_site(
 
     handles: list[Any] = []
     for site, sae in sae_sites.items():
-        layer_mod = resolver_layers[site.layer]
+        # Route through ResolvedSite (identity for resid_post + position=None)
+        resolved = resolver.resolve(model, site)
+        layer_mod = resolved.module
         layer = site.layer
 
         def _hook(
@@ -70,8 +72,9 @@ def compute_f_per_site(
             output: Any,
             _sae: Any = sae,
             _layer: int = layer,
+            _resolved: Any = resolved,
         ) -> None:
-            a = _extract_tensor(output).detach()
+            a = _routed_extract(_resolved, output).detach()
             a_in = a.to(
                 getattr(_sae, "device", a.device),
                 getattr(_sae, "dtype", a.dtype),
@@ -100,7 +103,7 @@ def _feature_circuit_forward(
     model: nn.Module,
     inputs: _Inputs,
     sae_sites: dict[Site, Any],
-    resolver_layers: nn.ModuleList,
+    resolver: Any,
     circuit_nodes: dict[int, set[int]],
     ablation_values: dict[int, Tensor],
     *,
@@ -119,7 +122,7 @@ def _feature_circuit_forward(
         model:           The model to run.
         inputs:          Model inputs.
         sae_sites:       Ordered dict of Site → SAE.
-        resolver_layers: nn.ModuleList to index by layer number.
+        resolver:        SiteResolver used to route hooks to the correct submodule.
         circuit_nodes:   dict[layer, set[feature_idx]] — the IN-CIRCUIT features.
         ablation_values: dict[layer, Tensor] — ablation activation (f_corrupt / zeros / mean).
         include_error_node: If True, treat sae_error as a node (§4.4).
@@ -137,7 +140,9 @@ def _feature_circuit_forward(
 
     for site, sae in sorted_site_pairs:
         layer = site.layer
-        layer_mod = resolver_layers[layer]
+        # Route through ResolvedSite (identity for resid_post + position=None)
+        resolved = resolver.resolve(model, site)
+        layer_mod = resolved.module
         # Determine model device/dtype for cast-back
         params = list(layer_mod.parameters())
         if params:
@@ -166,8 +171,9 @@ def _feature_circuit_forward(
             _include_err: bool = include_error_node,
             _err_in_circ: bool = err_in_circ,
             _abl_eps: Tensor | None = abl_eps,
+            _resolved: Any = resolved,
         ) -> Any:
-            a = _extract_tensor(output).detach()
+            a = _routed_extract(_resolved, output).detach()
             a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
 
             with torch.no_grad():
@@ -193,7 +199,7 @@ def _feature_circuit_forward(
                 recon = _sae.decode(f_ablated) + eps
                 recon_cast = recon.to(_mdev, _mdtype)
 
-            return _inject_tensor(output, recon_cast)
+            return _routed_inject(_resolved, output, recon_cast)
 
         handles.append(layer_mod.register_forward_hook(_ablate_hook))
 
@@ -306,7 +312,7 @@ class SAEFeatureCircuit:
     edges: dict[SAEFeatureEdge, float] — edge attribution scores
     graph: SAEFeatureEdgeGraph
     _sae_sites: internal reference for ablation (set by runner)
-    _resolver_layers: internal reference for ablation (set by runner)
+    _resolver: internal reference for ablation (set by runner)
 
     Methods ranked/top_k/threshold mirror EAPResult.
     """
@@ -319,7 +325,7 @@ class SAEFeatureCircuit:
         *,
         model: nn.Module | None = None,
         sae_sites: dict[Site, Any] | None = None,
-        resolver_layers: nn.ModuleList | None = None,
+        resolver: Any | None = None,
     ) -> None:
         self.nodes = nodes
         self.edges = edges
@@ -327,7 +333,7 @@ class SAEFeatureCircuit:
         # Internal references for Stage B ablation methods
         self._model = model
         self._sae_sites = sae_sites
-        self._resolver_layers = resolver_layers
+        self._resolver = resolver
 
     def ranked(self) -> list[tuple[SAEFeatureEdge, float]]:
         return sorted(self.edges.items(), key=lambda kv: abs(kv[1]), reverse=True)
@@ -381,13 +387,13 @@ class SAEFeatureCircuit:
         ablation_mode: str,
     ) -> dict[int, Tensor]:
         """Compute ablation_value dict[layer, Tensor] per §4.1."""
-        if self._model is None or self._sae_sites is None or self._resolver_layers is None:
+        if self._model is None or self._sae_sites is None or self._resolver is None:
             raise RuntimeError(
                 "SAEFeatureCircuit must be created by SAEFeatureEdgeRunner.run() "
                 "to use faithfulness/completeness/prune."
             )
         f_corrupt = compute_f_per_site(
-            self._model, corrupted, self._sae_sites, self._resolver_layers
+            self._model, corrupted, self._sae_sites, self._resolver
         )
         if ablation_mode == "corrupted":
             return f_corrupt
@@ -427,7 +433,7 @@ class SAEFeatureCircuit:
                                error nodes (required when include_error_node=True and
                                error node is out of circuit).
         """
-        if self._model is None or self._sae_sites is None or self._resolver_layers is None:
+        if self._model is None or self._sae_sites is None or self._resolver is None:
             raise RuntimeError(
                 "SAEFeatureCircuit must be created by SAEFeatureEdgeRunner.run() "
                 "to use faithfulness/completeness/prune."
@@ -436,7 +442,7 @@ class SAEFeatureCircuit:
             self._model,
             clean,
             self._sae_sites,
-            self._resolver_layers,
+            self._resolver,
             circuit_nodes,
             ablation_values,
             include_error_node=include_error_node,
@@ -504,21 +510,22 @@ class SAEFeatureCircuit:
         if include_error_node:
             error_in_circuit = self._error_circuit_membership()
             # ablation_eps: for out-of-circuit error nodes use the corrupted eps
-            if self._sae_sites is not None and self._resolver_layers is not None:
-                from circuitry.patching.sae_features import _extract_tensor
+            if self._sae_sites is not None and self._resolver is not None and self._model is not None:
                 from circuitry.sae.grad import sae_decompose as _sae_decompose
-                resolver_layers = self._resolver_layers
                 abl_eps_dict: dict[int, Tensor] = {}
                 for site, sae in self._sae_sites.items():
                     layer = site.layer
-                    layer_mod = resolver_layers[layer]
+                    # Route through ResolvedSite (identity for resid_post + position=None)
+                    resolved = self._resolver.resolve(self._model, site)
+                    layer_mod = resolved.module
                     eps_store: dict[str, Tensor] = {}
 
                     def _eps_hook(
                         module, inp, output,
                         _sae=sae, _st=eps_store,
+                        _resolved=resolved,
                     ) -> None:
-                        a = _extract_tensor(output).detach()
+                        a = _routed_extract(_resolved, output).detach()
                         a_in = a.to(
                             getattr(_sae, "device", a.device),
                             getattr(_sae, "dtype", a.dtype),
@@ -702,7 +709,7 @@ class SAEFeatureCircuit:
                 f"prune method must be 'threshold', 'acdc', or 'both', got {method!r}"
             )
 
-        if self._model is None or self._sae_sites is None or self._resolver_layers is None:
+        if self._model is None or self._sae_sites is None or self._resolver is None:
             raise RuntimeError(
                 "SAEFeatureCircuit must be created by SAEFeatureEdgeRunner.run() "
                 "to use prune()."
@@ -741,7 +748,7 @@ class SAEFeatureCircuit:
                 graph=new_graph,
                 model=self._model,
                 sae_sites=self._sae_sites,
-                resolver_layers=self._resolver_layers,
+                resolver=self._resolver,
             )
 
         if method in ("acdc", "both"):
@@ -756,8 +763,7 @@ class SAEFeatureCircuit:
             acdc_runner = FeatureACDCRunner(
                 model=self._model,
                 sae_sites=self._sae_sites,
-                resolver=None,  # resolver_layers used directly
-                _resolver_layers=self._resolver_layers,
+                resolver=self._resolver,
             )
             result = acdc_runner.run(
                 clean, corrupted, metric,
@@ -818,6 +824,11 @@ class SAEFeatureEdgeRunner:
                 raise NotImplementedError(
                     f"SAEFeatureEdgeRunner only supports resid_post sites in v1.6.0 "
                     f"(got {site.component!r}). mlp_out/attn_out support is deferred."
+                )
+            if site.position is not None:
+                raise NotImplementedError(
+                    f"SAEFeatureEdgeRunner does not support positional slicing "
+                    f"(site.position={site.position!r}). Only position=None is supported."
                 )
             if isinstance(sae_or_tuple, tuple) and len(sae_or_tuple) == 2:
                 from circuitry.sae.loader import load_sae
@@ -962,8 +973,6 @@ class SAEFeatureEdgeRunner:
         # ------------------------------------------------------------------
         all_edge_scores: dict[SAEFeatureEdge, float] = {}
 
-        resolver_layers = self._locate_layers()
-
         # Iterate over site pairs in forward order (writer before reader)
         for i, (writer_site, _writer_sae) in enumerate(sorted_sites):
             for j, (reader_site, _reader_sae) in enumerate(sorted_sites):
@@ -987,7 +996,6 @@ class SAEFeatureEdgeRunner:
                     reader_site=reader_site,
                     writer_survivors=writer_survivors,
                     reader_survivors=reader_survivors,
-                    resolver_layers=resolver_layers,
                     include_error_node=include_error_node,
                 )
                 all_edge_scores.update(pair_edges)
@@ -1005,7 +1013,7 @@ class SAEFeatureEdgeRunner:
             graph=edge_graph,
             model=self.model,
             sae_sites=self._sae_sites,
-            resolver_layers=resolver_layers,
+            resolver=self.resolver,
         )
 
     def _compute_pair_edges(
@@ -1017,7 +1025,6 @@ class SAEFeatureEdgeRunner:
         reader_site: Site,
         writer_survivors: list[AtPNode],
         reader_survivors: list[AtPNode],
-        resolver_layers: nn.ModuleList,
         include_error_node: bool,
     ) -> dict[SAEFeatureEdge, float]:
         """Stage 2 for a single (writer, reader) site pair.
@@ -1040,8 +1047,11 @@ class SAEFeatureEdgeRunner:
         writer_sae = self._sae_sites[writer_site]
         reader_sae = self._sae_sites[reader_site]
 
-        writer_layer_mod = resolver_layers[writer_site.layer]
-        reader_layer_mod = resolver_layers[reader_site.layer]
+        # Route through ResolvedSite (identity for resid_post + position=None)
+        writer_resolved = self.resolver.resolve(self.model, writer_site)
+        reader_resolved = self.resolver.resolve(self.model, reader_site)
+        writer_layer_mod = writer_resolved.module
+        reader_layer_mod = reader_resolved.module
 
         # ------------------------------------------------------------------
         # Step A: capture f_U_corrupt and f_D_corrupt (no_grad)
@@ -1053,8 +1063,9 @@ class SAEFeatureEdgeRunner:
             module: nn.Module, inp: Any, output: Any,
             _sae: Any = writer_sae,
             _st: dict = writer_corrupt_store,
+            _resolved: Any = writer_resolved,
         ) -> None:
-            a = _extract_tensor(output).detach()
+            a = _routed_extract(_resolved, output).detach()
             a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             with torch.no_grad():
                 f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
@@ -1065,8 +1076,9 @@ class SAEFeatureEdgeRunner:
             module: nn.Module, inp: Any, output: Any,
             _sae: Any = reader_sae,
             _st: dict = reader_corrupt_store,
+            _resolved: Any = reader_resolved,
         ) -> None:
-            a = _extract_tensor(output).detach()
+            a = _routed_extract(_resolved, output).detach()
             a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             with torch.no_grad():
                 f_c = _sae.encode(a_in)
@@ -1104,6 +1116,7 @@ class SAEFeatureEdgeRunner:
             _mdtype: torch.dtype = w_dtype,
             _mdev: Any = w_device,
             _include_err: bool = include_error_node,
+            _resolved: Any = writer_resolved,
         ) -> Any:
             """WRITER site: detached-leaf seed so f_U.grad receives the VJP.
 
@@ -1113,7 +1126,7 @@ class SAEFeatureEdgeRunner:
             instead of decode(f_U) + eps (frozen scalar), giving the error term
             a live gradient path to f_D for the VJP.
             """
-            a = _extract_tensor(output)
+            a = _routed_extract(_resolved, output)
             a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             # Detached-leaf seed (§2.1 WRITER construction)
             f_U = _sae.encode(a_in).detach().requires_grad_(True)
@@ -1133,7 +1146,7 @@ class SAEFeatureEdgeRunner:
             _st["f_U"] = f_U
             _st["eps"] = eps
             recon_cast = recon.to(_mdev, _mdtype)
-            return _inject_tensor(output, recon_cast)
+            return _routed_inject(_resolved, output, recon_cast)
 
         def _reader_clean_hook(
             module: nn.Module, inp: Any, output: Any,
@@ -1141,9 +1154,10 @@ class SAEFeatureEdgeRunner:
             _st: dict = reader_clean_store,
             _mdtype: torch.dtype = r_dtype,
             _mdev: Any = r_device,
+            _resolved: Any = reader_resolved,
         ) -> Any:
             """READER site: LIVE non-detached encode so grad flows from metric to f_D."""
-            a = _extract_tensor(output)
+            a = _routed_extract(_resolved, output)
             a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             # NOTE: a_in is NOT detached — live activation flows into encode
             f_D, x_hat, eps = sae_decompose(_sae, a_in)
@@ -1153,7 +1167,7 @@ class SAEFeatureEdgeRunner:
             _st["f_D"] = f_D
             _st["eps"] = eps
             recon_cast = recon.to(_mdev, _mdtype)
-            return _inject_tensor(output, recon_cast)
+            return _routed_inject(_resolved, output, recon_cast)
 
         wh_clean = writer_layer_mod.register_forward_hook(_writer_clean_hook)
         rh_clean = reader_layer_mod.register_forward_hook(_reader_clean_hook)
@@ -1333,8 +1347,6 @@ class SAEFeatureEdgeRunner:
           - error→feature: patch eps_U clean→corrupted (eps_U_corrupt) in spliced forward
             while keeping f_U clean, measure Δf_D[j]·gradf_D[j].
         """
-        resolver_layers = self._locate_layers()
-
         # Separate edges by writer kind
         # pair_to_feat_edges: (w_layer, r_layer) → [feature→feature edges]
         # pair_to_err_edges:  (w_layer, r_layer) → [error→feature edges]
@@ -1377,8 +1389,11 @@ class SAEFeatureEdgeRunner:
 
             writer_sae = self._sae_sites[writer_site]
             reader_sae = self._sae_sites[reader_site]
-            writer_layer_mod = resolver_layers[writer_site.layer]
-            reader_layer_mod = resolver_layers[reader_site.layer]
+            # Route through ResolvedSite (identity for resid_post + position=None)
+            writer_resolved = self.resolver.resolve(self.model, writer_site)
+            reader_resolved = self.resolver.resolve(self.model, reader_site)
+            writer_layer_mod = writer_resolved.module
+            reader_layer_mod = reader_resolved.module
 
             w_dtype, w_device = self._model_dtype_device(writer_layer_mod)
             r_dtype, r_device = self._model_dtype_device(reader_layer_mod)
@@ -1391,8 +1406,9 @@ class SAEFeatureEdgeRunner:
             def _wu_hook(
                 module: nn.Module, inp: Any, output: Any,
                 _sae: Any = writer_sae, _st: dict = wu_store,
+                _resolved: Any = writer_resolved,
             ) -> None:
-                a = _extract_tensor(output).detach()
+                a = _routed_extract(_resolved, output).detach()
                 a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 with torch.no_grad():
                     f_c, _x_hat_c, eps_c = sae_decompose(_sae, a_in)
@@ -1424,33 +1440,35 @@ class SAEFeatureEdgeRunner:
                 module: nn.Module, inp: Any, output: Any,
                 _sae: Any = writer_sae, _st: dict = wd_store,
                 _mdtype: torch.dtype = w_dtype, _mdev: Any = w_device,
+                _resolved: Any = writer_resolved,
             ) -> Any:
                 """Writer splice (frozen-leaf): so we can later patch f[i]."""
-                a = _extract_tensor(output)
+                a = _routed_extract(_resolved, output)
                 a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 f_W = _sae.encode(a_in).detach().requires_grad_(True)
                 f_W.retain_grad()
                 x_hat = _sae.decode(f_W)
                 eps = (a_in - x_hat).detach()
-                recon = (x_hat + eps).to(_mdev, _mdtype)
+                recon_cast = (x_hat + eps).to(_mdev, _mdtype)
                 _st["f_W"] = f_W
                 _st["x_hat_clean"] = x_hat.detach()
                 _st["eps_clean"] = eps
-                return _inject_tensor(output, recon)
+                return _routed_inject(_resolved, output, recon_cast)
 
             def _rd_baseline_hook(
                 module: nn.Module, inp: Any, output: Any,
                 _sae: Any = reader_sae, _st: dict = rd_store,
                 _mdtype: torch.dtype = r_dtype, _mdev: Any = r_device,
+                _resolved: Any = reader_resolved,
             ) -> Any:
                 """Reader splice (live): f_D in graph for retain_grad."""
-                a = _extract_tensor(output)
+                a = _routed_extract(_resolved, output)
                 a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 f_D, x_hat, eps = sae_decompose(_sae, a_in)
                 f_D.retain_grad()
-                recon = (x_hat + eps).to(_mdev, _mdtype)
+                recon_cast = (x_hat + eps).to(_mdev, _mdtype)
                 _st["f_D"] = f_D
-                return _inject_tensor(output, recon)
+                return _routed_inject(_resolved, output, recon_cast)
 
             wh_bl = writer_layer_mod.register_forward_hook(_wd_baseline_hook)
             rh_bl = reader_layer_mod.register_forward_hook(_rd_baseline_hook)
@@ -1507,10 +1525,11 @@ class SAEFeatureEdgeRunner:
                     _eps_clean: Tensor = eps_W_clean,
                     _mdtype: torch.dtype = w_dtype,
                     _mdev: Any = w_device,
+                    _resolved: Any = writer_resolved,
                 ) -> Any:
                     """Inject patched reconstruction."""
-                    recon = (_sae.decode(_f_patched) + _eps_clean).to(_mdev, _mdtype)
-                    return _inject_tensor(output, recon)
+                    recon_cast = (_sae.decode(_f_patched) + _eps_clean).to(_mdev, _mdtype)
+                    return _routed_inject(_resolved, output, recon_cast)
 
                 def _rd_patch_hook(
                     module: nn.Module, inp: Any, output: Any,
@@ -1518,9 +1537,10 @@ class SAEFeatureEdgeRunner:
                     _st: dict = rd_patch_store,
                     _mdtype: torch.dtype = r_dtype,
                     _mdev: Any = r_device,
+                    _resolved: Any = reader_resolved,
                 ) -> Any:
                     """Capture patched f_D."""
-                    a = _extract_tensor(output)
+                    a = _routed_extract(_resolved, output)
                     a_in = a.detach().to(
                         getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype)
                     )
@@ -1529,8 +1549,8 @@ class SAEFeatureEdgeRunner:
                     _st["f_D_patched"] = f_D_p.detach()
                     # Also splice losslessly (eps frozen at clean from current input)
                     f_dp_leaf, x_hat_p, eps_p = sae_decompose(_sae, a_in)
-                    recon = (x_hat_p + eps_p).to(_mdev, _mdtype)
-                    return _inject_tensor(output, recon)
+                    recon_cast = (x_hat_p + eps_p).to(_mdev, _mdtype)
+                    return _routed_inject(_resolved, output, recon_cast)
 
                 wh_p = writer_layer_mod.register_forward_hook(_wd_patch_hook)
                 rh_p = reader_layer_mod.register_forward_hook(_rd_patch_hook)
@@ -1582,8 +1602,9 @@ class SAEFeatureEdgeRunner:
                     def _eps_clean_hook(
                         module: nn.Module, inp: Any, output: Any,
                         _sae: Any = writer_sae, _st: dict = eps_clean_store_err,
+                        _resolved: Any = writer_resolved,
                     ) -> None:
-                        a = _extract_tensor(output).detach()
+                        a = _routed_extract(_resolved, output).detach()
                         a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                         with torch.no_grad():
                             _f, _x, eps_c = sae_decompose(_sae, a_in)
@@ -1617,17 +1638,18 @@ class SAEFeatureEdgeRunner:
                         _eps_corrupt: Tensor = eps_U_corrupt_dev,
                         _mdtype: torch.dtype = w_dtype,
                         _mdev: Any = w_device,
+                        _resolved: Any = writer_resolved,
                     ) -> Any:
                         """Inject error-patched reconstruction: decode(f_U_clean) + eps_U_corrupt."""
-                        a = _extract_tensor(output)
+                        a = _routed_extract(_resolved, output)
                         a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                         if _f_clean is not None:
                             x_hat = _sae.decode(_f_clean.to(a_in.device, a_in.dtype))
                         else:
                             f_c = _sae.encode(a_in)
                             x_hat = _sae.decode(f_c)
-                        recon = (x_hat + _eps_corrupt.to(x_hat.device, x_hat.dtype)).to(_mdev, _mdtype)
-                        return _inject_tensor(output, recon)
+                        recon_cast = (x_hat + _eps_corrupt.to(x_hat.device, x_hat.dtype)).to(_mdev, _mdtype)
+                        return _routed_inject(_resolved, output, recon_cast)
 
                     def _rd_err_patch_hook(
                         module: nn.Module, inp: Any, output: Any,
@@ -1635,9 +1657,10 @@ class SAEFeatureEdgeRunner:
                         _st: dict = rd_err_store,
                         _mdtype: torch.dtype = r_dtype,
                         _mdev: Any = r_device,
+                        _resolved: Any = reader_resolved,
                     ) -> Any:
                         """Capture patched f_D for error-writer patch."""
-                        a = _extract_tensor(output)
+                        a = _routed_extract(_resolved, output)
                         a_in = a.detach().to(
                             getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype)
                         )
@@ -1645,8 +1668,8 @@ class SAEFeatureEdgeRunner:
                             f_D_p = _sae.encode(a_in)
                         _st["f_D_patched"] = f_D_p.detach()
                         f_dp_leaf, x_hat_p, eps_p = sae_decompose(_sae, a_in)
-                        recon = (x_hat_p + eps_p).to(_mdev, _mdtype)
-                        return _inject_tensor(output, recon)
+                        recon_cast = (x_hat_p + eps_p).to(_mdev, _mdtype)
+                        return _routed_inject(_resolved, output, recon_cast)
 
                     wh_ep = writer_layer_mod.register_forward_hook(_wd_err_patch_hook)
                     rh_ep = reader_layer_mod.register_forward_hook(_rd_err_patch_hook)
@@ -1707,29 +1730,21 @@ class FeatureACDCRunner:
         model: nn.Module,
         sae_sites: dict[Site, Any],
         resolver: Any,
-        *,
-        _resolver_layers: nn.ModuleList | None = None,
     ) -> None:
         """
         Args:
             model:      The HF/toy model.
             sae_sites:  Mapping Site → SAE (pre-resolved; no (release, sae_id) tuples here).
             resolver:   HFSiteResolver (used to build SAEFeatureEdgeRunner for Stage 1).
-            _resolver_layers: Pre-computed resolver layers (used when called from prune()).
         """
+        if resolver is None:
+            raise ValueError("resolver must be provided to FeatureACDCRunner.")
         self.model = model
         self._sae_sites = sae_sites
+        self._resolver = resolver
 
         # Build edge runner for Stage 1
-        if resolver is not None:
-            self._edge_runner = SAEFeatureEdgeRunner(model, sae_sites, resolver)
-            self._resolver_layers = self._edge_runner._locate_layers()
-        elif _resolver_layers is not None:
-            # Called from prune() with existing resolver_layers
-            self._edge_runner = None
-            self._resolver_layers = _resolver_layers
-        else:
-            raise ValueError("Either resolver or _resolver_layers must be provided.")
+        self._edge_runner = SAEFeatureEdgeRunner(model, sae_sites, resolver)
 
     def _sorted_sites(self) -> list[tuple[Site, Any]]:
         """Sites in forward order (ascending layer)."""
@@ -1866,7 +1881,7 @@ class FeatureACDCRunner:
                     self.model,
                     clean,
                     self._sae_sites,
-                    self._resolver_layers,
+                    self._resolver,
                     circuit_nodes=kept_nodes,
                     ablation_values=ablation_values,
                     include_error_node=include_error_node,
@@ -1927,7 +1942,7 @@ class FeatureACDCRunner:
             graph=new_graph,
             model=self.model,
             sae_sites=self._sae_sites,
-            resolver_layers=self._resolver_layers,
+            resolver=self._resolver,
         )
 
     def sweep(
@@ -1984,7 +1999,7 @@ class FeatureACDCRunner:
                 self.model,
                 clean,
                 self._sae_sites,
-                self._resolver_layers,
+                self._resolver,
                 circuit_nodes=circuit_nodes,
                 ablation_values=ablation_values,
                 include_error_node=include_error_node,

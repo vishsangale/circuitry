@@ -133,7 +133,7 @@ def test_faithfulness_empty_is_zero():
         graph=full_circuit.graph,
         model=full_circuit._model,
         sae_sites=full_circuit._sae_sites,
-        resolver_layers=full_circuit._resolver_layers,
+        resolver=full_circuit._resolver,
     )
 
     faith = empty_circuit.faithfulness(clean, corrupted, _metric, ablation_mode="corrupted")
@@ -280,7 +280,7 @@ def test_ablation_monotonicity():
         out = _feature_circuit_forward(
             model, clean,
             circuit._sae_sites,
-            circuit._resolver_layers,
+            circuit._resolver,
             circuit_nodes=pruned_nodes,
             ablation_values=ablation_values,
         )

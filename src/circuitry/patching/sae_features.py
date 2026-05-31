@@ -63,6 +63,42 @@ def _inject_tensor(output: Any, new_tensor: Tensor) -> Any:
     raise TypeError(f"Cannot inject Tensor into layer output type {type(output)!r}")
 
 
+def _routed_extract(resolved: Any, output: Any) -> Tensor:
+    """Unwrap a (possibly tuple) module output then slice to the resolved sub-activation.
+
+    Composition order (spec §1):
+      output → _extract_tensor(output) → resolved.extract(full_tensor)
+
+    _extract_tensor must be the OUTER layer because resolved.extract indexes a
+    tensor (x[:, pos]) and would crash on a raw tuple.  For resid_post +
+    position=None the extract is the identity, so this is a no-op.
+    """
+    assert not resolved.is_input_hook, (
+        "_routed_extract must only be called inside forward hooks "
+        "(is_input_hook=False).  All valid SAE sites (resid_post, mlp_out, "
+        "attn_out) are output hooks."
+    )
+    return resolved.extract(_extract_tensor(output))
+
+
+def _routed_inject(resolved: Any, output: Any, new_sub: Tensor) -> Any:
+    """Write the resolved sub-activation back, then rewrap into the (possibly tuple) output.
+
+    Composition order (spec §1):
+      new_sub → resolved.inject(full_tensor, new_sub) → _inject_tensor(output, new_full)
+
+    For resid_post + position=None the inject is the identity (returns new_sub),
+    so this reduces to _inject_tensor(output, new_sub).
+    """
+    assert not resolved.is_input_hook, (
+        "_routed_inject must only be called inside forward hooks "
+        "(is_input_hook=False).  All valid SAE sites (resid_post, mlp_out, "
+        "attn_out) are output hooks."
+    )
+    full = _extract_tensor(output)
+    return _inject_tensor(output, resolved.inject(full, new_sub))
+
+
 class SAEFeatureRunner:
     """Node-level SAE feature attribution via AtP*-style gradient estimation.
 
@@ -109,6 +145,12 @@ class SAEFeatureRunner:
                 raise NotImplementedError(
                     f"SAEFeatureRunner only supports resid_post sites in v1.5.0 "
                     f"(got {site.component!r}). mlp_out/attn_out support is deferred."
+                )
+            if site.position is not None:
+                raise NotImplementedError(
+                    f"SAEFeatureRunner does not support positional slicing (site.position={site.position!r}). "
+                    "The block-hook splice consumed the whole tensor; routing must not silently introduce "
+                    "positional slicing. Only position=None is supported."
                 )
             if isinstance(sae_or_tuple, tuple) and len(sae_or_tuple) == 2:
                 from circuitry.sae.loader import load_sae
@@ -207,8 +249,9 @@ class SAEFeatureRunner:
         max_features: int | None,
     ) -> dict[AtPNode, float]:
         """Run attribution for a single (site, sae) pair."""
-        resolver_layers = self._atp._locate_layers(self.model)
-        layer_mod = resolver_layers[site.layer]
+        # Route through ResolvedSite — for resid_post + position=None this is the identity.
+        resolved = self.resolver.resolve(self.model, site)
+        layer_mod = resolved.module
 
         # Model dtype/device — used to cast spliced tensor back
         # (the layer's weight tells us the model's dtype/device)
@@ -232,8 +275,9 @@ class SAEFeatureRunner:
             _store: dict = f_corrupt_store,
             _eps_store: dict = eps_corrupt_store,
             _inc_err: bool = include_error_node,
+            _resolved: Any = resolved,
         ) -> None:
-            a = _extract_tensor(output).detach()
+            a = _routed_extract(_resolved, output).detach()
             with torch.no_grad():
                 a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
@@ -270,9 +314,10 @@ class SAEFeatureRunner:
             _inc_err: bool = include_error_node,
             _mdtype: torch.dtype = model_dtype,
             _mdev: Any = model_device,
+            _resolved: Any = resolved,
         ) -> Any:
-            # Extract residual stream
-            a = _extract_tensor(output)
+            # Extract sub-activation via resolver (identity for resid_post + position=None)
+            a = _routed_extract(_resolved, output)
             # Device/dtype align to SAE (mirrors metrics.py:26-28)
             a_in = a.detach().to(
                 getattr(_sae, "device", a.device),
@@ -297,9 +342,9 @@ class SAEFeatureRunner:
             else:
                 recon = x_hat + eps
 
-            # Cast back to model dtype/device and splice
+            # Cast back to model dtype/device and splice via resolver
             recon_cast = recon.to(_mdev, _mdtype)
-            return _inject_tensor(output, recon_cast)
+            return _routed_inject(_resolved, output, recon_cast)
 
         clean_hook = layer_mod.register_forward_hook(_clean_output_hook)
         try:
@@ -428,8 +473,6 @@ class SAEFeatureRunner:
         nodes: list[AtPNode],
     ) -> dict[AtPNode, float]:
         """Inner (no_grad already active) bruteforce computation."""
-        resolver_layers = self._atp._locate_layers(self.model)
-
         # Group nodes by layer so we only need one capture per layer
         layer_to_nodes: dict[int, list[AtPNode]] = {}
         for n in nodes:
@@ -443,20 +486,30 @@ class SAEFeatureRunner:
             site.layer: (site, sae) for site, sae in self._sae_sites.items()
         }
 
+        # Pre-resolve all needed sites (route through ResolvedSite)
+        resolved_by_layer: dict[int, Any] = {}
+        for layer in layer_to_nodes:
+            if layer not in site_by_layer:
+                continue
+            site, _sae = site_by_layer[layer]
+            resolved_by_layer[layer] = self.resolver.resolve(self.model, site)
+
         corrupt_data: dict[int, dict[str, Tensor]] = {}
         for layer in layer_to_nodes:
             if layer not in site_by_layer:
                 continue
             site, sae = site_by_layer[layer]
-            layer_mod = resolver_layers[layer]
+            resolved = resolved_by_layer[layer]
+            layer_mod = resolved.module
             store: dict[str, Tensor] = {}
 
             def _corr_hook(
                 module: nn.Module, inp: Any, output: Any,
                 _sae: Any = sae,
                 _st: dict = store,
+                _resolved: Any = resolved,
             ) -> None:
-                a = _extract_tensor(output).detach()
+                a = _routed_extract(_resolved, output).detach()
                 a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
                 _st["f_corrupt"] = f_c.detach()
@@ -476,11 +529,11 @@ class SAEFeatureRunner:
                 continue
             baseline_store[layer] = {}
 
-        def _make_baseline_splice_hook(layer: int, sae: Any) -> Any:
+        def _make_baseline_splice_hook(layer: int, sae: Any, resolved: Any) -> Any:
             _store = baseline_store[layer]
 
             def _hook(module: nn.Module, inp: Any, output: Any) -> Any:
-                a = _extract_tensor(output)
+                a = _routed_extract(resolved, output)
                 a_in = a.detach().to(
                     getattr(sae, "device", a.device),
                     getattr(sae, "dtype", a.dtype),
@@ -489,8 +542,8 @@ class SAEFeatureRunner:
                     f_cl, x_hat_cl, eps_cl = sae_decompose(sae, a_in)
                 _store["f_clean"] = f_cl.detach()
                 _store["eps_clean"] = eps_cl
-                recon = (x_hat_cl + eps_cl).to(a.device, a.dtype)
-                return _inject_tensor(output, recon)
+                recon_cast = (x_hat_cl + eps_cl).to(a.device, a.dtype)
+                return _routed_inject(resolved, output, recon_cast)
 
             return _hook
 
@@ -499,9 +552,10 @@ class SAEFeatureRunner:
             if layer not in site_by_layer:
                 continue
             site, sae = site_by_layer[layer]
-            layer_mod = resolver_layers[layer]
+            resolved = resolved_by_layer[layer]
+            layer_mod = resolved.module
             baseline_handles.append(
-                layer_mod.register_forward_hook(_make_baseline_splice_hook(layer, sae))
+                layer_mod.register_forward_hook(_make_baseline_splice_hook(layer, sae, resolved))
             )
 
         try:
@@ -526,7 +580,8 @@ class SAEFeatureRunner:
                 continue
 
             site, sae = site_by_layer[layer]
-            layer_mod = resolver_layers[layer]
+            resolved = resolved_by_layer[layer]
+            layer_mod = resolved.module
             cd = corrupt_data.get(layer, {})
             bd = baseline_store.get(layer, {})
 
@@ -551,8 +606,9 @@ class SAEFeatureRunner:
                     _idx: int = _fi,
                     _f_corr: Tensor = _fc,
                     __sae: Any = _sae,
+                    _res: Any = resolved,
                 ) -> Any:
-                    a = _extract_tensor(output)
+                    a = _routed_extract(_res, output)
                     a_in = a.detach().to(
                         getattr(__sae, "device", a.device),
                         getattr(__sae, "dtype", a.dtype),
@@ -563,8 +619,8 @@ class SAEFeatureRunner:
                     f_patched = f_cl.clone()
                     f_patched[..., _idx] = _f_corr[..., _idx].to(f_patched.device, f_patched.dtype)
                     x_hat_patched = __sae.decode(f_patched)
-                    recon = (x_hat_patched + eps_cl).to(a.device, a.dtype)
-                    return _inject_tensor(output, recon)
+                    recon_cast = (x_hat_patched + eps_cl).to(a.device, a.dtype)
+                    return _routed_inject(_res, output, recon_cast)
 
             else:  # sae_error
                 if eps_corrupt is None or eps_clean_base is None:
@@ -578,8 +634,9 @@ class SAEFeatureRunner:
                     module: nn.Module, inp: Any, output: Any,
                     _eps_c: Tensor = _ec,
                     __sae: Any = _sae,
+                    _res: Any = resolved,
                 ) -> Any:
-                    a = _extract_tensor(output)
+                    a = _routed_extract(_res, output)
                     a_in = a.detach().to(
                         getattr(__sae, "device", a.device),
                         getattr(__sae, "dtype", a.dtype),
@@ -587,8 +644,8 @@ class SAEFeatureRunner:
                     with torch.no_grad():
                         f_cl, x_hat_cl, _ = sae_decompose(__sae, a_in)
                     # Patch error term to corrupted eps
-                    recon = (x_hat_cl + _eps_c.to(x_hat_cl.device, x_hat_cl.dtype)).to(a.device, a.dtype)
-                    return _inject_tensor(output, recon)
+                    recon_cast = (x_hat_cl + _eps_c.to(x_hat_cl.device, x_hat_cl.dtype)).to(a.device, a.dtype)
+                    return _routed_inject(_res, output, recon_cast)
 
             h = layer_mod.register_forward_hook(_patch_hook)
             try:
