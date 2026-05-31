@@ -281,7 +281,7 @@ _TL_HOOK_MAP = {
     "attn_head_q_out": "blocks.{L}.attn.hook_q",
     "attn_head_k_out": "blocks.{L}.attn.hook_k",
     "attn_out": "blocks.{L}.hook_attn_out",
-    "mlp_out": "blocks.{L}.mlp.hook_post",
+    "mlp_out": "blocks.{L}.hook_mlp_out",
     "mlp_neuron": "blocks.{L}.mlp.hook_post",
 }
 

@@ -26,7 +26,7 @@ def test_tl_hook_name_attn_head_out():
 
 def test_tl_hook_name_mlp_out():
     r = TLSiteResolver()
-    assert r.hook_name(Site(component="mlp_out", layer=1)) == "blocks.1.mlp.hook_post"
+    assert r.hook_name(Site(component="mlp_out", layer=1)) == "blocks.1.hook_mlp_out"
 
 
 def test_tl_hook_name_mlp_neuron():

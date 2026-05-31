@@ -469,17 +469,18 @@ def test_tl_edge_runs():
 # ---------------------------------------------------------------------------
 
 def test_tl_mlp_out_site():
-    """mlp_out TL site (blocks.{L}.mlp.hook_post) resolves and runs end-to-end.
+    """mlp_out TL site (blocks.{L}.hook_mlp_out) resolves and runs end-to-end.
 
-    Note: mlp.hook_post in TL has shape (b, s, d_mlp=64), so the SAE must
-    match d_mlp, not d_model.
+    hook_mlp_out in TL has shape (b, s, d_model=32) — the MLP submodule output
+    after down_proj, consistent with the HF backend and eap/atp/acdc which all
+    use hook_mlp_out.  The SAE must match d_model, not d_mlp.
     """
     from circuitry.patching.sae_features import SAEFeatureRunner  # noqa: PLC0415
 
     model = _tiny_tl(dtype=torch.float32, seed=3)
-    d_mlp = model.cfg.d_mlp  # 64
+    d_model = model.cfg.d_model  # 32
 
-    sae_mlp = TinySAE(d_in=d_mlp, d_sae=8, dtype=torch.float32, seed=5).eval()
+    sae_mlp = TinySAE(d_in=d_model, d_sae=8, dtype=torch.float32, seed=5).eval()
 
     resolver = TLSiteResolver()
     site = Site(layer=0, component="mlp_out")
@@ -498,12 +499,12 @@ def test_tl_mlp_out_site():
             f"Non-finite mlp_out score: {node} → {score}"
         )
 
-    # Verify resolved module is the correct HookPoint
-    resolved = resolver.resolve(model, site)
+    # Verify hook name resolves to hook_mlp_out (d_model output, not mlp.hook_post d_mlp intermediate)
     hook_name = resolver.hook_name(site)
-    assert hook_name == "blocks.0.mlp.hook_post", (
-        f"Unexpected hook name: {hook_name}"
+    assert hook_name == "blocks.0.hook_mlp_out", (
+        f"Unexpected hook name: {hook_name!r} — expected blocks.0.hook_mlp_out"
     )
+    resolved = resolver.resolve(model, site)
     assert resolved.module is model.hook_dict[hook_name], (
         "Resolved module is not the expected HookPoint"
     )
