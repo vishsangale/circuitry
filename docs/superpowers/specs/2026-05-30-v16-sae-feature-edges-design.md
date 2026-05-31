@@ -97,8 +97,14 @@ Full feature×feature for one adjacent pair = ~6e8 edges at d_sae=24576 — fata
 ## 4. Circuit extraction — NODE-set ablation + node-pruning FeatureACDC
 
 ### 4.1 Node-set ablation forward (empirically verified)
-Edge-level ablation is unimplementable (downstream features share `a_D`). Faithfulness uses
-**node-set** ablation: at each spliced site, replace NON-circuit feature entries before decode:
+Edge-level ablation is unimplementable (downstream features at a given site share one activation
+tensor `a`). Faithfulness uses **node-set** ablation: at each spliced site, replace NON-circuit
+feature entries before decode:
+
+**v1.7 P2a note:** the original justification said "downstream features share `a_D`" *per layer*.
+Under v1.7 multi-site-per-layer (P2b), each `(layer, component)` site has its own tensor, so the
+semantics are **per `(layer, component)` site** — node-set ablation stays well-defined per site;
+a layer no longer maps to a single `a_D`.
 ```
 f_ablated = f.clone()
 f_ablated[..., i] = ablation_value[site][..., i]   for i NOT in circuit_nodes[site]

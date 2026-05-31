@@ -667,7 +667,11 @@ def test_tl_not_implemented():
 
 
 def test_non_resid_post_site_error():
-    """NotImplementedError for non-resid_post sites."""
+    """NotImplementedError for unsupported (per-head/per-neuron) sites.
+
+    v1.7 P2a: mlp_out and attn_out are now supported; only per-head and
+    per-neuron sub-slices (resid_pre, attn_head_out, mlp_neuron) remain gated.
+    """
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
     from circuitry.patching.sites import Site
 
@@ -676,8 +680,8 @@ def test_non_resid_post_site_error():
     sae0, _ = _make_two_saes(d=8, d_sae=16, relu=False)
     resolver = _make_resolver(d=8)
 
-    site_bad = Site("mlp_out", layer=0)
-    with pytest.raises(NotImplementedError, match="resid_post"):
+    site_bad = Site("resid_pre", layer=0)
+    with pytest.raises(NotImplementedError):
         SAEFeatureEdgeRunner(model, {site_bad: sae0}, resolver)
 
 

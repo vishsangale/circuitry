@@ -20,6 +20,9 @@ class Node:
     layer: int | None = None
     head: int | None = None
     neuron: int | None = None
+    component: str | None = None  # NEW (v1.7 P2a): distinguishes same-layer SAE sites.
+                                  # None == resid_post / legacy (all pre-v1.7 nodes).
+                                  # "mlp_out" or "attn_out" for non-resid SAE sites.
 
 
 @dataclass(frozen=True)

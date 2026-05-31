@@ -14,6 +14,7 @@ VALID_COMPONENTS = frozenset({
     "attn_head_out",
     "attn_head_q_out",
     "attn_head_k_out",
+    "attn_out",
     "mlp_out",
     "mlp_neuron",
 })
@@ -149,6 +150,7 @@ class HFSiteResolver:
         head_dim: int | None = None,
         layer_pattern: str = "model.layers.{L}",
         attn_module: str = "self_attn.o_proj",
+        attn_module_full: str = "self_attn",
         mlp_module: str = "mlp",
         mlp_intermediate: str = "mlp.down_proj",
     ) -> None:
@@ -158,6 +160,7 @@ class HFSiteResolver:
         self.head_dim = head_dim if head_dim is not None else d_model // n_heads
         self.layer_pattern = layer_pattern
         self.attn_module = attn_module
+        self.attn_module_full = attn_module_full
         self.mlp_module = mlp_module
         self.mlp_intermediate = mlp_intermediate
 
@@ -243,6 +246,19 @@ class HFSiteResolver:
                 inject=lambda full, val, _pos=pos: _pos_inject(full, val, _pos),
             )
 
+        if site.component == "attn_out":
+            # attn_module_full (default "self_attn") captures the whole-attention output
+            # before the residual add — equivalent to the MLP contribution for sequential
+            # attn→mlp blocks (Llama-family).  The submodule returns a tuple
+            # (attn_out_tensor, ...) that _extract_tensor/_inject_tensor unwrap.
+            attn_full_mod = _get_submodule(layer_mod, self.attn_module_full)
+            return ResolvedSite(
+                module=attn_full_mod,
+                is_input_hook=False,
+                extract=lambda x, _pos=pos: _pos_extract(x, _pos),
+                inject=lambda full, val, _pos=pos: _pos_inject(full, val, _pos),
+            )
+
         if site.component == "mlp_neuron":
             intermediate_mod = _get_submodule(layer_mod, self.mlp_intermediate)
             n = site.neuron
@@ -264,6 +280,7 @@ _TL_HOOK_MAP = {
     "attn_head_out": "blocks.{L}.attn.hook_z",
     "attn_head_q_out": "blocks.{L}.attn.hook_q",
     "attn_head_k_out": "blocks.{L}.attn.hook_k",
+    "attn_out": "blocks.{L}.hook_attn_out",
     "mlp_out": "blocks.{L}.mlp.hook_post",
     "mlp_neuron": "blocks.{L}.mlp.hook_post",
 }

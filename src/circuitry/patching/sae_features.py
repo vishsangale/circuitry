@@ -102,7 +102,7 @@ def _routed_inject(resolved: Any, output: Any, new_sub: Tensor) -> Any:
 class SAEFeatureRunner:
     """Node-level SAE feature attribution via AtP*-style gradient estimation.
 
-    For each configured residual site, splices the SAE losslessly into the
+    For each configured SAE site, splices the SAE losslessly into the
     clean forward pass and scores each active feature by:
 
         score(i) = Σ_pos ( Δf[..., i] · gradf[..., i] )
@@ -110,8 +110,18 @@ class SAEFeatureRunner:
     where Δf = f_corrupt − f_clean and gradf = ∂metric/∂f at the clean
     activation.  This is the same formula as mlp_neuron scoring in atp.py.
 
-    Only HF-eager (HFSiteResolver) + resid_post sites are supported in v1.5.0.
-    TransformerLens backend → NotImplementedError.
+    Supported components (v1.7 P2a): resid_post, mlp_out, attn_out.
+    Per-head/per-neuron sub-slices (attn_head_out, mlp_neuron) are NOT supported.
+    TransformerLens backend → NotImplementedError (supported in P3).
+    Only one SAE site per layer is supported (multi-site-per-layer is P2b).
+
+    Arch note (Llama-family): mlp_out captures the MLP submodule output BEFORE
+    the residual add; attn_out captures self_attn output before the residual add.
+    For Gemma2 (post-norm before residual), the submodule output is the pre-norm
+    tensor — the splice is lossless but the decomposed tensor differs from what
+    a Gemma2-trained SAE would expect.  Scope the equivalence claim to Llama-family.
+    Parallel-attention architectures (GPT-J-style) make attn_out@L and mlp_out@L
+    causally unordered; intra-layer edges are invalid there (v1.7 assumes sequential).
     """
 
     def __init__(
@@ -138,13 +148,15 @@ class SAEFeatureRunner:
         self.model = model
         self.resolver = resolver
 
-        # Resolve (release, sae_id) tuples; gate resid_post + validate architecture
+        # Resolve (release, sae_id) tuples; gate valid SAE components + validate architecture
+        _VALID_SAE_COMPONENTS = {"resid_post", "mlp_out", "attn_out"}
         resolved_sae_sites: dict[Site, Any] = {}
         for site, sae_or_tuple in sae_sites.items():
-            if site.component != "resid_post":
+            if site.component not in _VALID_SAE_COMPONENTS:
                 raise NotImplementedError(
-                    f"SAEFeatureRunner only supports resid_post sites in v1.5.0 "
-                    f"(got {site.component!r}). mlp_out/attn_out support is deferred."
+                    f"SAEFeatureRunner supports only {sorted(_VALID_SAE_COMPONENTS)} sites "
+                    f"(got {site.component!r}). Per-head/per-neuron sub-slices "
+                    "(attn_head_out, mlp_neuron, resid_pre, ...) are not supported."
                 )
             if site.position is not None:
                 raise NotImplementedError(
@@ -160,6 +172,16 @@ class SAEFeatureRunner:
                 sae = sae_or_tuple
             assert_supported_sae(sae)
             resolved_sae_sites[site] = sae
+
+        # Enforce one SAE site per layer (temporary constraint; multi-site-per-layer is P2b)
+        _seen_layers: dict[int, str] = {}
+        for site in resolved_sae_sites:
+            if site.layer in _seen_layers:
+                raise NotImplementedError(
+                    f"Multiple SAE sites in layer {site.layer} is not yet supported (P2b). "
+                    f"Got {_seen_layers[site.layer]!r} and {site.component!r} in the same layer."
+                )
+            _seen_layers[site.layer] = site.component
 
         self._sae_sites = resolved_sae_sites
 
@@ -407,7 +429,9 @@ class SAEFeatureRunner:
                 score = float(per_pos.abs().sum().item())
             else:
                 score = float((df_i * g_i).sum().item())
-            node = AtPNode(Node("sae_feature", layer=site.layer, neuron=i))
+            # component=None for resid_post (preserves v1.6 identity); explicit for others
+            _comp = site.component if site.component != "resid_post" else None
+            node = AtPNode(Node("sae_feature", layer=site.layer, neuron=i, component=_comp))
             site_scores[node] = score
 
         # Optional max_features cap: keep top-|score| features
@@ -427,7 +451,8 @@ class SAEFeatureRunner:
                     err_score = float(per_pos.abs().sum().item())
                 else:
                     err_score = float((delta_eps * grad_err).sum().item())
-                err_node = AtPNode(Node("sae_error", layer=site.layer))
+                _comp_err = site.component if site.component != "resid_post" else None
+                err_node = AtPNode(Node("sae_error", layer=site.layer, component=_comp_err))
                 site_scores[err_node] = err_score
 
         return site_scores

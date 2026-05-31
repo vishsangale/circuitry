@@ -535,12 +535,16 @@ def test_tl_not_implemented(linear_toy, affine_sae):
 
 
 def test_non_resid_post_site_error(linear_toy, affine_sae):
-    """NotImplementedError for non-resid_post sites."""
+    """NotImplementedError for unsupported (per-head/per-neuron) sites.
+
+    v1.7 P2a: mlp_out and attn_out are now supported; only per-head and
+    per-neuron sub-slices (resid_pre, attn_head_out, mlp_neuron) remain gated.
+    """
     from circuitry.patching.sae_features import SAEFeatureRunner
     from circuitry.patching.sites import Site
 
-    site = Site("mlp_out", layer=0)
-    with pytest.raises(NotImplementedError, match="resid_post"):
+    site = Site("resid_pre", layer=0)
+    with pytest.raises(NotImplementedError):
         SAEFeatureRunner(linear_toy, {site: affine_sae}, _make_resolver())
 
 

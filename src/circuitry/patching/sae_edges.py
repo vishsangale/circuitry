@@ -817,13 +817,15 @@ class SAEFeatureEdgeRunner:
         self.model = model
         self.resolver = resolver
 
-        # Resolve (release, sae_id) tuples; gate resid_post + validate architecture
+        # Resolve (release, sae_id) tuples; gate valid SAE components + validate architecture
+        _VALID_SAE_COMPONENTS = {"resid_post", "mlp_out", "attn_out"}
         resolved: dict[Site, Any] = {}
         for site, sae_or_tuple in sae_sites.items():
-            if site.component != "resid_post":
+            if site.component not in _VALID_SAE_COMPONENTS:
                 raise NotImplementedError(
-                    f"SAEFeatureEdgeRunner only supports resid_post sites in v1.6.0 "
-                    f"(got {site.component!r}). mlp_out/attn_out support is deferred."
+                    f"SAEFeatureEdgeRunner supports only {sorted(_VALID_SAE_COMPONENTS)} sites "
+                    f"(got {site.component!r}). Per-head/per-neuron sub-slices "
+                    "(attn_head_out, mlp_neuron, resid_pre, ...) are not supported."
                 )
             if site.position is not None:
                 raise NotImplementedError(
@@ -838,6 +840,16 @@ class SAEFeatureEdgeRunner:
                 sae = sae_or_tuple
             assert_supported_sae(sae)
             resolved[site] = sae
+
+        # Enforce one SAE site per layer (temporary constraint; multi-site-per-layer is P2b)
+        _seen_layers: dict[int, str] = {}
+        for site in resolved:
+            if site.layer in _seen_layers:
+                raise NotImplementedError(
+                    f"Multiple SAE sites in layer {site.layer} is not yet supported (P2b). "
+                    f"Got {_seen_layers[site.layer]!r} and {site.component!r} in the same layer."
+                )
+            _seen_layers[site.layer] = site.component
 
         self._sae_sites = resolved
 
@@ -1270,7 +1282,10 @@ class SAEFeatureEdgeRunner:
                 del G_j
                 continue
 
-            reader_node = AtPNode(Node("sae_feature", layer=reader_site.layer, neuron=j))
+            # component=None for resid_post (preserves v1.6 node identity); explicit for others
+            _r_comp = reader_site.component if reader_site.component != "resid_post" else None
+            _w_comp = writer_site.component if writer_site.component != "resid_post" else None
+            reader_node = AtPNode(Node("sae_feature", layer=reader_site.layer, neuron=j, component=_r_comp))
 
             # feature→feature edges
             if vjp_j is not None:
@@ -1281,7 +1296,7 @@ class SAEFeatureEdgeRunner:
                     score = float(
                         (delta_f_U[..., i] * vjp_j_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
                     )
-                    writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i))
+                    writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
                     edge = SAEFeatureEdge(writer=writer_node, reader=reader_node)
                     edge_scores[edge] = score
 
@@ -1296,7 +1311,7 @@ class SAEFeatureEdgeRunner:
                 score_err = float(
                     (delta_eps_U.to(vjp_err_j_fp32.device) * vjp_err_j_fp32).to(torch.float32).sum()
                 )
-                error_writer_node = AtPNode(Node("sae_error", layer=writer_site.layer))
+                error_writer_node = AtPNode(Node("sae_error", layer=writer_site.layer, component=_w_comp))
                 err_edge = SAEFeatureEdge(writer=error_writer_node, reader=reader_node)
                 edge_scores[err_edge] = score_err
                 del vjp_err_j, vjp_err_j_fp32
@@ -1348,25 +1363,32 @@ class SAEFeatureEdgeRunner:
             while keeping f_U clean, measure Δf_D[j]·gradf_D[j].
         """
         # Separate edges by writer kind
-        # pair_to_feat_edges: (w_layer, r_layer) → [feature→feature edges]
-        # pair_to_err_edges:  (w_layer, r_layer) → [error→feature edges]
-        pair_to_feat_edges: dict[tuple[int, int], list[SAEFeatureEdge]] = {}
-        pair_to_err_edges: dict[tuple[int, int], list[SAEFeatureEdge]] = {}
+        # pair_to_feat_edges: (w_layer, w_comp, r_layer, r_comp) → [feature→feature edges]
+        # pair_to_err_edges:  (w_layer, w_comp, r_layer, r_comp) → [error→feature edges]
+        # In P2a one-component-per-layer is enforced, so layer alone uniquely identifies a site.
+        # Keys include component for forward-compatibility with P2b (multi-site-per-layer).
+        pair_to_feat_edges: dict[tuple, list[SAEFeatureEdge]] = {}
+        pair_to_err_edges: dict[tuple, list[SAEFeatureEdge]] = {}
 
         for edge in edges:
-            w_layer = edge.writer.node.layer
-            r_layer = edge.reader.node.layer
+            w_node = edge.writer.node
+            r_node = edge.reader.node
+            w_layer = w_node.layer
+            r_layer = r_node.layer
             if w_layer is None or r_layer is None:
                 continue
-            key = (w_layer, r_layer)
-            if edge.writer.node.kind == "sae_error":
+            # component stored on node; None means resid_post for legacy compatibility
+            w_comp = w_node.component or "resid_post"
+            r_comp = r_node.component or "resid_post"
+            key = (w_layer, w_comp, r_layer, r_comp)
+            if w_node.kind == "sae_error":
                 pair_to_err_edges.setdefault(key, []).append(edge)
             else:
                 pair_to_feat_edges.setdefault(key, []).append(edge)
 
         # Merge for site-pair iteration (process feature and error edges per pair)
-        all_pairs: set[tuple[int, int]] = set(pair_to_feat_edges) | set(pair_to_err_edges)
-        pair_to_edges: dict[tuple[int, int], list[SAEFeatureEdge]] = {}
+        all_pairs: set[tuple] = set(pair_to_feat_edges) | set(pair_to_err_edges)
+        pair_to_edges: dict[tuple, list[SAEFeatureEdge]] = {}
         for key in all_pairs:
             pair_to_edges[key] = (
                 pair_to_feat_edges.get(key, []) + pair_to_err_edges.get(key, [])
@@ -1374,13 +1396,15 @@ class SAEFeatureEdgeRunner:
 
         result: dict[SAEFeatureEdge, float] = {}
 
-        for (w_layer, r_layer), pair_edges in pair_to_edges.items():
-            # Find the sites
+        for (w_layer, w_comp, r_layer, r_comp), pair_edges in pair_to_edges.items():
+            # Find the sites by (layer, component) — component None → resid_post
             writer_site = next(
-                (s for s in self._sae_sites if s.layer == w_layer), None
+                (s for s in self._sae_sites
+                 if s.layer == w_layer and s.component == w_comp), None
             )
             reader_site = next(
-                (s for s in self._sae_sites if s.layer == r_layer), None
+                (s for s in self._sae_sites
+                 if s.layer == r_layer and s.component == r_comp), None
             )
             if writer_site is None or reader_site is None:
                 for e in pair_edges:
