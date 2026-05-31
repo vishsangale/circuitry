@@ -2,7 +2,10 @@
 
 Public surface re-exports below are the stable top-level API. Anything not re-exported
 here is an internal implementation detail and may change without notice. (The patching
-pillar — including the v1.5 SAEFeatureRunner — is reached via ``circuitry.patching``.)
+pillar — including SAEFeatureRunner (v1.5) and SAEFeatureEdgeRunner / FeatureACDCRunner
+(v1.6) — is reached via ``circuitry.patching``. v1.7 extended SAE circuits to
+``mlp_out`` / ``attn_out`` sites, enabled the TransformerLens backend, and added an
+integrated-gradients variant; ``resid_post`` + HF results are byte-for-byte identical.)
 """
 
 from circuitry.core.activation import repr_drift, token_similarity
@@ -16,7 +19,7 @@ from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 __all__ = [
     "HookPoint",

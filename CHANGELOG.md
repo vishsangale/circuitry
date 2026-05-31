@@ -2,6 +2,77 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-05-31
+
+### Added
+- **Resolver-routed SAE splice** (P1) — all SAE node/edge/circuit/faithfulness/ACDC splices now
+  route through `ResolvedSite` (`HFSiteResolver.resolve` / `TLSiteResolver.resolve`) instead of
+  hardcoding a decoder-block hook. The refactor touches every call site in `sae_features.py` and
+  `sae_edges.py` (including `_run_site`, `compute_f_per_site`, `_feature_circuit_forward`,
+  faithfulness `ablation_eps`, edge Stage-2, bruteforce paths, and `FeatureACDCRunner`). For
+  `resid_post` + HF-eager + `variant='attrib'`, results are **byte-for-byte identical** to v1.6.0
+  (`rtol=0, atol=0`), pinned by `test_resid_post_attrib_golden_freeze`.
+- **`mlp_out` / `attn_out` SAE sites** (P2a) — `SAEFeatureRunner` and `SAEFeatureEdgeRunner`
+  now accept `Site(component="mlp_out", layer=L)` and `Site(component="attn_out", layer=L)` in
+  `sae_sites`. The `attn_out` component is new to `VALID_COMPONENTS` (`sites.py`). On the HF
+  path, `mlp_out` hooks the `mlp` submodule output and `attn_out` hooks the `self_attn` submodule
+  output — both tensors are **before the residual add**. On Llama/GPT-2-style sequential
+  attn→mlp blocks this equals the whole attention/MLP contribution; Gemma2 and other architectures
+  that apply a `post_attention_layernorm` / `post_feedforward_layernorm` before the residual add
+  produce a pre-norm tensor instead — the splice is mechanically lossless on any arch, but the
+  equivalence claim is scoped to Llama-family sequential blocks. Parallel-attention architectures
+  (GPT-J-style: attn and mlp both read `resid_pre`) make intra-layer `attn_out@L → mlp_out@L`
+  edges causally undefined; v1.7 assumes sequential blocks.
+- **Multiple SAE sites per layer — composite `(layer, component)` keying** (P2b) — every
+  internal dict that was keyed by `int` layer is now keyed by `(layer, component)`. `Node` gains
+  an optional `component` field (default `None`; `resid_post` nodes keep `component=None` for
+  backward compatibility with v1.6 identity/hash). `_COMPONENT_OFFSET` ranks sites in forward
+  execution order (`attn_out=0, mlp_out=1, resid_post=2`), enabling `attn_out@L + mlp_out@L +
+  resid_post@L` in a single circuit and `attn_out@L → mlp_out@L` intra-layer edges (the reverse
+  direction is forbidden and its VJP is `None`).
+- **TransformerLens backend** (P3) — `TLSiteResolver` is now fully supported for SAE node
+  attribution, edge attribution, faithfulness/completeness, and `FeatureACDCRunner`. The
+  `NotImplementedError` gates are removed. dtype and device are sourced from `model.cfg.dtype`
+  and `torch.device(model.cfg.device)` on the TL path (HookPoints have no parameters; the
+  previous params-fallback silently downcasted non-fp32/CUDA models). `Site("mlp_out")` resolves
+  to `blocks.{L}.hook_mlp_out` (plain `(b,s,d_model)` tensor), consistent with HF and the EAP /
+  AtP\* / ACDC TL paths.
+- **Integrated-gradients variant** (P4) — `SAEFeatureRunner.run` and `SAEFeatureEdgeRunner.run`
+  accept `variant='ig'` and `n_ig_steps: int = 0` (default 32 when `n_ig_steps==0` and
+  `variant='ig'`). Path: `f(α) = f_clean + α·(f_corrupt − f_clean)`, midpoints
+  `α_k = (k−0.5)/N`, `eps` frozen at clean throughout. Node scores:
+  `score_i = Σ_pos Δf_i · (1/N) Σ_k ∂metric/∂f_i |_{f=f_clean+α_k·Δf}`. Edge IG: the writer
+  detached-leaf is interpolated (`f_U_k = f_U_corrupt + α_k·(f_U_clean − f_U_corrupt)`) at each
+  step; the reader stays live; the per-downstream-survivor VJP loop is unchanged. Cost is
+  `N×` the attrib forward+backward+VJP-loop (default N=32); peak memory equals attrib (one
+  VJP live at a time). Features are enumerated on the `Δf ≠ 0` union (not gated on
+  `grad@clean`), so features dead at clean but active at corrupted — the saturation blind spot
+  that attrib misses — are scored correctly.
+  - **Completeness note.** Feature-IG completes to the **eps-frozen spliced** delta
+    `metric(decode(f_corrupt)+eps_clean) − metric(decode(f_clean)+eps_clean)`, not to the
+    real `metric(corrupt) − metric(clean)` (because `eps` is held at `eps_clean`, not
+    `eps_corrupt`). With `include_error_node=True` the error node's IG interpolates the error
+    leaf, and features+error IG jointly complete to the real forward delta.
+
+### Changed
+- **No-grad guard relaxed for sub-block edge pairs.** The v1.6 safety net that raised
+  `RuntimeError` when an `mlp_out@L → resid_post@L`-style VJP returned `None` (severed
+  gradient — indicating the two sites are not causally connected through autograd) was
+  too broad. For `resid_post → resid_post` pairs the raise is kept (always connected — a
+  `None` grad is a splice bug). For legitimately-disconnectable sub-block pairs (e.g.
+  `mlp_out@L → mlp_out@L+1` across an add that bypasses mlp in some arches) the runner
+  now warns and returns an empty edge dict instead of crashing.
+- `circuitry.__version__` bumped to `"1.7.0"`.
+
+### Notes
+- `graph.py` / `EdgeGraph` / `_order` / `build_graph` are **untouched**. The `component`
+  field on `Node` defaults to `None`; all existing `(layer, neuron)`-keyed v1.6 SAE nodes
+  are hash/equality-identical to v1.6 (no golden drift).
+- SAE architectures supported: `standard` / `topk` / `jumprelu` (covers BatchTopK /
+  Matryoshka at inference) / `gated`. Transcoder / matching-pursuit / temporal SAEs
+  remain `NotImplementedError`. Per-position edges and per-head/per-neuron
+  sub-slice sites (`attn_head_out`, `mlp_neuron`) remain out of scope.
+
 ## [1.6.0] — 2026-05-30
 
 ### Added
