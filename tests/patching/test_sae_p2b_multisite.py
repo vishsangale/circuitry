@@ -26,6 +26,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from circuitry.patching.sae_edges import _site_rank
 from tests.patching.test_sae_features import _metric
 from tests.patching.test_sae_p2a_mlpout_attnout import (
     LinearAttn,
@@ -264,7 +265,20 @@ def test_intralayer_attn_to_mlp_edge():
         f"Edges found: {[(e.writer.node.component, e.reader.node.component) for e in edges[:5]]}"
     )
 
-    # (c) NO reverse edge mlp_out@0 → attn_out@0 (forward rank violation)
+    # (c) Direct rank-guard assertion: attn_out@L < mlp_out@L in forward order.
+    # This is the MECHANISM that prevents reverse edges; if _site_rank or _COMPONENT_OFFSET
+    # were broken (e.g. swapped), this assertion would fail before the reverse-edge check.
+    assert _site_rank(site_attn) < _site_rank(site_mlp), (
+        f"_site_rank(attn_out@0)={_site_rank(site_attn)} must be < "
+        f"_site_rank(mlp_out@0)={_site_rank(site_mlp)}. "
+        "The rank guard that blocks reverse edges is broken."
+    )
+
+    # (c2) NO reverse edge mlp_out@0 → attn_out@0 (forward rank violation).
+    # Verify via the pair-enumeration gate: the graph's forward-order constraint
+    # (_site_rank(writer) < _site_rank(reader)) means the reverse pair is never passed
+    # to _compute_pair_edges.  Swapping/removing the rank guard above would flip the
+    # assertion in (c) first, making the root cause immediately visible.
     reverse_edges = [
         e for e in edges
         if (e.writer.node.component == "mlp_out" and e.writer.node.layer == 0

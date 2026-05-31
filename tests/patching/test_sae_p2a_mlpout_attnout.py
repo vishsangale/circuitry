@@ -568,7 +568,11 @@ def test_node_component_identity():
 # ---------------------------------------------------------------------------
 
 def test_two_sites_one_layer_accepted_node_runner():
-    """SAEFeatureRunner now ACCEPTS two sites sharing a layer (P2b implemented)."""
+    """SAEFeatureRunner ACCEPTS two sites sharing a layer and scores nodes at BOTH sites.
+
+    Hardened from the original 'runner is not None' — we now call .run() and assert
+    both attn_out and mlp_out each yield ≥1 scored node.
+    """
     from circuitry.patching.sae_features import SAEFeatureRunner
     from circuitry.patching.sites import Site
 
@@ -576,19 +580,36 @@ def test_two_sites_one_layer_accepted_node_runner():
     model = _make_block_toy(d=d, seed=42)
     sae_mlp = _make_sae(d_model=d, seed=7)
     sae_attn = _make_sae(d_model=d, seed=11)
+    clean, corrupted = _make_inputs(d=d)
     resolver = _make_block_resolver(d=d)
 
     # Two sites at layer 0 with different components — now accepted
     site_mlp = Site("mlp_out", layer=0)
     site_attn = Site("attn_out", layer=0)
 
-    # Should NOT raise after P2b lands
     runner = SAEFeatureRunner(model, {site_mlp: sae_mlp, site_attn: sae_attn}, resolver)
-    assert runner is not None
+    result = runner.run(clean, corrupted, _metric)
+
+    attn_nodes = [n for n in result.scores if n.node.component == "attn_out" and n.node.layer == 0]
+    mlp_nodes = [n for n in result.scores if n.node.component == "mlp_out" and n.node.layer == 0]
+
+    print(f"\n[two_sites_node_runner] attn_out nodes={len(attn_nodes)}, mlp_out nodes={len(mlp_nodes)}")
+    assert len(attn_nodes) >= 1, (
+        f"Expected ≥1 attn_out@0 node in result, got {len(attn_nodes)}. "
+        f"All scored components: {set(n.node.component for n in result.scores)}"
+    )
+    assert len(mlp_nodes) >= 1, (
+        f"Expected ≥1 mlp_out@0 node in result, got {len(mlp_nodes)}. "
+        f"All scored components: {set(n.node.component for n in result.scores)}"
+    )
 
 
 def test_two_sites_one_layer_accepted_edge_runner():
-    """SAEFeatureEdgeRunner now ACCEPTS two sites sharing a layer (P2b implemented)."""
+    """SAEFeatureEdgeRunner ACCEPTS two sites sharing a layer and produces edges at BOTH sites.
+
+    Hardened from the original 'runner is not None' — we now call .run() and assert
+    both attn_out and mlp_out appear in survivors with ≥1 entry each.
+    """
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
     from circuitry.patching.sites import Site
 
@@ -596,14 +617,33 @@ def test_two_sites_one_layer_accepted_edge_runner():
     model = _make_block_toy(d=d, seed=42)
     sae_mlp = _make_sae(d_model=d, seed=7)
     sae_attn = _make_sae(d_model=d, seed=11)
+    clean, corrupted = _make_inputs(d=d)
     resolver = _make_block_resolver(d=d)
 
     site_mlp = Site("mlp_out", layer=0)
     site_attn = Site("attn_out", layer=0)
 
-    # Should NOT raise after P2b lands
     runner = SAEFeatureEdgeRunner(model, {site_mlp: sae_mlp, site_attn: sae_attn}, resolver)
-    assert runner is not None
+    circuit = runner.run(clean, corrupted, _metric, top_k_survivors=16)
+
+    # Both sites must appear in survivors with ≥1 node each
+    survivors_by_comp = {}
+    for site, node_list in circuit.graph.survivors.items():
+        survivors_by_comp[site.component] = node_list
+
+    print(f"\n[two_sites_edge_runner] survivors: {list(survivors_by_comp.keys())}")
+    assert "attn_out" in survivors_by_comp, (
+        f"attn_out missing from edge runner survivors. Got: {list(survivors_by_comp.keys())}"
+    )
+    assert "mlp_out" in survivors_by_comp, (
+        f"mlp_out missing from edge runner survivors. Got: {list(survivors_by_comp.keys())}"
+    )
+    assert len(survivors_by_comp["attn_out"]) >= 1, (
+        f"Expected ≥1 attn_out survivor, got {len(survivors_by_comp['attn_out'])}"
+    )
+    assert len(survivors_by_comp["mlp_out"]) >= 1, (
+        f"Expected ≥1 mlp_out survivor, got {len(survivors_by_comp['mlp_out'])}"
+    )
 
 
 # ---------------------------------------------------------------------------

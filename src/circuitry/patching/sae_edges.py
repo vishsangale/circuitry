@@ -16,6 +16,7 @@ See docs/superpowers/specs/2026-05-30-v16-sae-feature-edges-design.md.
 """
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -59,6 +60,17 @@ def _node_site_key(node: Any) -> tuple[int, str]:
 def _site_rank(site: Any) -> int:
     """Forward-position rank: attn_out@L=3L, mlp_out@L=3L+1, resid_post@L=3L+2."""
     return 3 * site.layer + _COMPONENT_OFFSET[site.component]
+
+
+def _is_always_connected(writer_site: Any, reader_site: Any) -> bool:
+    """Return True iff this (writer, reader) pair is ALWAYS forward-connected.
+
+    resid_post → resid_post across any layers is structurally guaranteed connected
+    in every transformer (the residual stream flows through every layer).
+    Pairs involving mlp_out or attn_out may be legitimately disconnected on
+    parallel-attention architectures (attn and mlp both read from x, not each other).
+    """
+    return writer_site.component == "resid_post" and reader_site.component == "resid_post"
 
 
 # ---------------------------------------------------------------------------
@@ -1264,10 +1276,27 @@ class SAEFeatureEdgeRunner:
             return {}
 
         if f_D_live.grad is None:
-            # No gradient path from metric to f_D — this is legitimate when there is no
-            # causal path from writer_site to reader_site in the model (e.g. parallel-attention
-            # architectures where attn and mlp both read from x, not from each other).
-            # Return empty dict — no edges computable for this pair.
+            # No gradient path from metric to f_D after backward.
+            # Distinguish two cases:
+            #   1. resid_post → resid_post: always forward-connected in any transformer;
+            #      a missing grad here is a BUG (metric not differentiable through the site).
+            #   2. Any pair involving mlp_out or attn_out: parallel-attention architectures
+            #      may legitimately have no causal path (attn and mlp both read from the same
+            #      x, not from each other's outputs).  Warn and return {}.
+            if _is_always_connected(writer_site, reader_site):
+                raise RuntimeError(
+                    f"f_D.grad is None for a resid_post→resid_post pair "
+                    f"({writer_site} → {reader_site}). This is a bug: resid_post sites are "
+                    "always forward-connected in a transformer. Check that the metric returns "
+                    "a differentiable Tensor and that the model is not in no-grad mode."
+                )
+            warnings.warn(
+                f"f_D.grad is None for pair ({writer_site} → {reader_site}). "
+                "No causal path detected — this is expected for parallel-attention "
+                "architectures where mlp_out/attn_out are not causally connected. "
+                "Returning empty edge dict for this pair.",
+                stacklevel=3,
+            )
             return {}
 
         # ------------------------------------------------------------------
@@ -1481,9 +1510,27 @@ class SAEFeatureEdgeRunner:
 
                 f_D_k_live = reader_k_store.get("f_D_k")
                 if f_D_k_live is None or f_D_k_live.grad is None:
-                    # No causal path from writer to reader at this step — no edges
+                    # Connectivity is a structural property — check it ONCE (k=1) and
+                    # apply the same rule as the attrib path:
+                    #   resid_post → resid_post: always connected → BUG → raise
+                    #   any mlp_out/attn_out involved → legitimately disconnectable → warn+return {}
+                    # Do NOT accumulate partial sums then divide by _n_ig (underscales).
                     del out_k, m_k, f_U_k
-                    break
+                    if _is_always_connected(writer_site, reader_site):
+                        raise RuntimeError(
+                            f"f_D_k.grad is None at IG step k={k} for a resid_post→resid_post pair "
+                            f"({writer_site} → {reader_site}). This is a bug: resid_post sites are "
+                            "always forward-connected in a transformer. Check that the metric returns "
+                            "a differentiable Tensor and that the model is not in no-grad mode."
+                        )
+                    warnings.warn(
+                        f"f_D_k.grad is None at IG step k={k} for pair ({writer_site} → {reader_site}). "
+                        "No causal path detected — this is expected for parallel-attention "
+                        "architectures where mlp_out/attn_out are not causally connected. "
+                        "Returning empty edge dict for this pair.",
+                        stacklevel=3,
+                    )
+                    return {}
 
                 gradf_D_k = f_D_k_live.grad
 

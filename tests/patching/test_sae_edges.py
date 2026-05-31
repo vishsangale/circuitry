@@ -823,6 +823,79 @@ def test_error_feature_edge_matches_bruteforce_linear():
     )
 
 
+# ---------------------------------------------------------------------------
+# Safety-net regression: no-grad guard behaviour (R5 adversarial review)
+# ---------------------------------------------------------------------------
+
+
+def test_resid_post_connected_pair_produces_nonzero_edges():
+    """SAFETY NET: a sequential resid_post@0 → resid_post@1 pair ALWAYS produces edges.
+
+    On any standard transformer the residual stream is always forward-connected:
+    layer 0 output feeds layer 1 input.  The edge runner must produce nonzero edges
+    for this pair; a broken guard that silently returns {} would fail this test.
+    """
+    torch.manual_seed(0)
+    model = LinearResidToy(n_layers=2, d=8)
+    sae0, sae1 = _make_two_saes(seed0=50, seed1=51)
+    clean, corrupted = _make_clean_corr(seed=70)
+    runner = _make_two_site_runner(model, sae0, sae1)
+
+    circuit = runner.run(clean, corrupted, _metric, top_k_survivors=16)
+
+    assert len(circuit.edges) > 0, (
+        "resid_post@0 → resid_post@1 is always forward-connected on LinearResidToy "
+        "but the runner returned zero edges. The no-grad guard may be silently "
+        "returning {} for a connected pair."
+    )
+    nonzero = sum(1 for s in circuit.edges.values() if abs(s) > 1e-10)
+    assert nonzero > 0, "All resid_post→resid_post edge scores are zero"
+
+
+def test_severed_resid_post_reader_raises():
+    """SAFETY NET: if the reader SAE.encode returns a detached tensor on a resid_post pair,
+    the runner must RAISE RuntimeError (not silently return {}).
+
+    Mechanism: wrap sae_decompose so the returned f_D is a detached leaf that has NO
+    connection to the live activation graph.  Since f_D.requires_grad is True (it is a
+    leaf) but NOT in the backward graph from the metric, f_D.grad will be None after
+    backward — simulating a broken splice that severs the autograd path.
+
+    The metric must still be differentiable (we don't touch the model's output path,
+    only the internal f_D leaf), so the "metric not differentiable" guard is bypassed
+    and the no-grad guard fires for the resid_post→resid_post pair → RuntimeError.
+    """
+    import unittest.mock as mock
+
+    torch.manual_seed(1)
+    model = LinearResidToy(n_layers=2, d=8)
+    sae0, sae1_orig = _make_two_saes(seed0=60, seed1=61)
+
+    from circuitry.sae.grad import sae_decompose as _real_sae_decompose
+
+    def _severed_decompose(sae, a_in):
+        """Return f_D as a fresh detached leaf — severs the autograd path to the metric."""
+        f, x_hat, eps = _real_sae_decompose(sae, a_in)
+        # Replace f with a detached leaf: requires_grad=True but NOT in graph
+        f_severed = f.detach().requires_grad_(True)
+        return f_severed, x_hat, eps
+
+    from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
+    from circuitry.patching.sites import Site
+    resolver = _make_resolver(8)
+    site0 = Site("resid_post", layer=0)
+    site1 = Site("resid_post", layer=1)
+    runner = SAEFeatureEdgeRunner(model, {site0: sae0, site1: sae1_orig}, resolver)
+
+    clean, corrupted = _make_clean_corr(seed=71)
+
+    # Patch sae_decompose in the sae_edges module to inject our severed version
+    import circuitry.patching.sae_edges as _sae_edges_mod
+    with mock.patch.object(_sae_edges_mod, "sae_decompose", _severed_decompose):
+        with pytest.raises(RuntimeError, match="resid_post"):
+            runner.run(clean, corrupted, _metric, top_k_survivors=8)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_edge_grad_device_align_cuda():
     """CUDA gate: SAE on CUDA / model on CPU — assert edges are finite and nonzero.

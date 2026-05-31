@@ -642,6 +642,27 @@ def test_ig_edge_no_dense_jacobian():
     assert len(overlap) > 0, "IG and attrib produced completely disjoint edge sets"
     print(f"\n[no-dense-jacobian] d_sae={d_sae}, IG edges={len(ig_ij)}, attrib edges={len(att_ij)}, overlap={len(overlap)}")
 
+    # On a linear model + affine SAE, IG == attrib to machine precision (the path integral
+    # of a linear function is exact at any N).  Assert the common edges agree to ≤1e-4.
+    # A wrong IG implementation (e.g. missing /N, using dense Jacobian) would fail this.
+    ig_score_map = {(e.writer.node.neuron, e.reader.node.neuron): circuit_ig.edges[e]
+                    for e in circuit_ig.edges}
+    att_score_map = {(e.writer.node.neuron, e.reader.node.neuron): circuit_attrib.edges[e]
+                     for e in circuit_attrib.edges}
+
+    max_diff_ig_att = 0.0
+    for ij in overlap:
+        diff = abs(ig_score_map[ij] - att_score_map[ij])
+        if diff > max_diff_ig_att:
+            max_diff_ig_att = diff
+
+    print(f"  IG vs attrib on common edges (linear toy): max|diff|={max_diff_ig_att:.3e}")
+    assert max_diff_ig_att <= 1e-4, (
+        f"IG and attrib edge scores disagree by {max_diff_ig_att:.3e} > 1e-4 on a linear toy. "
+        "On a linear model the path integral is exact so they must agree. "
+        "Possible causes: IG divide-by-N is wrong, partial sums underscale, or dense Jacobian."
+    )
+
 
 # ---------------------------------------------------------------------------
 # test_ig_default_steps
@@ -666,26 +687,65 @@ def test_ig_default_steps():
     torch.manual_seed(9)
     clean, corrupted = _make_clean_corr(seed=9)
 
-    # variant='ig' with n_ig_steps=0 should not raise and produce results
+    # variant='ig' with n_ig_steps=0 should not raise and produce EXACTLY the same
+    # scores as n_ig_steps=32 (the hardcoded default).  A wrong default (e.g. N=1)
+    # would produce different scores and fail this assertion.
     runner_node = SAEFeatureRunner(model, {site0: sae}, resolver)
-    result = runner_node.run(clean, corrupted, _metric, variant="ig", n_ig_steps=0)
-    assert isinstance(result.scores, dict), "Should return a dict of scores"
-    print(f"\n[default steps] variant='ig', n_ig_steps=0 → {len(result.scores)} scored features (N=32 default)")
+    result_default = runner_node.run(clean, corrupted, _metric, variant="ig", n_ig_steps=0)
+    result_32 = runner_node.run(clean, corrupted, _metric, variant="ig", n_ig_steps=32)
+
+    assert isinstance(result_default.scores, dict), "Should return a dict of scores"
+    # Both runs must score the same features
+    assert set(result_default.scores.keys()) == set(result_32.scores.keys()), (
+        "n_ig_steps=0 and n_ig_steps=32 scored different feature sets — "
+        "default N is not 32"
+    )
+    # Scores must be numerically identical (same computation, same N=32)
+    max_diff_default = max(
+        abs(result_default.scores[n] - result_32.scores[n])
+        for n in result_default.scores
+    ) if result_default.scores else 0.0
+    print(f"\n[default steps] n_ig_steps=0 vs n_ig_steps=32 max|diff|={max_diff_default:.3e}")
+    assert max_diff_default == 0.0, (
+        f"n_ig_steps=0 produced scores DIFFERENT from n_ig_steps=32 "
+        f"(max|diff|={max_diff_default:.3e}). The default N is not 32."
+    )
+    # alias for the old print
+    result = result_default
+    print(f"  variant='ig', n_ig_steps=0 → {len(result.scores)} scored features (N=32 default)")
 
     # variant='exact' should raise
     with pytest.raises(NotImplementedError):
         runner_node.run(clean, corrupted, _metric, variant="exact")
 
-    # Same for edge runner
+    # Same for edge runner: n_ig_steps=0 must match n_ig_steps=32 exactly
     runner_edge = SAEFeatureEdgeRunner(model, {site0: sae, site1: sae1}, resolver)
-    circuit = runner_edge.run(
+    circuit_default = runner_edge.run(
         clean, corrupted, _metric,
         layer_pairs="adjacent",
         variant="ig",
         n_ig_steps=0,
     )
-    assert circuit.edges is not None
-    print(f"  edge runner ig n_ig_steps=0 → {len(circuit.edges)} edges")
+    circuit_32 = runner_edge.run(
+        clean, corrupted, _metric,
+        layer_pairs="adjacent",
+        variant="ig",
+        n_ig_steps=32,
+    )
+    assert circuit_default.edges is not None
+    # Edge sets must be identical
+    assert set(circuit_default.edges.keys()) == set(circuit_32.edges.keys()), (
+        "Edge runner n_ig_steps=0 and n_ig_steps=32 produced different edge sets"
+    )
+    max_diff_edge = max(
+        abs(circuit_default.edges[e] - circuit_32.edges[e])
+        for e in circuit_default.edges
+    ) if circuit_default.edges else 0.0
+    assert max_diff_edge == 0.0, (
+        f"Edge runner n_ig_steps=0 produced scores different from n_ig_steps=32 "
+        f"(max|diff|={max_diff_edge:.3e}). The default N is not 32."
+    )
+    print(f"  edge runner ig n_ig_steps=0 → {len(circuit_default.edges)} edges (matches n_ig_steps=32)")
 
     with pytest.raises(NotImplementedError):
         runner_edge.run(clean, corrupted, _metric, variant="exact")

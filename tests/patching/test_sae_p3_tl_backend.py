@@ -349,11 +349,41 @@ def test_tl_dtype_not_downcast():
         "model.cfg.dtype is not being used correctly"
     )
 
-    # Run attribution smoke test (uses the runner's backend-aware dtype probe)
+    # Run attribution at fp64 and compare against fp32 — a dtype downcast inside
+    # _run_site would produce fp32-precision scores, which differ measurably from fp64.
     corr_tokens = _make_tokens(seed=31)
     runner = SAEFeatureRunner(model, {site: sae}, resolver)
-    result = runner.run(clean_tokens, corr_tokens, _metric)
-    _ = result  # scores produced without error
+    result_fp64 = runner.run(clean_tokens, corr_tokens, _metric)
+
+    # Build a fp32 version of the same model and SAE; run attribution.
+    # If the fp64 runner is silently downcasting to fp32 we'd get the same scores.
+    import copy
+    model_fp32 = copy.deepcopy(model).to(torch.float32)
+    sae_fp32 = copy.deepcopy(sae).to(torch.float32)
+    runner_fp32 = SAEFeatureRunner(model_fp32, {site: sae_fp32}, resolver)
+    result_fp32 = runner_fp32.run(clean_tokens.clone(), corr_tokens.clone(), _metric)
+
+    # Find nodes common to both runs and check scores differ (fp64 ≠ fp32)
+    common_nodes_fp = [n for n in result_fp64.scores if any(
+        n2.node.layer == n.node.layer and n2.node.neuron == n.node.neuron
+        for n2 in result_fp32.scores
+    )]
+    if common_nodes_fp:
+        # At least one score should differ between fp32 and fp64 runs
+        # (a downcast bug makes them equal; the fix makes them differ)
+        max_diff_fp = max(
+            abs(result_fp64.scores[n] - result_fp32.scores.get(
+                next(n2 for n2 in result_fp32.scores
+                     if n2.node.layer == n.node.layer and n2.node.neuron == n.node.neuron),
+                0.0
+            ))
+            for n in common_nodes_fp
+        )
+        print(f"  fp64 vs fp32 score max diff: {max_diff_fp:.4e}")
+        assert max_diff_fp > 0.0, (
+            "fp64 and fp32 runner scores are IDENTICAL — "
+            "the dtype downcast bug may still be present (scores should differ at fp64 precision)"
+        )
 
     # Get analytic grad and verify fp64 precision vs FD
     f_leaf_store: dict[str, Tensor] = {}
@@ -451,17 +481,26 @@ def test_tl_edge_runs():
 
     circuit = runner.run(clean_tokens, corr_tokens, _metric, layer_pairs="adjacent")
 
+    # Must have at least one edge (an empty dict passes the old isfinite check trivially)
+    assert len(circuit.edges) > 0, (
+        "SAEFeatureEdgeRunner produced zero edges on a TL model with adjacent layer_pairs. "
+        "This is suspicious — either _compute_pair_edges is broken or all pairs returned {}."
+    )
+
     # All edge scores must be finite
     for edge, score in circuit.edges.items():
         assert torch.isfinite(torch.tensor(score)), (
             f"Non-finite edge score: {edge} → {score}"
         )
 
-    # faithfulness(M) must be finite and ≈ 1 (full circuit)
+    # faithfulness(M) must be finite and close to 1 (full circuit = all nodes in)
     faith = circuit.faithfulness(clean_tokens, corr_tokens, _metric)
     print(f"  TL edge faithfulness(M): {faith:.4f}")
     assert torch.isfinite(torch.tensor(faith)), f"faithfulness is not finite: {faith}"
-    assert abs(faith) < 10.0, f"faithfulness out of range: {faith}"
+    assert abs(faith - 1.0) < 0.1, (
+        f"faithfulness(M) = {faith:.4f}, expected within 0.1 of 1.0 (full circuit). "
+        "A completely empty edge dict or broken node-set ablation would fail this."
+    )
 
 
 # ---------------------------------------------------------------------------
