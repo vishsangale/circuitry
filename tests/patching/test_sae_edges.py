@@ -650,20 +650,33 @@ def test_metric_must_be_differentiable():
         runner.run(clean, corrupted, non_diff_metric)
 
 
-def test_tl_not_implemented():
-    """SAEFeatureEdgeRunner raises NotImplementedError for TLSiteResolver."""
+def test_tl_accepted_v17():
+    """SAEFeatureEdgeRunner accepts TLSiteResolver without raising (v1.7 P3).
+
+    Full TL correctness is validated in test_sae_p3_tl_backend.py.
+    This test only verifies that construction no longer raises NotImplementedError.
+    We need a real HookedTransformer here (AtPRunner reads model.cfg on the TL path).
+    """
+    pytest.importorskip("transformer_lens")
+    from transformer_lens import HookedTransformer, HookedTransformerConfig
+
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
     from circuitry.patching.sites import Site, TLSiteResolver
 
+    cfg = HookedTransformerConfig(
+        n_layers=2, d_model=8, n_heads=2, d_head=4, d_mlp=16,
+        n_ctx=16, d_vocab=16, act_fn="gelu",
+    )
     torch.manual_seed(0)
-    model = LinearResidToy(n_layers=2, d=8)
+    tl_model = HookedTransformer(cfg).eval()
     sae0, sae1 = _make_two_saes(d=8, d_sae=16, relu=False)
 
     site0 = Site("resid_post", layer=0)
     site1 = Site("resid_post", layer=1)
 
-    with pytest.raises(NotImplementedError, match="TL|TransformerLens"):
-        SAEFeatureEdgeRunner(model, {site0: sae0, site1: sae1}, TLSiteResolver())
+    # Should not raise
+    runner = SAEFeatureEdgeRunner(tl_model, {site0: sae0, site1: sae1}, TLSiteResolver())
+    assert runner is not None
 
 
 def test_non_resid_post_site_error():

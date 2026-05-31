@@ -170,12 +170,19 @@ def _feature_circuit_forward(
         # Route through ResolvedSite (identity for resid_post + position=None)
         resolved = resolver.resolve(model, site)
         layer_mod = resolved.module
-        # Determine model device/dtype for cast-back
-        params = list(layer_mod.parameters())
-        if params:
-            m_dtype, m_device = params[0].dtype, params[0].device
+        # Determine model device/dtype for cast-back.
+        # On the TL path, HookPoint.parameters() == [], so the params-fallback
+        # silently downcasts.  Read from model.cfg instead.
+        from circuitry.patching.sites import TLSiteResolver
+        if isinstance(resolver, TLSiteResolver):
+            m_dtype = model.cfg.dtype
+            m_device = torch.device(model.cfg.device)
         else:
-            m_dtype, m_device = torch.float32, torch.device("cpu")
+            params = list(layer_mod.parameters())
+            if params:
+                m_dtype, m_device = params[0].dtype, params[0].device
+            else:
+                m_dtype, m_device = torch.float32, torch.device("cpu")
 
         in_circuit = circuit_nodes.get(sk, set())
         abl_val = ablation_values.get(sk)  # may be None for zero-mode
@@ -822,8 +829,8 @@ class SAEFeatureEdgeRunner:
     """Feature→feature SAE edge attribution via multi-site error-term splice + VJP.
 
     Composes (NOT subclasses) SAEFeatureRunner for Stage 1 node scoring.
-    Only HF-eager (HFSiteResolver) + resid_post sites supported.
-    TransformerLens → NotImplementedError.
+    HF-eager (HFSiteResolver) and TransformerLens (TLSiteResolver) are supported (v1.7 P3).
+    Supported components: resid_post, mlp_out, attn_out.
 
     Usage:
         runner = SAEFeatureEdgeRunner(model, {site0: sae0, site1: sae1}, resolver)
@@ -841,16 +848,8 @@ class SAEFeatureEdgeRunner:
         Args:
             model:      The HF/toy model to analyse.
             sae_sites:  Mapping from Site → SAE object or (release, sae_id) tuple.
-            resolver:   An HFSiteResolver. TLSiteResolver → NotImplementedError.
+            resolver:   An HFSiteResolver or TLSiteResolver.
         """
-        # Gate: no TL support
-        from circuitry.patching.sites import TLSiteResolver
-        if isinstance(resolver, TLSiteResolver):
-            raise NotImplementedError(
-                "SAEFeatureEdgeRunner does not support TransformerLens (TLSiteResolver) "
-                "in v1.6.0. Use the HF-eager path (HFSiteResolver)."
-            )
-
         self.model = model
         self.resolver = resolver
 
@@ -892,14 +891,16 @@ class SAEFeatureEdgeRunner:
             return self.model(**inputs)
         return self.model(inputs)
 
-    def _locate_layers(self) -> nn.ModuleList:
-        return self._stage1_runner._atp._locate_layers(self.model)
-
     def _sorted_sites(self) -> list[tuple[Site, Any]]:
         """Sites sorted in forward-position order (by _site_rank: attn_out < mlp_out < resid_post within a layer)."""
         return sorted(self._sae_sites.items(), key=lambda kv: _site_rank(kv[0]))
 
     def _model_dtype_device(self, layer_mod: nn.Module) -> tuple[torch.dtype, Any]:
+        # On the TL path, HookPoint.parameters() == [], so the params-fallback
+        # silently downcasts (e.g. fp64 → fp32).  Read from model.cfg instead.
+        from circuitry.patching.sites import TLSiteResolver
+        if isinstance(self.resolver, TLSiteResolver):
+            return self.model.cfg.dtype, torch.device(self.model.cfg.device)
         params = list(layer_mod.parameters())
         if params:
             return params[0].dtype, params[0].device

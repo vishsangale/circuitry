@@ -524,14 +524,31 @@ def test_unsupported_architecture_error(linear_toy):
         SAEFeatureRunner(linear_toy, {site: transcoder_sae}, _make_resolver())
 
 
-def test_tl_not_implemented(linear_toy, affine_sae):
-    """SAEFeatureRunner raises NotImplementedError for TLSiteResolver."""
+def test_tl_accepted_v17(affine_sae):
+    """SAEFeatureRunner accepts TLSiteResolver without raising (v1.7 P3).
+
+    Full TL correctness is validated in test_sae_p3_tl_backend.py.
+    This test only verifies that construction no longer raises NotImplementedError.
+    We need a real HookedTransformer here (AtPRunner reads model.cfg on the TL path).
+    """
+    pytest.importorskip("transformer_lens")
+    from transformer_lens import HookedTransformer, HookedTransformerConfig
+
     from circuitry.patching.sae_features import SAEFeatureRunner
     from circuitry.patching.sites import Site, TLSiteResolver
 
+    cfg = HookedTransformerConfig(
+        n_layers=2, d_model=8, n_heads=2, d_head=4, d_mlp=16,
+        n_ctx=16, d_vocab=16, act_fn="gelu",
+    )
+    torch.manual_seed(0)
+    tl_model = HookedTransformer(cfg).eval()
+    sae = affine_sae  # d_model=8 matches
+
     site = Site("resid_post", layer=0)
-    with pytest.raises(NotImplementedError, match="TL|TransformerLens"):
-        SAEFeatureRunner(linear_toy, {site: affine_sae}, TLSiteResolver())
+    # Should not raise
+    runner = SAEFeatureRunner(tl_model, {site: sae}, TLSiteResolver())
+    assert runner is not None
 
 
 def test_non_resid_post_site_error(linear_toy, affine_sae):

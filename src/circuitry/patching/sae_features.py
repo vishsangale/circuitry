@@ -112,7 +112,7 @@ class SAEFeatureRunner:
 
     Supported components (v1.7 P2a): resid_post, mlp_out, attn_out.
     Per-head/per-neuron sub-slices (attn_head_out, mlp_neuron) are NOT supported.
-    TransformerLens backend → NotImplementedError (supported in P3).
+    TransformerLens backend (TLSiteResolver) is supported (v1.7 P3).
     Only one SAE site per layer is supported (multi-site-per-layer is P2b).
 
     Arch note (Llama-family): mlp_out captures the MLP submodule output BEFORE
@@ -135,16 +135,8 @@ class SAEFeatureRunner:
             model:      The HF/toy model to analyse.
             sae_sites:  Mapping from Site → SAE object (or (release, sae_id) tuple
                         which is loaded via circuitry.sae.loader.load_sae).
-            resolver:   An HFSiteResolver (TLSiteResolver → NotImplementedError).
+            resolver:   An HFSiteResolver or TLSiteResolver.
         """
-        # Gate: no TL support in v1.5.0
-        from circuitry.patching.sites import TLSiteResolver
-        if isinstance(resolver, TLSiteResolver):
-            raise NotImplementedError(
-                "SAEFeatureRunner does not support TransformerLens (TLSiteResolver) "
-                "in v1.5.0. Use the HF-eager path (HFSiteResolver)."
-            )
-
         self.model = model
         self.resolver = resolver
 
@@ -265,15 +257,21 @@ class SAEFeatureRunner:
         resolved = self.resolver.resolve(self.model, site)
         layer_mod = resolved.module
 
-        # Model dtype/device — used to cast spliced tensor back
-        # (the layer's weight tells us the model's dtype/device)
-        model_params = list(layer_mod.parameters())
-        if model_params:
-            model_dtype = model_params[0].dtype
-            model_device = model_params[0].device
+        # Model dtype/device — used to cast spliced tensor back.
+        # On the TL path, HookPoint.parameters() == [], so the params-fallback
+        # silently downcasts (e.g. fp64 → fp32).  Read from model.cfg instead.
+        from circuitry.patching.sites import TLSiteResolver
+        if isinstance(self.resolver, TLSiteResolver):
+            model_dtype = self.model.cfg.dtype
+            model_device = torch.device(self.model.cfg.device)
         else:
-            model_dtype = torch.float32
-            model_device = torch.device("cpu")
+            model_params = list(layer_mod.parameters())
+            if model_params:
+                model_dtype = model_params[0].dtype
+                model_device = model_params[0].device
+            else:
+                model_dtype = torch.float32
+                model_device = torch.device("cpu")
 
         # ----------------------------------------------------------------
         # Step 1: corrupted forward — capture f_corrupt (and eps_corrupt)
