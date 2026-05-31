@@ -173,16 +173,6 @@ class SAEFeatureRunner:
             assert_supported_sae(sae)
             resolved_sae_sites[site] = sae
 
-        # Enforce one SAE site per layer (temporary constraint; multi-site-per-layer is P2b)
-        _seen_layers: dict[int, str] = {}
-        for site in resolved_sae_sites:
-            if site.layer in _seen_layers:
-                raise NotImplementedError(
-                    f"Multiple SAE sites in layer {site.layer} is not yet supported (P2b). "
-                    f"Got {_seen_layers[site.layer]!r} and {site.component!r} in the same layer."
-                )
-            _seen_layers[site.layer] = site.component
-
         self._sae_sites = resolved_sae_sites
 
         # Borrow _freeze_eval / _restore / _locate_layers from AtPRunner by composition
@@ -498,35 +488,36 @@ class SAEFeatureRunner:
         nodes: list[AtPNode],
     ) -> dict[AtPNode, float]:
         """Inner (no_grad already active) bruteforce computation."""
-        # Group nodes by layer so we only need one capture per layer
-        layer_to_nodes: dict[int, list[AtPNode]] = {}
+        # Group nodes by composite (layer, component) key — P2b: multiple sites per layer
+        from circuitry.patching.sae_edges import _node_site_key, _site_key
+        key_to_nodes: dict[tuple[int, str], list[AtPNode]] = {}
         for n in nodes:
             if n.node.kind in ("sae_feature", "sae_error"):
-                L = n.node.layer
-                if L is not None:
-                    layer_to_nodes.setdefault(L, []).append(n)
+                if n.node.layer is not None:
+                    nk = _node_site_key(n.node)
+                    key_to_nodes.setdefault(nk, []).append(n)
 
-        # For each site, capture f_corrupt and eps_corrupt
-        site_by_layer: dict[int, tuple[Site, Any]] = {
-            site.layer: (site, sae) for site, sae in self._sae_sites.items()
+        # For each site, build composite-key lookup
+        site_by_key: dict[tuple[int, str], tuple[Site, Any]] = {
+            _site_key(site): (site, sae) for site, sae in self._sae_sites.items()
         }
 
         # Pre-resolve all needed sites (route through ResolvedSite)
-        resolved_by_layer: dict[int, Any] = {}
-        for layer in layer_to_nodes:
-            if layer not in site_by_layer:
+        resolved_by_key: dict[tuple[int, str], Any] = {}
+        for sk in key_to_nodes:
+            if sk not in site_by_key:
                 continue
-            site, _sae = site_by_layer[layer]
-            resolved_by_layer[layer] = self.resolver.resolve(self.model, site)
+            site, _sae = site_by_key[sk]
+            resolved_by_key[sk] = self.resolver.resolve(self.model, site)
 
-        corrupt_data: dict[int, dict[str, Tensor]] = {}
-        for layer in layer_to_nodes:
-            if layer not in site_by_layer:
+        corrupt_data: dict[tuple[int, str], dict[str, Any]] = {}
+        for sk in key_to_nodes:
+            if sk not in site_by_key:
                 continue
-            site, sae = site_by_layer[layer]
-            resolved = resolved_by_layer[layer]
+            site, sae = site_by_key[sk]
+            resolved = resolved_by_key[sk]
             layer_mod = resolved.module
-            store: dict[str, Tensor] = {}
+            store: dict[str, Any] = {}
 
             def _corr_hook(
                 module: nn.Module, inp: Any, output: Any,
@@ -545,17 +536,17 @@ class SAEFeatureRunner:
                 self._call_model(corrupted_inputs)
             finally:
                 h.remove()
-            corrupt_data[layer] = store
+            corrupt_data[sk] = store
 
         # Baseline: spliced clean forward (SAE inserted but no feature patching)
-        baseline_store: dict[int, dict[str, Tensor]] = {}
-        for layer in layer_to_nodes:
-            if layer not in site_by_layer:
+        baseline_store: dict[tuple[int, str], dict[str, Any]] = {}
+        for sk in key_to_nodes:
+            if sk not in site_by_key:
                 continue
-            baseline_store[layer] = {}
+            baseline_store[sk] = {}
 
-        def _make_baseline_splice_hook(layer: int, sae: Any, resolved: Any) -> Any:
-            _store = baseline_store[layer]
+        def _make_baseline_splice_hook(sk: tuple[int, str], sae: Any, resolved: Any) -> Any:
+            _store = baseline_store[sk]
 
             def _hook(module: nn.Module, inp: Any, output: Any) -> Any:
                 a = _routed_extract(resolved, output)
@@ -573,14 +564,14 @@ class SAEFeatureRunner:
             return _hook
 
         baseline_handles: list[Any] = []
-        for layer in layer_to_nodes:
-            if layer not in site_by_layer:
+        for sk in key_to_nodes:
+            if sk not in site_by_key:
                 continue
-            site, sae = site_by_layer[layer]
-            resolved = resolved_by_layer[layer]
+            site, sae = site_by_key[sk]
+            resolved = resolved_by_key[sk]
             layer_mod = resolved.module
             baseline_handles.append(
-                layer_mod.register_forward_hook(_make_baseline_splice_hook(layer, sae, resolved))
+                layer_mod.register_forward_hook(_make_baseline_splice_hook(sk, sae, resolved))
             )
 
         try:
@@ -599,16 +590,20 @@ class SAEFeatureRunner:
                 scores[atp_node] = 0.0
                 continue
 
-            layer = inner.layer
-            if layer is None or layer not in site_by_layer:
+            if inner.layer is None:
                 scores[atp_node] = 0.0
                 continue
 
-            site, sae = site_by_layer[layer]
-            resolved = resolved_by_layer[layer]
+            nk = _node_site_key(inner)
+            if nk not in site_by_key:
+                scores[atp_node] = 0.0
+                continue
+
+            site, sae = site_by_key[nk]
+            resolved = resolved_by_key[nk]
             layer_mod = resolved.module
-            cd = corrupt_data.get(layer, {})
-            bd = baseline_store.get(layer, {})
+            cd = corrupt_data.get(nk, {})
+            bd = baseline_store.get(nk, {})
 
             f_corrupt = cd.get("f_corrupt")
             eps_corrupt = cd.get("eps_corrupt")

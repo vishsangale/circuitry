@@ -39,6 +39,27 @@ from circuitry.sae.grad import assert_supported_sae, sae_decompose
 # Type alias
 _Inputs = Tensor | dict[str, Any]
 
+# ---------------------------------------------------------------------------
+# Step 0 helpers: composite (layer, component) keying  (spec §4 / P2b)
+# ---------------------------------------------------------------------------
+
+_COMPONENT_OFFSET: dict[str, int] = {"attn_out": 0, "mlp_out": 1, "resid_post": 2}
+
+
+def _site_key(site: Any) -> tuple[int, str]:
+    """Canonical composite key from a Site object."""
+    return (site.layer, site.component)
+
+
+def _node_site_key(node: Any) -> tuple[int, str]:
+    """Canonical composite key from a graph Node (component None == resid_post)."""
+    return (node.layer, node.component or "resid_post")
+
+
+def _site_rank(site: Any) -> int:
+    """Forward-position rank: attn_out@L=3L, mlp_out@L=3L+1, resid_post@L=3L+2."""
+    return 3 * site.layer + _COMPONENT_OFFSET[site.component]
+
 
 # ---------------------------------------------------------------------------
 # Stage B helpers: feature-acts capture + node-set ablation forward
@@ -50,28 +71,29 @@ def compute_f_per_site(
     inputs: _Inputs,
     sae_sites: dict[Site, Any],
     resolver: Any,
-) -> dict[int, Tensor]:
+) -> dict[tuple[int, str], Tensor]:
     """Capture SAE feature activations per site in a single no_grad forward.
 
     Returns:
-        dict mapping site.layer -> f tensor (detached, on SAE device/dtype).
+        dict mapping (site.layer, site.component) -> f tensor (detached, on SAE device/dtype).
         Used for ablation_value computation (corrupted/zero/mean modes).
+        Composite key supports multiple sites per layer (P2b).
     """
-    result: dict[int, Tensor] = {}
+    result: dict[tuple[int, str], Tensor] = {}
 
     handles: list[Any] = []
     for site, sae in sae_sites.items():
         # Route through ResolvedSite (identity for resid_post + position=None)
         resolved = resolver.resolve(model, site)
         layer_mod = resolved.module
-        layer = site.layer
+        site_k = _site_key(site)
 
         def _hook(
             module: nn.Module,
             inp: Any,
             output: Any,
             _sae: Any = sae,
-            _layer: int = layer,
+            _site_k: tuple[int, str] = site_k,
             _resolved: Any = resolved,
         ) -> None:
             a = _routed_extract(_resolved, output).detach()
@@ -81,7 +103,7 @@ def compute_f_per_site(
             )
             with torch.no_grad():
                 f = _sae.encode(a_in)
-            result[_layer] = f.detach()
+            result[_site_k] = f.detach()
 
         handles.append(layer_mod.register_forward_hook(_hook))
 
@@ -104,42 +126,47 @@ def _feature_circuit_forward(
     inputs: _Inputs,
     sae_sites: dict[Site, Any],
     resolver: Any,
-    circuit_nodes: dict[int, set[int]],
-    ablation_values: dict[int, Tensor],
+    circuit_nodes: dict[tuple[int, str], set[int]],
+    ablation_values: dict[tuple[int, str], Tensor],
     *,
     include_error_node: bool = False,
-    error_in_circuit: dict[int, bool] | None = None,
+    error_in_circuit: dict[tuple[int, str], bool] | None = None,
     ablation_mode: str = "corrupted",
-    ablation_eps: dict[int, Tensor] | None = None,
+    ablation_eps: dict[tuple[int, str], Tensor] | None = None,
 ) -> Any:
-    """Node-set ablation forward (§4.1).
+    """Node-set ablation forward (§4.1 / §4.4).
 
     At each spliced site, replaces NON-circuit feature entries with ablation_values
     before decode. eps is frozen at clean (include_error_node=False) or ablated
     for out-of-circuit error nodes (include_error_node=True).
+
+    All dicts are keyed by (layer, component) — the composite key (§4.4).
+    This ensures two same-layer sites do NOT share or overwrite each other's
+    ablation decomposition.
 
     Args:
         model:           The model to run.
         inputs:          Model inputs.
         sae_sites:       Ordered dict of Site → SAE.
         resolver:        SiteResolver used to route hooks to the correct submodule.
-        circuit_nodes:   dict[layer, set[feature_idx]] — the IN-CIRCUIT features.
-        ablation_values: dict[layer, Tensor] — ablation activation (f_corrupt / zeros / mean).
+        circuit_nodes:   dict[(layer,component), set[feature_idx]] — IN-CIRCUIT features.
+        ablation_values: dict[(layer,component), Tensor] — ablation activation per site.
         include_error_node: If True, treat sae_error as a node (§4.4).
-        error_in_circuit:   dict[layer, bool] — whether error node is in-circuit per site.
+        error_in_circuit:   dict[(layer,component), bool] — error node in-circuit per site.
         ablation_mode:   'corrupted' / 'zero' / 'mean' (informational; ablation_values already computed).
-        ablation_eps:    dict[layer, Tensor] — eps to use when ablating error nodes (include_error_node=True).
+        ablation_eps:    dict[(layer,component), Tensor] — eps ablation values for out-of-circuit
+                         error nodes (include_error_node=True).
 
     Returns:
         Model output (may have .logits or be raw tensor).
     """
     handles: list[Any] = []
 
-    # Sort sites in forward order (ascending layer)
-    sorted_site_pairs = sorted(sae_sites.items(), key=lambda kv: kv[0].layer)
+    # Sort sites in forward order (forward-position rank)
+    sorted_site_pairs = sorted(sae_sites.items(), key=lambda kv: _site_rank(kv[0]))
 
     for site, sae in sorted_site_pairs:
-        layer = site.layer
+        sk = _site_key(site)
         # Route through ResolvedSite (identity for resid_post + position=None)
         resolved = resolver.resolve(model, site)
         layer_mod = resolved.module
@@ -150,14 +177,14 @@ def _feature_circuit_forward(
         else:
             m_dtype, m_device = torch.float32, torch.device("cpu")
 
-        in_circuit = circuit_nodes.get(layer, set())
-        abl_val = ablation_values.get(layer)  # may be None for zero-mode
+        in_circuit = circuit_nodes.get(sk, set())
+        abl_val = ablation_values.get(sk)  # may be None for zero-mode
 
-        # Error-node circuit membership
+        # Error-node circuit membership — per (layer, component)
         err_in_circ = True  # default: treat as always in circuit (frozen eps)
         if include_error_node and error_in_circuit is not None:
-            err_in_circ = error_in_circuit.get(layer, True)
-        abl_eps = ablation_eps.get(layer) if (ablation_eps is not None and not err_in_circ) else None
+            err_in_circ = error_in_circuit.get(sk, True)
+        abl_eps = ablation_eps.get(sk) if (ablation_eps is not None and not err_in_circ) else None
 
         def _ablate_hook(
             module: nn.Module,
@@ -285,18 +312,23 @@ class SAEFeatureEdgeGraph:
     ) -> list[tuple[tuple[Site, Any], tuple[Site, Any]]]:
         """Enumerate (writer_site, reader_site) pairs in reverse-topological order.
 
-        layer_pairs='adjacent'   → n_sites-1 adjacent pairs
-        layer_pairs='all_forward' → n(n-1)/2 all forward pairs
+        layer_pairs='adjacent'   → consecutive pairs in forward-position order
+        layer_pairs='all_forward' → all pairs where rank(writer) < rank(reader)
+
+        Sites are ordered by _site_rank (attn_out@L < mlp_out@L < resid_post@L).
         """
         pairs: list[tuple[tuple[Site, Any], tuple[Site, Any]]] = []
         n = len(self.sites)
         for i in range(n):
             for j in range(i + 1, n):
+                # Pair is valid iff rank(writer) < rank(reader)
+                if _site_rank(self.sites[i][0]) >= _site_rank(self.sites[j][0]):
+                    continue
                 if layer_pairs == "adjacent" and j != i + 1:
                     continue
                 pairs.append((self.sites[i], self.sites[j]))
-        # Reverse topo: later (reader) layers first
-        pairs.sort(key=lambda p: -p[1][0].layer)
+        # Reverse topo: higher-rank (later) reader first
+        pairs.sort(key=lambda p: -_site_rank(p[1][0]))
         return pairs
 
 
@@ -348,36 +380,41 @@ class SAEFeatureCircuit:
     # Internal: extract circuit_nodes set from this circuit
     # ------------------------------------------------------------------
 
-    def _circuit_node_sets(self) -> dict[int, set[int]]:
-        """Return dict[layer, set[feature_idx]] for nodes in this circuit.
+    def _circuit_node_sets(self) -> dict[tuple[int, str], set[int]]:
+        """Return dict[(layer,component), set[feature_idx]] for nodes in this circuit.
 
         Nodes are defined by the union of edge endpoints (writer + reader).
         Does NOT include nodes from self.nodes.scores that are not in any edge —
         this ensures an empty-edge circuit has empty node sets.
+        Keyed by composite (layer, component) so same-layer sites remain distinct (§4.2).
         """
-        result: dict[int, set[int]] = {}
+        result: dict[tuple[int, str], set[int]] = {}
         if self._sae_sites is not None:
             for site in self._sae_sites:
-                result[site.layer] = set()
+                result[_site_key(site)] = set()
 
         # Collect all nodes across edges (edge endpoints = circuit members)
         for edge in self.edges:
             for node_ref in [edge.writer, edge.reader]:
                 nd = node_ref.node
                 if nd.kind == "sae_feature" and nd.layer is not None and nd.neuron is not None:
-                    result.setdefault(nd.layer, set()).add(nd.neuron)
+                    nk = _node_site_key(nd)
+                    result.setdefault(nk, set()).add(nd.neuron)
         return result
 
-    def _all_node_sets(self) -> dict[int, set[int]]:
-        """Return dict[layer, set[feature_idx]] for ALL survivors (full circuit M)."""
+    def _all_node_sets(self) -> dict[tuple[int, str], set[int]]:
+        """Return dict[(layer,component), set[feature_idx]] for ALL survivors (full circuit M).
+        Keyed by composite (layer, component) so same-layer sites remain distinct (§4.2).
+        """
         if self._sae_sites is None:
             return {}
-        result: dict[int, set[int]] = {site.layer: set() for site in self._sae_sites}
+        result: dict[tuple[int, str], set[int]] = {_site_key(site): set() for site in self._sae_sites}
         for site, survivors in self.graph.survivors.items():
+            sk = _site_key(site)
             for atp_node in survivors:
                 nd = atp_node.node
                 if nd.kind == "sae_feature" and nd.neuron is not None:
-                    result.setdefault(site.layer, set()).add(nd.neuron)
+                    result.setdefault(sk, set()).add(nd.neuron)
         return result
 
     def _compute_ablation_values(
@@ -385,8 +422,8 @@ class SAEFeatureCircuit:
         clean: _Inputs,
         corrupted: _Inputs,
         ablation_mode: str,
-    ) -> dict[int, Tensor]:
-        """Compute ablation_value dict[layer, Tensor] per §4.1."""
+    ) -> dict[tuple[int, str], Tensor]:
+        """Compute ablation_value dict[(layer,component), Tensor] per §4.1/§4.4."""
         if self._model is None or self._sae_sites is None or self._resolver is None:
             raise RuntimeError(
                 "SAEFeatureCircuit must be created by SAEFeatureEdgeRunner.run() "
@@ -398,12 +435,12 @@ class SAEFeatureCircuit:
         if ablation_mode == "corrupted":
             return f_corrupt
         if ablation_mode == "zero":
-            return {layer: torch.zeros_like(f) for layer, f in f_corrupt.items()}
+            return {sk: torch.zeros_like(f) for sk, f in f_corrupt.items()}
         if ablation_mode == "mean":
-            result: dict[int, Tensor] = {}
-            for layer, f in f_corrupt.items():
+            result: dict[tuple[int, str], Tensor] = {}
+            for sk, f in f_corrupt.items():
                 mean_val = f.mean(dim=list(range(f.ndim - 1)), keepdim=True)
-                result[layer] = mean_val.expand_as(f)
+                result[sk] = mean_val.expand_as(f)
             return result
         raise ValueError(
             f"Unknown ablation_mode {ablation_mode!r}. "
@@ -415,21 +452,21 @@ class SAEFeatureCircuit:
         clean: _Inputs,
         corrupted: _Inputs,
         metric: Callable[[Any], Tensor],
-        circuit_nodes: dict[int, set[int]],
-        ablation_values: dict[int, Tensor],
+        circuit_nodes: dict[tuple[int, str], set[int]],
+        ablation_values: dict[tuple[int, str], Tensor],
         *,
         include_error_node: bool = False,
-        error_in_circuit: dict[int, bool] | None = None,
-        ablation_eps: dict[int, Tensor] | None = None,
+        error_in_circuit: dict[tuple[int, str], bool] | None = None,
+        ablation_eps: dict[tuple[int, str], Tensor] | None = None,
     ) -> float:
         """Compute m(circuit_nodes) — scalar metric under node-set ablation.
 
         Args:
-            circuit_nodes:     dict[layer, set[feature_idx]] — the IN-CIRCUIT features.
-            ablation_values:   dict[layer, Tensor] — ablation activation per site.
+            circuit_nodes:     dict[(layer,component), set[feature_idx]] — IN-CIRCUIT features.
+            ablation_values:   dict[(layer,component), Tensor] — ablation activation per site.
             include_error_node: If True, thread error-node membership into the forward.
-            error_in_circuit:  dict[layer, bool] — whether error node is in-circuit per site.
-            ablation_eps:      dict[layer, Tensor] — eps ablation values for out-of-circuit
+            error_in_circuit:  dict[(layer,component), bool] — error node in-circuit per site.
+            ablation_eps:      dict[(layer,component), Tensor] — eps ablation values for out-of-circuit
                                error nodes (required when include_error_node=True and
                                error node is out of circuit).
         """
@@ -457,18 +494,20 @@ class SAEFeatureCircuit:
     # Stage B: faithfulness / completeness / prune
     # ------------------------------------------------------------------
 
-    def _error_circuit_membership(self) -> dict[int, bool]:
-        """Return dict[layer, bool] — whether the sae_error node at each layer is in circuit.
+    def _error_circuit_membership(self) -> dict[tuple[int, str], bool]:
+        """Return dict[(layer,component), bool] — whether the sae_error node at each site is in circuit.
 
         An error node is in-circuit if it appears as a WRITER in any edge.
+        Keyed by composite (layer, component) for multi-site-per-layer support (§4.2).
         """
         if self._sae_sites is None:
             return {}
-        in_circuit: dict[int, bool] = {site.layer: False for site in self._sae_sites}
+        in_circuit: dict[tuple[int, str], bool] = {_site_key(site): False for site in self._sae_sites}
         for edge in self.edges:
             w = edge.writer.node
             if w.kind == "sae_error" and w.layer is not None:
-                in_circuit[w.layer] = True
+                wk = _node_site_key(w)
+                in_circuit[wk] = True
         return in_circuit
 
     def faithfulness(
@@ -505,16 +544,16 @@ class SAEFeatureCircuit:
         ablation_values = self._compute_ablation_values(clean, corrupted, ablation_mode)
 
         # Build error_in_circuit and ablation_eps when include_error_node=True
-        error_in_circuit: dict[int, bool] | None = None
-        ablation_eps: dict[int, Tensor] | None = None
+        error_in_circuit: dict[tuple[int, str], bool] | None = None
+        ablation_eps: dict[tuple[int, str], Tensor] | None = None
         if include_error_node:
             error_in_circuit = self._error_circuit_membership()
             # ablation_eps: for out-of-circuit error nodes use the corrupted eps
             if self._sae_sites is not None and self._resolver is not None and self._model is not None:
                 from circuitry.sae.grad import sae_decompose as _sae_decompose
-                abl_eps_dict: dict[int, Tensor] = {}
+                abl_eps_dict: dict[tuple[int, str], Tensor] = {}
                 for site, sae in self._sae_sites.items():
-                    layer = site.layer
+                    sk = _site_key(site)
                     # Route through ResolvedSite (identity for resid_post + position=None)
                     resolved = self._resolver.resolve(self._model, site)
                     layer_mod = resolved.module
@@ -544,13 +583,13 @@ class SAEFeatureCircuit:
                     finally:
                         _h.remove()
                     if "eps" in eps_store:
-                        abl_eps_dict[layer] = eps_store["eps"]
+                        abl_eps_dict[sk] = eps_store["eps"]
                 ablation_eps = abl_eps_dict
 
         # m(∅): empty circuit — all features ablated
-        empty_nodes: dict[int, set[int]] = {layer: set() for layer in ablation_values}
+        empty_nodes: dict[tuple[int, str], set[int]] = {sk: set() for sk in ablation_values}
         # For empty circuit: all error nodes are out-of-circuit
-        empty_err_in_circ = {layer: False for layer in ablation_values} if include_error_node else None
+        empty_err_in_circ = {sk: False for sk in ablation_values} if include_error_node else None
         m_empty = self._m_of(
             clean, corrupted, metric, empty_nodes, ablation_values,
             include_error_node=include_error_node,
@@ -561,7 +600,7 @@ class SAEFeatureCircuit:
         # m(M): full circuit — all survivors kept; use _all_node_sets() so faithfulness(M)=1
         full_nodes = self._all_node_sets()
         # For full circuit: all error nodes are in-circuit (eps frozen at clean)
-        full_err_in_circ = {layer: True for layer in full_nodes} if include_error_node else None
+        full_err_in_circ = {sk: True for sk in full_nodes} if include_error_node else None
         m_full = self._m_of(
             clean, corrupted, metric, full_nodes, ablation_values,
             include_error_node=include_error_node,
@@ -581,10 +620,10 @@ class SAEFeatureCircuit:
         # NOTE: if a survivor has no edges (orphaned), it does not count as a
         # circuit member — faithfulness(C) < 1 in that case.  This is the
         # intended Marks-SFC semantics (edges define membership).
-        circuit_nodes = self._circuit_node_sets()
+        circuit_nodes_c = self._circuit_node_sets()
         circuit_err_in_circ = error_in_circuit  # derived from actual edge set
         m_circuit = self._m_of(
-            clean, corrupted, metric, circuit_nodes, ablation_values,
+            clean, corrupted, metric, circuit_nodes_c, ablation_values,
             include_error_node=include_error_node,
             error_in_circuit=circuit_err_in_circ,
             ablation_eps=ablation_eps,
@@ -624,30 +663,27 @@ class SAEFeatureCircuit:
         ablation_values = self._compute_ablation_values(clean, corrupted, ablation_mode)
 
         full_nodes = self._all_node_sets()
-        circuit_nodes = self._circuit_node_sets()
+        circuit_nodes_c = self._circuit_node_sets()
 
-        # M\C: complement of circuit within the full node set
-        complement: dict[int, set[int]] = {}
-        for layer, all_feats in full_nodes.items():
-            in_circ = circuit_nodes.get(layer, set())
-            complement[layer] = all_feats - in_circ
+        # M\C: complement of circuit within the full node set (keyed by composite key)
+        complement: dict[tuple[int, str], set[int]] = {}
+        for sk, all_feats in full_nodes.items():
+            in_circ = circuit_nodes_c.get(sk, set())
+            complement[sk] = all_feats - in_circ
 
         # Build error_in_circuit kwargs when include_error_node=True
-        err_kwargs: dict[str, Any] = {}
         if include_error_node:
-            err_kwargs["include_error_node"] = True
             # Reuse _error_circuit_membership for the circuit
             err_circ = self._error_circuit_membership()
-            err_kwargs["error_in_circuit"] = err_circ
             # For full circuit: all error nodes in-circuit
-            full_err_in_circ = {layer: True for layer in full_nodes}
+            full_err_in_circ: dict[tuple[int, str], bool] = {sk: True for sk in full_nodes}
             # For complement: complement of error membership
-            comp_err_in_circ = {layer: not v for layer, v in err_circ.items()}
+            comp_err_in_circ: dict[tuple[int, str], bool] = {sk: not v for sk, v in err_circ.items()}
             # For empty: all out of circuit
-            empty_err_in_circ = {layer: False for layer in ablation_values}
+            empty_err_in_circ: dict[tuple[int, str], bool] = {sk: False for sk in ablation_values}
 
         # m(∅): empty circuit
-        empty_nodes: dict[int, set[int]] = {layer: set() for layer in ablation_values}
+        empty_nodes: dict[tuple[int, str], set[int]] = {sk: set() for sk in ablation_values}
         if include_error_node:
             m_empty = self._m_of(
                 clean, corrupted, metric, empty_nodes, ablation_values,
@@ -720,18 +756,19 @@ class SAEFeatureCircuit:
         if method in ("threshold", "both"):
             kept_edges = {e: s for e, s in result.edges.items() if abs(s) >= tau}
             # Reconstruct a pruned circuit with only the kept edges
-            # Build survivors from kept edges
-            kept_nodes: dict[int, set[int]] = {}
+            # Build survivors from kept edges — keyed by composite (layer, component)
+            kept_nodes: dict[tuple[int, str], set[int]] = {}
             for edge in kept_edges:
                 for nd_ref in [edge.writer, edge.reader]:
                     nd = nd_ref.node
                     if nd.kind == "sae_feature" and nd.layer is not None and nd.neuron is not None:
-                        kept_nodes.setdefault(nd.layer, set()).add(nd.neuron)
+                        nk = _node_site_key(nd)
+                        kept_nodes.setdefault(nk, set()).add(nd.neuron)
 
             new_survivors: dict[Site, list[AtPNode]] = {}
             for site, survivors in result.graph.survivors.items():
-                layer = site.layer
-                feats = kept_nodes.get(layer, set())
+                sk = _site_key(site)
+                feats = kept_nodes.get(sk, set())
                 new_survivors[site] = [
                     n for n in survivors
                     if n.node.neuron is not None and n.node.neuron in feats
@@ -841,16 +878,6 @@ class SAEFeatureEdgeRunner:
             assert_supported_sae(sae)
             resolved[site] = sae
 
-        # Enforce one SAE site per layer (temporary constraint; multi-site-per-layer is P2b)
-        _seen_layers: dict[int, str] = {}
-        for site in resolved:
-            if site.layer in _seen_layers:
-                raise NotImplementedError(
-                    f"Multiple SAE sites in layer {site.layer} is not yet supported (P2b). "
-                    f"Got {_seen_layers[site.layer]!r} and {site.component!r} in the same layer."
-                )
-            _seen_layers[site.layer] = site.component
-
         self._sae_sites = resolved
 
         # Compose SAEFeatureRunner for Stage 1
@@ -869,8 +896,8 @@ class SAEFeatureEdgeRunner:
         return self._stage1_runner._atp._locate_layers(self.model)
 
     def _sorted_sites(self) -> list[tuple[Site, Any]]:
-        """Sites sorted in forward order (ascending layer)."""
-        return sorted(self._sae_sites.items(), key=lambda kv: kv[0].layer)
+        """Sites sorted in forward-position order (by _site_rank: attn_out < mlp_out < resid_post within a layer)."""
+        return sorted(self._sae_sites.items(), key=lambda kv: _site_rank(kv[0]))
 
     def _model_dtype_device(self, layer_mod: nn.Module) -> tuple[torch.dtype, Any]:
         params = list(layer_mod.parameters())
@@ -962,39 +989,42 @@ class SAEFeatureEdgeRunner:
             max_features=top_k_survivors,
         )
 
-        # Group survivors by site layer
-        site_survivors: dict[int, list[AtPNode]] = {}
+        # Group survivors by composite (layer, component) site key
+        site_survivors: dict[tuple[int, str], list[AtPNode]] = {}
         for site, _ in sorted_sites:
-            layer = site.layer
-            site_survivors[layer] = []
+            site_survivors[_site_key(site)] = []
 
         for atp_node in node_result.scores:
             nd = atp_node.node
-            if nd.layer is not None and nd.layer in site_survivors:
-                site_survivors[nd.layer].append(atp_node)
+            if nd.layer is not None:
+                nk = _node_site_key(nd)
+                if nk in site_survivors:
+                    site_survivors[nk].append(atp_node)
 
         # Build EdgeGraph metadata
         edge_graph = SAEFeatureEdgeGraph(
             sites=sorted_sites,
-            survivors={site: site_survivors.get(site.layer, []) for site, _ in sorted_sites},
+            survivors={site: site_survivors.get(_site_key(site), []) for site, _ in sorted_sites},
             edges=[],  # filled below
         )
 
         # ------------------------------------------------------------------
-        # STAGE 2: enumerate site pairs, compute edges via multi-site splice + VJP
+        # STAGE 2: enumerate site pairs in forward-position order (rank-based)
         # ------------------------------------------------------------------
         all_edge_scores: dict[SAEFeatureEdge, float] = {}
 
-        # Iterate over site pairs in forward order (writer before reader)
+        # Iterate over site pairs in forward order (writer rank < reader rank)
         for i, (writer_site, _writer_sae) in enumerate(sorted_sites):
             for j, (reader_site, _reader_sae) in enumerate(sorted_sites):
-                if j <= i:
+                # Valid forward edge: rank(writer) < rank(reader)
+                if _site_rank(writer_site) >= _site_rank(reader_site):
                     continue
+                # 'adjacent' mode: j must immediately follow i in rank order
                 if layer_pairs == "adjacent" and j != i + 1:
                     continue
 
-                writer_survivors = site_survivors.get(writer_site.layer, [])
-                reader_survivors = site_survivors.get(reader_site.layer, [])
+                writer_survivors = site_survivors.get(_site_key(writer_site), [])
+                reader_survivors = site_survivors.get(_site_key(reader_site), [])
 
                 # Skip if no survivors on either side
                 if not writer_survivors and not reader_survivors:
@@ -1174,7 +1204,11 @@ class SAEFeatureEdgeRunner:
             # NOTE: a_in is NOT detached — live activation flows into encode
             f_D, x_hat, eps = sae_decompose(_sae, a_in)
             # eps is already detached by sae_decompose (frozen at clean)
-            f_D.retain_grad()
+            # Guard: only retain_grad if requires_grad is True; on parallel-attention
+            # models the reader tensor may not depend on the writer (no causal path) and
+            # retain_grad on a leaf-or-no-grad tensor raises RuntimeError.
+            if f_D.requires_grad:
+                f_D.retain_grad()
             recon = x_hat + eps
             _st["f_D"] = f_D
             _st["eps"] = eps
@@ -1205,10 +1239,11 @@ class SAEFeatureEdgeRunner:
             return {}
 
         if f_D_live.grad is None:
-            raise RuntimeError(
-                "f_D.grad is None after backward — the metric must be differentiable "
-                f"and connected to both SAE sites. Writer: {writer_site}, Reader: {reader_site}."
-            )
+            # No gradient path from metric to f_D — this is legitimate when there is no
+            # causal path from writer_site to reader_site in the model (e.g. parallel-attention
+            # architectures where attn and mlp both read from x, not from each other).
+            # Return empty dict — no edges computable for this pair.
+            return {}
 
         # ------------------------------------------------------------------
         # Step C: compute Δf_U = f_U_corrupt − f_U_clean (fp32, device-aligned)
@@ -1771,8 +1806,8 @@ class FeatureACDCRunner:
         self._edge_runner = SAEFeatureEdgeRunner(model, sae_sites, resolver)
 
     def _sorted_sites(self) -> list[tuple[Site, Any]]:
-        """Sites in forward order (ascending layer)."""
-        return sorted(self._sae_sites.items(), key=lambda kv: kv[0].layer)
+        """Sites in forward-position order (by _site_rank)."""
+        return sorted(self._sae_sites.items(), key=lambda kv: _site_rank(kv[0]))
 
     def _call_model(self, inputs: _Inputs) -> Any:
         if isinstance(inputs, dict):
@@ -1842,30 +1877,31 @@ class FeatureACDCRunner:
         else:
             raise RuntimeError("No edge runner available and no _initial_circuit provided.")
 
-        # Build node score lookup: (layer, feat_idx) → |score|
-        # nodes.scores is a dict[AtPNode, float]
-        node_scores: dict[tuple[int, int], float] = {}
+        # Build node score lookup: (layer, component_str, feat_idx) → |score|
+        # component_str is node.component or "resid_post" (composite key per §4.2)
+        node_scores: dict[tuple[int, str, int], float] = {}
         for atp_node, score in base_circuit.nodes.scores.items():
             nd = atp_node.node
             if nd.kind == "sae_feature" and nd.layer is not None and nd.neuron is not None:
-                node_scores[(nd.layer, nd.neuron)] = float(abs(score))
+                comp_str = nd.component or "resid_post"
+                node_scores[(nd.layer, comp_str, nd.neuron)] = float(abs(score))
 
         # ------------------------------------------------------------------
-        # Build reverse-topo order: later layers first, then weakest score first within site
+        # Build reverse-topo order: higher rank (later) first, weakest score first within site
         # ------------------------------------------------------------------
         sorted_sites = self._sorted_sites()
-        # Reverse topo: later layers first
+        # Reverse topo: higher-rank sites first
         rev_sorted_sites = list(reversed(sorted_sites))
 
-        # Collect all current kept nodes per site (from base_circuit survivors)
-        kept_nodes: dict[int, set[int]] = {}
+        # Collect all current kept nodes per site — composite (layer, component) key
+        kept_nodes: dict[tuple[int, str], set[int]] = {}
         for site, survivors in base_circuit.graph.survivors.items():
-            layer = site.layer
-            kept_nodes[layer] = set()
+            sk = _site_key(site)
+            kept_nodes[sk] = set()
             for atp_node in survivors:
                 nd = atp_node.node
                 if nd.kind == "sae_feature" and nd.neuron is not None:
-                    kept_nodes[layer].add(nd.neuron)
+                    kept_nodes[sk].add(nd.neuron)
 
         # ------------------------------------------------------------------
         # Compute ablation values once (corrupted/zero/mean)
@@ -1884,21 +1920,22 @@ class FeatureACDCRunner:
         # Greedy pruning loop
         # ------------------------------------------------------------------
         for site, _sae in rev_sorted_sites:
-            layer = site.layer
-            feats_in_layer = list(kept_nodes.get(layer, set()))
+            sk = _site_key(site)
+            comp_str = site.component  # "attn_out" / "mlp_out" / "resid_post"
+            feats_in_site = list(kept_nodes.get(sk, set()))
 
             # Sort by weakest |score| first (ascending)
-            feats_in_layer.sort(key=lambda fi: node_scores.get((layer, fi), 0.0))
+            feats_in_site.sort(key=lambda fi: node_scores.get((site.layer, comp_str, fi), 0.0))
 
-            for feat_i in feats_in_layer:
-                score_i = node_scores.get((layer, feat_i), 0.0)
+            for feat_i in feats_in_site:
+                score_i = node_scores.get((site.layer, comp_str, feat_i), 0.0)
 
                 # eap_skip_threshold: keep high-score nodes without testing
                 if eap_skip_threshold is not None and score_i > eap_skip_threshold:
                     continue
 
                 # Tentatively remove feat_i
-                kept_nodes[layer].discard(feat_i)
+                kept_nodes[sk].discard(feat_i)
 
                 # Run ablation forward with the tentative kept set
                 circuit_out = _feature_circuit_forward(
@@ -1919,7 +1956,7 @@ class FeatureACDCRunner:
                     # feat_i stays removed
                 else:
                     # Reject: put feat_i back
-                    kept_nodes[layer].add(feat_i)
+                    kept_nodes[sk].add(feat_i)
 
         # ------------------------------------------------------------------
         # Build pruned SAEFeatureCircuit from kept_nodes
@@ -1929,15 +1966,17 @@ class FeatureACDCRunner:
         for edge, score in base_circuit.edges.items():
             w = edge.writer.node
             r = edge.reader.node
+            wk = _node_site_key(w)
+            rk = _node_site_key(r)
             w_in = (
                 w.layer is not None
                 and w.neuron is not None
-                and w.neuron in kept_nodes.get(w.layer, set())
+                and w.neuron in kept_nodes.get(wk, set())
             )
             r_in = (
                 r.layer is not None
                 and r.neuron is not None
-                and r.neuron in kept_nodes.get(r.layer, set())
+                and r.neuron in kept_nodes.get(rk, set())
             )
             if w_in and r_in:
                 kept_edges[edge] = score
@@ -1945,8 +1984,8 @@ class FeatureACDCRunner:
         # Build new survivors
         new_survivors: dict[Site, list[AtPNode]] = {}
         for site, survivors in base_circuit.graph.survivors.items():
-            layer = site.layer
-            feats = kept_nodes.get(layer, set())
+            sk = _site_key(site)
+            feats = kept_nodes.get(sk, set())
             new_survivors[site] = [
                 n for n in survivors
                 if n.node.kind == "sae_feature"
@@ -1998,13 +2037,14 @@ class FeatureACDCRunner:
                 include_error_node=include_error_node,
                 top_k_survivors=top_k_survivors,
             )
-            # Count kept nodes (unique (layer, feat) pairs across all sites)
-            kept: set[tuple[int, int]] = set()
-            for _site, survivors in circuit.graph.survivors.items():
+            # Count kept nodes (unique (layer, component, feat) tuples across all sites)
+            kept: set[tuple[int, str, int]] = set()
+            for site, survivors in circuit.graph.survivors.items():
+                comp_str = site.component
                 for atp_node in survivors:
                     nd = atp_node.node
                     if nd.kind == "sae_feature" and nd.layer is not None and nd.neuron is not None:
-                        kept.add((nd.layer, nd.neuron))
+                        kept.add((nd.layer, comp_str, nd.neuron))
             n_kept = len(kept)
 
             # Compute final KL of the pruned circuit
@@ -2012,12 +2052,12 @@ class FeatureACDCRunner:
             with torch.no_grad():
                 clean_out = self._call_model(clean)
 
-            # Build circuit_nodes from survivors
-            circuit_nodes: dict[int, set[int]] = {
-                site.layer: set() for site, _ in self._sorted_sites()
+            # Build circuit_nodes from survivors — composite (layer, component) key
+            circuit_nodes: dict[tuple[int, str], set[int]] = {
+                _site_key(site): set() for site, _ in self._sorted_sites()
             }
-            for (layer, feat) in kept:
-                circuit_nodes.setdefault(layer, set()).add(feat)
+            for (layer, comp_str, feat) in kept:
+                circuit_nodes.setdefault((layer, comp_str), set()).add(feat)
 
             circuit_out = _feature_circuit_forward(
                 self.model,

@@ -274,8 +274,15 @@ def test_ablation_monotonicity():
         """KL(circuit_without_feat ‖ clean)."""
         from circuitry.core.patching import kl_divergence
 
+        # full_nodes uses composite (layer, component) keys (P2b)
         pruned_nodes = {layer_k: set(s) for layer_k, s in full_nodes.items()}
-        pruned_nodes.setdefault(layer, set()).discard(feat)
+        # Derive the node's composite key from the nodes in the circuit
+        # For resid_post-only circuits the component is None → key is (layer, "resid_post")
+        node_key = next(
+            (k for k in pruned_nodes if isinstance(k, tuple) and k[0] == layer),
+            (layer, "resid_post"),
+        )
+        pruned_nodes.setdefault(node_key, set()).discard(feat)
 
         out = _feature_circuit_forward(
             model, clean,

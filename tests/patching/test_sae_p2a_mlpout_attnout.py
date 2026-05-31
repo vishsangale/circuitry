@@ -150,8 +150,10 @@ def test_mlpout_decomposes_true_submodule():
 
     # --- Runner's compute_f_per_site ---
     runner_f = compute_f_per_site(model, clean, {site: sae}, resolver)
-    assert 0 in runner_f, "compute_f_per_site returned no result for layer 0"
-    f_runner = runner_f[0]  # shape (b, s, d_sae)
+    # P2b: compute_f_per_site uses composite (layer, component) keys
+    key = (0, "mlp_out")
+    assert key in runner_f, f"compute_f_per_site returned no result for {key}. Got: {list(runner_f.keys())}"
+    f_runner = runner_f[key]  # shape (b, s, d_sae)
 
     # --- Reference: directly hook the mlp submodule ---
     mlp_out_ref: dict[str, Tensor] = {}
@@ -216,8 +218,10 @@ def test_attnout_decomposes_true_submodule():
 
     # --- Runner's compute_f_per_site ---
     runner_f = compute_f_per_site(model, clean, {site: sae}, resolver)
-    assert 0 in runner_f, "compute_f_per_site returned no result for attn_out site"
-    f_runner = runner_f[0]
+    # P2b: compute_f_per_site uses composite (layer, component) keys
+    key = (0, "attn_out")
+    assert key in runner_f, f"compute_f_per_site returned no result for {key}. Got: {list(runner_f.keys())}"
+    f_runner = runner_f[key]
 
     # --- Reference: directly hook self_attn and extract [0] from tuple ---
     attn_out_ref: dict[str, Tensor] = {}
@@ -563,8 +567,8 @@ def test_node_component_identity():
 # Two SAE sites in one layer → NotImplementedError
 # ---------------------------------------------------------------------------
 
-def test_two_sites_one_layer_rejected_node_runner():
-    """SAEFeatureRunner rejects two sites sharing a layer (P2b gate)."""
+def test_two_sites_one_layer_accepted_node_runner():
+    """SAEFeatureRunner now ACCEPTS two sites sharing a layer (P2b implemented)."""
     from circuitry.patching.sae_features import SAEFeatureRunner
     from circuitry.patching.sites import Site
 
@@ -574,16 +578,17 @@ def test_two_sites_one_layer_rejected_node_runner():
     sae_attn = _make_sae(d_model=d, seed=11)
     resolver = _make_block_resolver(d=d)
 
-    # Two sites at layer 0 with different components
+    # Two sites at layer 0 with different components — now accepted
     site_mlp = Site("mlp_out", layer=0)
     site_attn = Site("attn_out", layer=0)
 
-    with pytest.raises(NotImplementedError, match="P2b"):
-        SAEFeatureRunner(model, {site_mlp: sae_mlp, site_attn: sae_attn}, resolver)
+    # Should NOT raise after P2b lands
+    runner = SAEFeatureRunner(model, {site_mlp: sae_mlp, site_attn: sae_attn}, resolver)
+    assert runner is not None
 
 
-def test_two_sites_one_layer_rejected_edge_runner():
-    """SAEFeatureEdgeRunner rejects two sites sharing a layer (P2b gate)."""
+def test_two_sites_one_layer_accepted_edge_runner():
+    """SAEFeatureEdgeRunner now ACCEPTS two sites sharing a layer (P2b implemented)."""
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
     from circuitry.patching.sites import Site
 
@@ -596,8 +601,9 @@ def test_two_sites_one_layer_rejected_edge_runner():
     site_mlp = Site("mlp_out", layer=0)
     site_attn = Site("attn_out", layer=0)
 
-    with pytest.raises(NotImplementedError, match="P2b"):
-        SAEFeatureEdgeRunner(model, {site_mlp: sae_mlp, site_attn: sae_attn}, resolver)
+    # Should NOT raise after P2b lands
+    runner = SAEFeatureEdgeRunner(model, {site_mlp: sae_mlp, site_attn: sae_attn}, resolver)
+    assert runner is not None
 
 
 # ---------------------------------------------------------------------------
