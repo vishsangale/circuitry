@@ -192,8 +192,10 @@ class SAEFeatureRunner:
         graddrop: bool = False,
         include_error_node: bool = False,
         max_features: int | None = None,
+        variant: str = "attrib",
+        n_ig_steps: int = 0,
     ) -> AtPResult:
-        """Compute per-feature AtP scores.
+        """Compute per-feature attribution scores.
 
         Steps:
           1. Freeze model + all SAE params (try/finally restore).
@@ -212,11 +214,30 @@ class SAEFeatureRunner:
             Add a sae_error node for the reconstruction error term.
         max_features:
             If set, keep only the top-|score| features per site.
+        variant:
+            'attrib' (default): single-point AtP gradient attribution (Δf · grad@clean).
+            'ig': integrated gradients along the path f_clean → f_corrupt (Δf = f_corrupt − f_clean).
+                  Uses N midpoint samples α_k=(k-0.5)/N for O(1/N²) convergence.
+                  Scores complete to metric(decode(f_corrupt)+eps_clean)−metric(decode(f_clean)+eps_clean)
+                  (eps-frozen spliced delta) when include_error_node=False.
+                  When include_error_node=True, the joint path (features + error interpolated together)
+                  completes to the real forward delta metric(corrupt)−metric(clean).
+                  Feature scores may differ slightly between include_error_node True/False because the
+                  gradient is evaluated along different eps trajectories — this is correct.
+            Other values: NotImplementedError.
+        n_ig_steps:
+            Number of IG integration steps (variant='ig' only). 0 → default of 32.
         """
         was_training, orig_rg = self._atp._freeze_eval()
         sae_orig_rg: dict[Site, dict[str, bool]] = {}
         for site, sae in self._sae_sites.items():
             sae_orig_rg[site] = _freeze_sae(sae)
+
+        if variant not in ("attrib", "ig"):
+            raise NotImplementedError(
+                f"SAEFeatureRunner variant={variant!r} is not supported. "
+                "Supported values: 'attrib', 'ig'."
+            )
 
         try:
             scores: dict[AtPNode, float] = {}
@@ -231,6 +252,8 @@ class SAEFeatureRunner:
                     graddrop=graddrop,
                     include_error_node=include_error_node,
                     max_features=max_features,
+                    variant=variant,
+                    n_ig_steps=n_ig_steps,
                 )
                 scores.update(site_scores)
 
@@ -251,6 +274,8 @@ class SAEFeatureRunner:
         graddrop: bool,
         include_error_node: bool,
         max_features: int | None,
+        variant: str = "attrib",
+        n_ig_steps: int = 0,
     ) -> dict[AtPNode, float]:
         """Run attribution for a single (site, sae) pair."""
         # Route through ResolvedSite — for resid_post + position=None this is the identity.
@@ -397,51 +422,180 @@ class SAEFeatureRunner:
                 "Ensure corrupted_inputs and clean_inputs have the same sequence length."
             )
 
-        delta_f = f_corr - f_clean  # Δf = corrupted − clean
+        delta_f = f_corr - f_clean  # Δf = corrupted − clean  (sign-consistent with attrib)
 
-        # Enumeration: features where Δf ≠ 0 (union clean-active | corr-active)
-        # Any position nonzero suffices → reduce over all dims except the feature dim
+        # Enumeration: features where Δf ≠ 0 (union clean-active | corr-active).
+        # NOTE: For IG we use the SAME Δf≠0 union — NOT gated on grad@clean — so that
+        # features dead at clean but live at corrupt still receive a nonzero IG score
+        # (this is the saturation fix IG provides over attrib).  max_features caps are
+        # applied AFTER scoring so they do not silently re-introduce a grad@clean gate.
         feature_dim = delta_f.shape[-1]
         # delta_f shape: (b, s, d_sae) or (n, d_sae) — feature is last dim
         active_mask = (delta_f != 0).reshape(-1, feature_dim).any(dim=0)  # (d_sae,)
         active_indices = active_mask.nonzero(as_tuple=True)[0].tolist()
 
         site_scores: dict[AtPNode, float] = {}
+        _comp = site.component if site.component != "resid_post" else None
 
-        for i in active_indices:
-            df_i = delta_f[..., i]  # (...) — all dims except feature
-            g_i = grad_f[..., i]
-            if graddrop:
-                # per-position: scalar product over feature dim already done (index i)
-                per_pos = df_i * g_i
-                score = float(per_pos.abs().sum().item())
-            else:
-                score = float((df_i * g_i).sum().item())
-            # component=None for resid_post (preserves v1.6 identity); explicit for others
-            _comp = site.component if site.component != "resid_post" else None
-            node = AtPNode(Node("sae_feature", layer=site.layer, neuron=i, component=_comp))
-            site_scores[node] = score
-
-        # Optional max_features cap: keep top-|score| features
-        if max_features is not None and len(site_scores) > max_features:
-            sorted_items = sorted(site_scores.items(), key=lambda kv: abs(kv[1]), reverse=True)
-            site_scores = dict(sorted_items[:max_features])
-
-        # Error node (opt-in)
-        if include_error_node and err_leaf is not None and err_leaf.grad is not None:
-            if eps_corrupt is not None and eps_clean is not None:
-                eps_c_f = eps_corrupt.to(err_leaf.device, torch.float32)
-                eps_cl_f = eps_clean.float()
-                delta_eps = eps_c_f - eps_cl_f
-                grad_err = err_leaf.grad.float()
+        if variant == "attrib":
+            # Single-point AtP: score_i = Σ_pos Δf_i · grad_i@clean
+            for i in active_indices:
+                df_i = delta_f[..., i]
+                g_i = grad_f[..., i]
                 if graddrop:
-                    per_pos = delta_eps * grad_err
-                    err_score = float(per_pos.abs().sum().item())
+                    per_pos = df_i * g_i
+                    score = float(per_pos.abs().sum().item())
                 else:
-                    err_score = float((delta_eps * grad_err).sum().item())
+                    score = float((df_i * g_i).sum().item())
+                node = AtPNode(Node("sae_feature", layer=site.layer, neuron=i, component=_comp))
+                site_scores[node] = score
+
+            # Error node (opt-in) for attrib path
+            if include_error_node and err_leaf is not None and err_leaf.grad is not None:
+                if eps_corrupt is not None and eps_clean is not None:
+                    eps_c_f = eps_corrupt.to(err_leaf.device, torch.float32)
+                    eps_cl_f = eps_clean.float()
+                    delta_eps = eps_c_f - eps_cl_f
+                    grad_err = err_leaf.grad.float()
+                    if graddrop:
+                        per_pos = delta_eps * grad_err
+                        err_score = float(per_pos.abs().sum().item())
+                    else:
+                        err_score = float((delta_eps * grad_err).sum().item())
+                    _comp_err = site.component if site.component != "resid_post" else None
+                    err_node = AtPNode(Node("sae_error", layer=site.layer, component=_comp_err))
+                    site_scores[err_node] = err_score
+
+        else:
+            # variant == "ig": integrated gradients via N midpoint samples
+            # Path: f(α) = f_clean + α·Δf, α: 0→1, α_k = (k-0.5)/N
+            # Completeness (feature-only, include_error_node=False):
+            #   Σ_i score_i → metric(decode(f_corrupt)+eps_clean) − metric(decode(f_clean)+eps_clean)
+            # Completeness (joint path, include_error_node=True):
+            #   Σ_i feature_IG_i + error_IG → metric(real corrupt) − metric(real clean)
+            _n_ig = n_ig_steps if n_ig_steps > 0 else 32  # default N=32
+            f_clean_t = f_clean_leaf.detach()   # original dtype (may be float64)
+            f_corr_t = f_corrupt.to(f_clean_t.device, f_clean_t.dtype)
+            delta_f_t = f_corr_t - f_clean_t    # Δf in original dtype
+
+            # eps values for joint path (include_error_node=True)
+            eps_clean_t = eps_clean  # captured in Step 2; shape same as f→model activation
+            eps_corrupt_t = eps_corrupt  # may be None
+            if include_error_node and eps_corrupt_t is not None and eps_clean_t is not None:
+                eps_corrupt_t_dev = eps_corrupt_t.to(eps_clean_t.device, eps_clean_t.dtype)
+                delta_eps_t = eps_corrupt_t_dev - eps_clean_t  # Δeps for joint path
+            else:
+                delta_eps_t = None
+
+            # Accumulators: sum of gradients over N steps  (same dtype as f)
+            grad_sum = torch.zeros_like(f_clean_t)      # (b, s, d_sae)
+            grad_err_sum: Tensor | None = None
+            if include_error_node and delta_eps_t is not None:
+                grad_err_sum = torch.zeros_like(eps_clean_t)
+
+            for k in range(1, _n_ig + 1):
+                alpha_k = (k - 0.5) / _n_ig
+                # f_k is the interpolated feature vector at this alpha
+                f_k_val = (f_clean_t + alpha_k * delta_f_t).detach().requires_grad_(True)
+
+                # eps_k: frozen at clean for feature-only path; interpolated for joint path
+                if include_error_node and delta_eps_t is not None:
+                    eps_k_val = (eps_clean_t + alpha_k * delta_eps_t).detach().requires_grad_(True)
+                else:
+                    # Feature-only: eps frozen at clean throughout
+                    eps_k_val = None
+
+                # Splice hook: override f with f_k, eps with eps_k (or eps_clean)
+                f_k_store: dict[str, Tensor] = {}
+                eps_leaf_store: dict[str, Tensor] = {}
+
+                def _ig_clean_hook(
+                    module: nn.Module, inp: Any, output: Any,
+                    _sae: Any = sae,
+                    _f_k: Tensor = f_k_val,
+                    _eps_k: Tensor | None = eps_k_val,
+                    _eps_frozen: Tensor = eps_clean_t,  # type: ignore[assignment]
+                    _inc_err: bool = include_error_node,
+                    _mdtype: torch.dtype = model_dtype,
+                    _mdev: Any = model_device,
+                    _fkst: dict = f_k_store,
+                    _epslst: dict = eps_leaf_store,
+                    _resolved: Any = resolved,
+                ) -> Any:
+                    # We don't re-encode; we use the interpolated f_k directly
+                    x_hat = _sae.decode(_f_k)
+                    if _inc_err and _eps_k is not None:
+                        # Joint path: interpolated eps leaf
+                        recon = x_hat + _eps_k
+                        _fkst["f_k"] = _f_k
+                        _epslst["eps_k"] = _eps_k
+                    else:
+                        # Feature-only path: eps frozen at clean (detached)
+                        recon = x_hat + _eps_frozen
+                        _fkst["f_k"] = _f_k
+                    recon_cast = recon.to(_mdev, _mdtype)
+                    return _routed_inject(_resolved, output, recon_cast)
+
+                ig_hook = layer_mod.register_forward_hook(_ig_clean_hook)
+                try:
+                    with torch.enable_grad():
+                        out_k = self._call_model(clean_inputs)
+                        m_k = metric(out_k)
+                        # Compute gradients w.r.t. f_k and (optionally) eps_k_val
+                        grad_inputs: list[Tensor] = [f_k_val]
+                        if include_error_node and eps_k_val is not None:
+                            grad_inputs.append(eps_k_val)
+                        grads = torch.autograd.grad(
+                            m_k, grad_inputs, allow_unused=True
+                        )
+                finally:
+                    ig_hook.remove()
+
+                g_f_k = grads[0]
+                if g_f_k is not None:
+                    grad_sum = grad_sum + g_f_k.to(grad_sum.device, grad_sum.dtype)
+                if include_error_node and len(grads) > 1 and grads[1] is not None:
+                    g_e_k = grads[1]
+                    if grad_err_sum is not None:
+                        grad_err_sum = grad_err_sum + g_e_k.to(grad_err_sum.device, grad_err_sum.dtype)
+
+                # Explicitly free the per-step graph
+                del out_k, m_k, grads, f_k_val
+                if eps_k_val is not None:
+                    del eps_k_val
+
+            # Average gradients and compute scores
+            avg_grad = grad_sum.float() / _n_ig    # (1/N) Σ_k grad_f@α_k
+
+            for i in active_indices:
+                df_i = delta_f[..., i].float()
+                avg_g_i = avg_grad[..., i].to(df_i.device)
+                if graddrop:
+                    score = float((df_i * avg_g_i).abs().sum().item())
+                else:
+                    score = float((df_i * avg_g_i).sum().item())
+                node = AtPNode(Node("sae_feature", layer=site.layer, neuron=i, component=_comp))
+                site_scores[node] = score
+
+            # Error node for IG joint path
+            if include_error_node and grad_err_sum is not None and delta_eps_t is not None:
+                avg_grad_err = grad_err_sum.float() / _n_ig
+                delta_eps_f = delta_eps_t.float()
+                if graddrop:
+                    err_score = float((delta_eps_f * avg_grad_err).abs().sum().item())
+                else:
+                    err_score = float((delta_eps_f * avg_grad_err).sum().item())
                 _comp_err = site.component if site.component != "resid_post" else None
                 err_node = AtPNode(Node("sae_error", layer=site.layer, component=_comp_err))
                 site_scores[err_node] = err_score
+
+        # Optional max_features cap (applied after scoring to avoid re-introducing grad@clean gate)
+        if max_features is not None:
+            feat_items = [(k, v) for k, v in site_scores.items() if k.node.kind == "sae_feature"]
+            err_items  = [(k, v) for k, v in site_scores.items() if k.node.kind == "sae_error"]
+            if len(feat_items) > max_features:
+                feat_items = sorted(feat_items, key=lambda kv: abs(kv[1]), reverse=True)[:max_features]
+            site_scores = dict(feat_items + err_items)
 
         return site_scores
 

@@ -244,28 +244,32 @@ Everything else (`_call_model` = `model(tokens)` → logits tensor, `_freeze_eva
 
 ### 6.1 Sign & completeness (the corrected statement)
 
-Use **`Δf = f_clean − f_corrupt`** (clean minus corrupt) and integrate the gradient along the path
-`f(α) = f_corrupt + α·Δf`, `α: 0→1`:
+**Keep the existing `attrib` sign convention** — both v1.5 nodes (`sae_features.py`) and v1.6 edges
+use **`Δf = f_corrupt − f_clean`**. IG must use the SAME `Δf` so that switching `variant='attrib'
+→ 'ig'` refines the scores without flipping their sign (sign-consistency across variants on the same
+runner matters more than matching external IG pedagogy). Parameterize the path
+`f(α) = f_clean + α·Δf = f_clean + α·(f_corrupt − f_clean)`, `α: 0→1` (so `f(0)=f_clean`,
+`f(1)=f_corrupt`), midpoints `α_k=(k-0.5)/N`:
 
 ```
-score_i = Σ_pos Δf_i · (1/N) Σ_k ∂metric/∂f_i |_{f = f_corrupt + α_k·Δf}
+score_i = Σ_pos Δf_i · (1/N) Σ_k ∂metric/∂f_i |_{f = f_clean + α_k·Δf}
 ```
 
-**Completeness (the exact oracle):**
+**Completeness (the exact oracle).** By the fundamental theorem of calculus along that path,
 ```
-Σ_i score_i  →  metric(decode(f_clean) + eps_clean) − metric(decode(f_corrupt) + eps_clean)
+Σ_i score_i  →  metric(decode(f_corrupt) + eps_clean) − metric(decode(f_clean) + eps_clean)
 ```
-i.e. the difference of the **eps-frozen spliced** metric between clean and corrupt **features**. This
-is **not** the real `metric(clean) − metric(corrupt)` forward difference: because `eps` is held at
-`eps_clean`, the corrupt endpoint uses `eps_clean`, whereas a real corrupted forward uses
-`eps_corrupt` (the two can differ by the entire reconstruction-error term — measured `|eps_clean −
-eps_corrupt|` up to 24). The completeness target is the **eps-frozen spliced corrupt** metric, by
-construction.
+i.e. the **eps-frozen spliced** corrupt-minus-clean metric delta (same sign as `Δf`). This is **not**
+the real `metric(corrupt) − metric(clean)` forward difference: because `eps` is held at `eps_clean`,
+the corrupt endpoint uses `eps_clean`, whereas a real corrupted forward uses `eps_corrupt` (the two
+can differ by the entire reconstruction-error term — measured `|eps_clean − eps_corrupt|` up to 24).
+The completeness target is the **eps-frozen spliced** delta, by construction. Derive the test target
+from the SAME `Δf`/path the code uses, so the telescoping sign is self-consistent.
 
 **Tie-in to `include_error_node`.** The `sae_error` node gets its own IG by interpolating the
 error leaf `eps_corrupt → eps_clean` while features stay at clean. Then:
 ```
-Σ_i feature_IG_i  +  error_IG  →  metric(real clean) − metric(real corrupt)
+Σ_i feature_IG_i  +  error_IG  →  metric(real corrupt) − metric(real clean)
 ```
 So **features-only IG completes to the eps-frozen spliced delta; features + error IG completes to the
 real forward delta.** State both honestly. (Verified: feature-IG + eps-IG matched the full move to

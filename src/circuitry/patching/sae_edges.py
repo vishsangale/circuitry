@@ -921,6 +921,7 @@ class SAEFeatureEdgeRunner:
         max_edges: int | None = None,
         include_error_node: bool = False,
         variant: str = "attrib",
+        n_ig_steps: int = 0,
     ) -> SAEFeatureCircuit:
         """Compute feature→feature SAE edge scores.
 
@@ -933,15 +934,20 @@ class SAEFeatureEdgeRunner:
             include_error_node: if True, sae_error nodes participate as WRITER endpoints
                 (error→feature edges).  feature→error is structurally zero (downstream
                 eps is a detached leaf) and is never computed.  Default False.
-            variant: 'attrib' only in v1.6 Stage A. 'ig'/'exact' → NotImplementedError.
+            variant: 'attrib' (default) or 'ig' (integrated gradients, full EAP-IG).
+                'exact'/other → NotImplementedError.
+                'ig': interpolates the writer leaf f_U_clean→f_U_corrupt (Δf=f_corrupt−f_clean,
+                sign-consistent with attrib); reader stays LIVE; eps frozen at both sites.
+                Cost = N× attrib; peak memory == attrib (one vjp_j alive at a time).
+            n_ig_steps: number of IG integration steps (variant='ig' only). 0 → default of 32.
 
         Returns:
             SAEFeatureCircuit with .nodes (v1.5 scores), .edges, .graph.
         """
-        if variant != "attrib":
+        if variant not in ("attrib", "ig"):
             raise NotImplementedError(
-                f"SAEFeatureEdgeRunner variant={variant!r} is not supported in v1.6.0 Stage A. "
-                "Only 'attrib' is available. 'ig' and 'exact' are deferred."
+                f"SAEFeatureEdgeRunner variant={variant!r} is not supported. "
+                "Supported values: 'attrib', 'ig'."
             )
         if layer_pairs not in ("adjacent", "all_forward"):
             raise ValueError(
@@ -960,6 +966,8 @@ class SAEFeatureEdgeRunner:
                 top_k_survivors=top_k_survivors,
                 max_edges=max_edges,
                 include_error_node=include_error_node,
+                variant=variant,
+                n_ig_steps=n_ig_steps,
             )
         finally:
             self._stage1_runner._atp._restore(was_training, orig_rg)
@@ -976,6 +984,8 @@ class SAEFeatureEdgeRunner:
         top_k_survivors: int,
         max_edges: int | None,
         include_error_node: bool,
+        variant: str = "attrib",
+        n_ig_steps: int = 0,
     ) -> SAEFeatureCircuit:
         """Inner run (freeze/restore already applied by caller)."""
         sorted_sites = self._sorted_sites()  # forward order
@@ -983,6 +993,8 @@ class SAEFeatureEdgeRunner:
         # ------------------------------------------------------------------
         # STAGE 1: run composed SAEFeatureRunner per-site → node scores
         # Keep top-K active survivors per site.
+        # NOTE: stage1 always uses 'attrib' for node scoring regardless of edge variant —
+        # the edge variant only affects Stage 2 (edge computation).
         # ------------------------------------------------------------------
         node_result = self._stage1_runner.run(
             clean_inputs, corrupted_inputs, metric,
@@ -1040,6 +1052,8 @@ class SAEFeatureEdgeRunner:
                     writer_survivors=writer_survivors,
                     reader_survivors=reader_survivors,
                     include_error_node=include_error_node,
+                    variant=variant,
+                    n_ig_steps=n_ig_steps,
                 )
                 all_edge_scores.update(pair_edges)
 
@@ -1069,23 +1083,33 @@ class SAEFeatureEdgeRunner:
         writer_survivors: list[AtPNode],
         reader_survivors: list[AtPNode],
         include_error_node: bool,
+        variant: str = "attrib",
+        n_ig_steps: int = 0,
     ) -> dict[SAEFeatureEdge, float]:
         """Stage 2 for a single (writer, reader) site pair.
 
-        ONE clean forward with BOTH sites spliced simultaneously:
-          - WRITER site: detached-leaf seed (f_U = encode(a).detach().requires_grad_(True))
-          - READER site: LIVE non-detached encode (f_D = encode(a_live))
-          - eps detached/frozen at BOTH sites (recon = x_hat + eps)
+        attrib (default):
+          ONE clean forward with BOTH sites spliced simultaneously:
+            - WRITER site: detached-leaf seed (f_U = encode(a).detach().requires_grad_(True))
+            - READER site: LIVE non-detached encode (f_D = encode(a_live))
+            - eps detached/frozen at BOTH sites (recon = x_hat + eps)
 
-        Then: metric.backward(retain_graph=True) → f_D.grad = gradf_D
-        For each downstream survivor j:
-            G_j = zeros_like(f_D); G_j[..., j] = gradf_D[..., j]
-            vjp_j = autograd.grad(f_D, f_U_leaf, grad_outputs=G_j)[0]
-            for each upstream survivor i:
-                edge(i→j) = float((Δf_U[..., i] * vjp_j[..., i]).to(float32).sum())
-            del vjp_j  # FREE per-j
+          Then: metric.backward(retain_graph=True) → f_D.grad = gradf_D
+          For each downstream survivor j:
+              G_j = zeros_like(f_D); G_j[..., j] = gradf_D[..., j]
+              vjp_j = autograd.grad(f_D, f_U_leaf, grad_outputs=G_j)[0]
+              for each upstream survivor i:
+                  edge(i→j) = float((Δf_U[..., i] * vjp_j[..., i]).to(float32).sum())
+              del vjp_j  # FREE per-j
 
-        Δf_U = f_U_corrupt − f_U_clean (captured via no_grad corrupted forward).
+          Δf_U = f_U_corrupt − f_U_clean (captured via no_grad corrupted forward).
+
+        ig (v1.7 P4, full EAP-IG):
+          Wrap Steps B–D in an N-loop. At step k, set the WRITER detached leaf to
+          f_U_k = f_U_clean + α_k·Δf_U (α_k=(k-0.5)/N); READER stays LIVE; eps frozen
+          at both sites. One backward per step; per-j VJP loop UNCHANGED (one vjp_j
+          alive at a time — no dense d_sae×d_sae Jacobian; peak mem == attrib).
+          edge(i→j) = Σ_k Δf_U[i]·vjp_j_k[i] / N.
         """
         writer_sae = self._sae_sites[writer_site]
         reader_sae = self._sae_sites[reader_site]
@@ -1284,75 +1308,226 @@ class SAEFeatureEdgeRunner:
             if nd.kind == "sae_feature" and nd.neuron is not None:
                 upstream_feat_indices.append(nd.neuron)
 
-        gradf_D = f_D_live.grad  # shape same as f_D_live; not yet fp32
-
         edge_scores: dict[SAEFeatureEdge, float] = {}
 
-        # Determine grad sources for VJP:  always f_U_leaf; optionally err_leaf_U
-        # We compute vjp w.r.t. both in a single autograd.grad call when possible.
-        grad_inputs_list: list[Tensor] = [f_U_leaf]
-        if include_error_node and err_leaf_U is not None:
-            grad_inputs_list.append(err_leaf_U)
+        # component labels (None for resid_post to preserve v1.6 identity)
+        _r_comp = reader_site.component if reader_site.component != "resid_post" else None
+        _w_comp = writer_site.component if writer_site.component != "resid_post" else None
 
-        # For each downstream survivor j, compute VJP and dot with Δf_U[:, i]
-        for j in downstream_feat_indices:
-            G_j = torch.zeros_like(f_D_live)
-            G_j[..., j] = gradf_D[..., j]
+        if variant == "attrib":
+            # ----------------------------------------------------------------
+            # attrib: single-point AtP (original v1.6 code path)
+            # ----------------------------------------------------------------
+            gradf_D = f_D_live.grad  # shape same as f_D_live; not yet fp32
 
-            try:
-                vjp_results = torch.autograd.grad(
-                    f_D_live, grad_inputs_list,
-                    grad_outputs=G_j,
-                    retain_graph=True,
-                    allow_unused=True,
-                )
-            except RuntimeError:
-                # f_D not connected to grad inputs (e.g. no path exists)
-                del G_j
-                continue
+            # Determine grad sources for VJP:  always f_U_leaf; optionally err_leaf_U
+            # We compute vjp w.r.t. both in a single autograd.grad call when possible.
+            grad_inputs_list: list[Tensor] = [f_U_leaf]
+            if include_error_node and err_leaf_U is not None:
+                grad_inputs_list.append(err_leaf_U)
 
-            vjp_j = vjp_results[0]
-            vjp_err_j = vjp_results[1] if len(vjp_results) > 1 else None
+            # For each downstream survivor j, compute VJP and dot with Δf_U[:, i]
+            for j in downstream_feat_indices:
+                G_j = torch.zeros_like(f_D_live)
+                G_j[..., j] = gradf_D[..., j]
 
-            if vjp_j is None and vjp_err_j is None:
-                del G_j
-                continue
-
-            # component=None for resid_post (preserves v1.6 node identity); explicit for others
-            _r_comp = reader_site.component if reader_site.component != "resid_post" else None
-            _w_comp = writer_site.component if writer_site.component != "resid_post" else None
-            reader_node = AtPNode(Node("sae_feature", layer=reader_site.layer, neuron=j, component=_r_comp))
-
-            # feature→feature edges
-            if vjp_j is not None:
-                # Slice to upstream survivors immediately (memory discipline)
-                vjp_j_fp32 = vjp_j.to(torch.float32)
-
-                for i in upstream_feat_indices:
-                    score = float(
-                        (delta_f_U[..., i] * vjp_j_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
+                try:
+                    vjp_results = torch.autograd.grad(
+                        f_D_live, grad_inputs_list,
+                        grad_outputs=G_j,
+                        retain_graph=True,
+                        allow_unused=True,
                     )
-                    writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
-                    edge = SAEFeatureEdge(writer=writer_node, reader=reader_node)
-                    edge_scores[edge] = score
+                except RuntimeError:
+                    # f_D not connected to grad inputs (e.g. no path exists)
+                    del G_j
+                    continue
 
-                del vjp_j, vjp_j_fp32
+                vjp_j = vjp_results[0]
+                vjp_err_j = vjp_results[1] if len(vjp_results) > 1 else None
 
-            # error→feature edges (include_error_node=True only)
-            if include_error_node and vjp_err_j is not None and delta_eps_U is not None:
-                vjp_err_j_fp32 = vjp_err_j.to(torch.float32)
-                # Score: Σ_pos (Δeps_U * vjp_err_j) summed over all positions
-                # delta_eps_U has same shape as eps (batch, seq, d_model); vjp_err_j
-                # has the same shape.  We sum the element-wise product over all positions.
-                score_err = float(
-                    (delta_eps_U.to(vjp_err_j_fp32.device) * vjp_err_j_fp32).to(torch.float32).sum()
-                )
-                error_writer_node = AtPNode(Node("sae_error", layer=writer_site.layer, component=_w_comp))
-                err_edge = SAEFeatureEdge(writer=error_writer_node, reader=reader_node)
-                edge_scores[err_edge] = score_err
-                del vjp_err_j, vjp_err_j_fp32
+                if vjp_j is None and vjp_err_j is None:
+                    del G_j
+                    continue
 
-            del G_j  # FREE per-j (memory discipline)
+                reader_node = AtPNode(Node("sae_feature", layer=reader_site.layer, neuron=j, component=_r_comp))
+
+                # feature→feature edges
+                if vjp_j is not None:
+                    # Slice to upstream survivors immediately (memory discipline)
+                    vjp_j_fp32 = vjp_j.to(torch.float32)
+
+                    for i in upstream_feat_indices:
+                        score = float(
+                            (delta_f_U[..., i] * vjp_j_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
+                        )
+                        writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
+                        edge = SAEFeatureEdge(writer=writer_node, reader=reader_node)
+                        edge_scores[edge] = score
+
+                    del vjp_j, vjp_j_fp32
+
+                # error→feature edges (include_error_node=True only)
+                if include_error_node and vjp_err_j is not None and delta_eps_U is not None:
+                    vjp_err_j_fp32 = vjp_err_j.to(torch.float32)
+                    # Score: Σ_pos (Δeps_U * vjp_err_j) summed over all positions
+                    score_err = float(
+                        (delta_eps_U.to(vjp_err_j_fp32.device) * vjp_err_j_fp32).to(torch.float32).sum()
+                    )
+                    error_writer_node = AtPNode(Node("sae_error", layer=writer_site.layer, component=_w_comp))
+                    err_edge = SAEFeatureEdge(writer=error_writer_node, reader=reader_node)
+                    edge_scores[err_edge] = score_err
+                    del vjp_err_j, vjp_err_j_fp32
+
+                del G_j  # FREE per-j (memory discipline)
+
+        else:
+            # ----------------------------------------------------------------
+            # ig: full EAP-IG (v1.7 P4)
+            #
+            # Wrap Steps B–D in an N-loop.  At step k:
+            #   f_U_k = f_U_clean + α_k·Δf_U  (interpolate ONLY the writer leaf)
+            #   reader stays LIVE; eps frozen at both sites
+            #   one backward per step; per-j VJP loop UNCHANGED
+            #   (one vjp_j alive at a time — no dense d_sae×d_sae Jacobian)
+            # Accumulate edge(i→j) += Σ_k Δf_U[i]·vjp_j_k[i]; divide by N at end.
+            # Peak memory == attrib: per-step forward graph freed between steps.
+            # ----------------------------------------------------------------
+            _n_ig = n_ig_steps if n_ig_steps > 0 else 32
+
+            # f_U_clean in original dtype for stable interpolation
+            f_U_clean_t = f_U_leaf.detach()
+            f_U_corrupt_t = f_U_corrupt.to(f_U_clean_t.device, f_U_clean_t.dtype)
+            delta_f_U_t = f_U_corrupt_t - f_U_clean_t  # same direction as delta_f_U (fp32)
+
+            # Accumulate raw sums; divide by N at end
+            edge_sum: dict[SAEFeatureEdge, float] = {}
+
+            for k in range(1, _n_ig + 1):
+                alpha_k = (k - 0.5) / _n_ig
+                # Interpolated writer feature leaf for step k
+                f_U_k = (f_U_clean_t + alpha_k * delta_f_U_t).detach().requires_grad_(True)
+
+                # Per-step stores (cleared each iteration)
+                writer_k_store: dict[str, Tensor] = {}
+                reader_k_store: dict[str, Tensor] = {}
+
+                # Capture f_U_clean_eps for frozen eps computation inside hook.
+                # We compute eps_clean once from a_in (see hook below).
+                def _writer_k_hook(
+                    module: nn.Module, inp: Any, output: Any,
+                    _sae: Any = writer_sae,
+                    _f_U_k: Tensor = f_U_k,
+                    _st: dict = writer_k_store,
+                    _mdtype: torch.dtype = w_dtype,
+                    _mdev: Any = w_device,
+                    _resolved: Any = writer_resolved,
+                ) -> Any:
+                    """WRITER site (IG step k): inject interpolated f_U_k; eps frozen at clean.
+
+                    eps_clean is computed from the actual clean activation a_in so it
+                    matches the attrib path exactly (same as _writer_clean_hook without
+                    the leaf structure).
+                    """
+                    a = _routed_extract(_resolved, output)
+                    a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                    # Compute frozen clean eps: eps = a - decode(encode(a))
+                    with torch.no_grad():
+                        f_cl = _sae.encode(a_in)
+                        x_hat_cl = _sae.decode(f_cl)
+                        eps_clean_k = (a_in - x_hat_cl).detach()
+                    # Decode from the interpolated leaf
+                    x_hat_k = _sae.decode(_f_U_k)
+                    recon = x_hat_k + eps_clean_k  # eps frozen at clean
+                    _st["f_U_k"] = _f_U_k
+                    recon_cast = recon.to(_mdev, _mdtype)
+                    return _routed_inject(_resolved, output, recon_cast)
+
+                def _reader_k_hook(
+                    module: nn.Module, inp: Any, output: Any,
+                    _sae: Any = reader_sae,
+                    _st: dict = reader_k_store,
+                    _mdtype: torch.dtype = r_dtype,
+                    _mdev: Any = r_device,
+                    _resolved: Any = reader_resolved,
+                ) -> Any:
+                    """READER site (IG step k): LIVE encode (unchanged from attrib)."""
+                    a = _routed_extract(_resolved, output)
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                    # Live encode — a_in NOT detached
+                    f_D_k, x_hat_k, eps_k = sae_decompose(_sae, a_in)
+                    if f_D_k.requires_grad:
+                        f_D_k.retain_grad()
+                    recon_k = x_hat_k + eps_k  # eps frozen at clean by sae_decompose
+                    _st["f_D_k"] = f_D_k
+                    recon_cast = recon_k.to(_mdev, _mdtype)
+                    return _routed_inject(_resolved, output, recon_cast)
+
+                wh_k = writer_layer_mod.register_forward_hook(_writer_k_hook)
+                rh_k = reader_layer_mod.register_forward_hook(_reader_k_hook)
+                try:
+                    with torch.enable_grad():
+                        out_k = self._call_model(clean_inputs)
+                        m_k = metric(out_k)
+                        if not (isinstance(m_k, Tensor) and m_k.requires_grad):
+                            raise RuntimeError(
+                                "metric must return a differentiable Tensor. "
+                                "Use a logit_diff_t-style metric, not a float."
+                            )
+                        m_k.backward(retain_graph=True)
+                finally:
+                    wh_k.remove()
+                    rh_k.remove()
+
+                f_D_k_live = reader_k_store.get("f_D_k")
+                if f_D_k_live is None or f_D_k_live.grad is None:
+                    # No causal path from writer to reader at this step — no edges
+                    del out_k, m_k, f_U_k
+                    break
+
+                gradf_D_k = f_D_k_live.grad
+
+                # Per-j VJP loop (UNCHANGED structure from attrib — one vjp_j alive at a time)
+                for j in downstream_feat_indices:
+                    G_j = torch.zeros_like(f_D_k_live)
+                    G_j[..., j] = gradf_D_k[..., j]
+
+                    try:
+                        vjp_results_k = torch.autograd.grad(
+                            f_D_k_live, [f_U_k],
+                            grad_outputs=G_j,
+                            retain_graph=True,
+                            allow_unused=True,
+                        )
+                    except RuntimeError:
+                        del G_j
+                        continue
+
+                    vjp_j_k = vjp_results_k[0]
+                    if vjp_j_k is None:
+                        del G_j
+                        continue
+
+                    vjp_j_k_fp32 = vjp_j_k.to(torch.float32)
+                    reader_node = AtPNode(Node("sae_feature", layer=reader_site.layer, neuron=j, component=_r_comp))
+
+                    for i in upstream_feat_indices:
+                        # Accumulate: edge(i→j) += Δf_U[i] · vjp_j_k[i]
+                        contrib = float(
+                            (delta_f_U[..., i] * vjp_j_k_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
+                        )
+                        writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
+                        edge_key = SAEFeatureEdge(writer=writer_node, reader=reader_node)
+                        edge_sum[edge_key] = edge_sum.get(edge_key, 0.0) + contrib
+
+                    del vjp_j_k, vjp_j_k_fp32, G_j  # FREE per-j
+
+                # Free per-step graph explicitly
+                del out_k, m_k, f_U_k, f_D_k_live
+
+            # Divide accumulated sums by N to get the IG estimate
+            for edge_key, total in edge_sum.items():
+                edge_scores[edge_key] = total / _n_ig
 
         return edge_scores
 
