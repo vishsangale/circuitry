@@ -14,6 +14,9 @@ _ATTN_SLOTS: tuple[Slot, ...] = ("q", "k", "v")
 @dataclass(frozen=True)
 class Node:
     kind: str                 # "embed" | "attn_head" | "mlp" | "mlp_neuron" | "logits"
+                              # | "sae_feature" | "sae_error"
+                              # "sae_feature" reuses the `neuron` field as the feature index.
+                              # "sae_error" represents the SAE reconstruction-error term node.
     layer: int | None = None
     head: int | None = None
     neuron: int | None = None

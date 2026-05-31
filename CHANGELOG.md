@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-05-30
+
+### Added
+- **Node-level SAE-feature attribution** — `circuitry.patching.SAEFeatureRunner`. Given a
+  clean/corrupted prompt pair, a differentiable metric, and `sae_sites` mapping
+  `Site(component="resid_post", layer=L)` → a SAELens `SAE` (or `(release, sae_id)` tuple),
+  `run()` returns an `AtPResult` of per-**SAE-feature** attribution scores.
+  - **Mechanism — error-term substitution** (Marks "Sparse Feature Circuits"): at each site on
+    the clean pass, `f = sae.encode(a)`, `x_hat = sae.decode(f)`, `eps = (a − x_hat).detach()`,
+    and the residual is replaced by `recon = x_hat + eps` (numerically lossless, model output
+    preserved) so each feature `f_i` becomes a differentiable node.
+  - **Scoring** mirrors `mlp_neuron` in the SAE basis: `score(i) = Σ_pos(Δf_i ⊙ gradf_i)`,
+    `Δf = f_corrupt − f_clean`, gradient at the clean activation. `graddrop=True` →
+    `Σ|per-position contribution|`. On a linear-downstream model the analytic score equals
+    brute-force feature patching at 1e-4 (exactness needs *downstream* linearity, not SAE
+    linearity). `bruteforce_feature_scores()` is the independent ground-truth path.
+  - **Enumeration:** features where `Δf ≠ 0` (the union of clean-active and corrupted-active) —
+    a clean-inactive/corrupted-active feature has a real nonzero effect; omitted features score 0.
+    Optional `max_features` cap keeps the top-|score| features per site.
+  - **Reconstruction-error node**, opt-in via `include_error_node=True` (default off): scores the
+    residual error as a first-class `sae_error` node using an independent error leaf, so feature
+    and error gradients come from one forward + backward (feature scores are identical with the
+    node on or off).
+- **Differentiable SAE helpers** — `circuitry.sae.encode_features` / `decode_features` /
+  `sae_decompose` / `assert_supported_sae` (`src/circuitry/sae/grad.py`). These call
+  `sae.encode` / `sae.decode` under normal autograd (no `inference_mode` / `detach`), unlike the
+  `sae_reconstruction_error` reporting path, which is unchanged.
+- New `Node` kinds `"sae_feature"` (reuses the `neuron` field as the feature index) and
+  `"sae_error"` in `circuitry.patching.graph`.
+
+### Notes
+- Scope: HF-eager backend + `resid_post` sites only. `TLSiteResolver`, non-`resid_post` sites,
+  and transcoder / matching_pursuit / temporal SAEs raise a clear `NotImplementedError`.
+  Supported architectures: `standard` / `topk` / `jumprelu` (covers BatchTopK / Matryoshka at
+  inference) / `gated`. The SAE's own parameters are frozen + restored for the run.
+- The metric must be the differentiable tensor-returning variant (`logit_diff_t` /
+  `kl_divergence_t` / `ce_loss_t`); a `.detach()`-ing float metric raises `f.grad is None`.
+- Feature→feature **edges** (the full sparse-feature graph), the TransformerLens backend,
+  `mlp_out` / `attn_out` sites, and the integrated-gradients variant remain future work.
+
 ## [1.4.2] — 2026-05-30
 
 ### Changed

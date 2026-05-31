@@ -1,7 +1,8 @@
 """circuitry — mechanistic-interpretability diagnostics for PyTorch (live during training or post-hoc on a checkpoint).
 
-Public surface re-exports below are the v0.6.0 stable API. Anything not re-exported
-here is an internal implementation detail and may change without notice.
+Public surface re-exports below are the stable top-level API. Anything not re-exported
+here is an internal implementation detail and may change without notice. (The patching
+pillar — including the v1.5 SAEFeatureRunner — is reached via ``circuitry.patching``.)
 """
 
 from circuitry.core.activation import repr_drift, token_similarity
@@ -15,7 +16,7 @@ from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 
 __all__ = [
     "HookPoint",

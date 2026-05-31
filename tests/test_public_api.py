@@ -38,9 +38,65 @@ def test_version_is_a_string():
 
 def test_v02_surface_exports():
     import circuitry
-    assert circuitry.__version__ == "1.4.2"
+    assert circuitry.__version__ == "1.5.0"
     assert hasattr(circuitry, "token_similarity")
     assert hasattr(circuitry, "update_delta")
     assert hasattr(circuitry, "direction_cosine")
     assert hasattr(circuitry, "discover")
     assert hasattr(circuitry, "repr_drift")
+
+
+def test_sae_feature_runner_accessible():
+    """SAEFeatureRunner lives under circuitry.patching (not top-level circuitry).
+
+    Two checks:
+      (a) Accessible via ``circuitry.patching.SAEFeatureRunner`` and in __all__.
+      (b) Lazy-import guarantee: importing ``circuitry.patching`` does NOT pull in
+          ``transformer_lens`` (verified in a clean subprocess so import state is fresh).
+    """
+    import subprocess
+    import sys
+
+    import circuitry.patching
+
+    # (a) Accessible and in __all__
+    from circuitry.patching import SAEFeatureRunner
+    assert SAEFeatureRunner is not None
+    assert hasattr(circuitry.patching, "SAEFeatureRunner"), (
+        "SAEFeatureRunner not accessible as circuitry.patching.SAEFeatureRunner"
+    )
+    assert "SAEFeatureRunner" in circuitry.patching.__all__, (
+        "SAEFeatureRunner missing from circuitry.patching.__all__"
+    )
+
+    # (b) Lazy-import: importing circuitry.patching must NOT eagerly load transformer_lens.
+    # Run in a subprocess so sys.modules is completely clean.
+    code = (
+        "import sys; "
+        "import circuitry.patching; "
+        "assert 'transformer_lens' not in sys.modules, "
+        "  f'transformer_lens was eagerly imported by circuitry.patching: {list(sys.modules)}'; "
+        "runner = circuitry.patching.SAEFeatureRunner; "
+        "assert runner is not None, 'SAEFeatureRunner is None after lazy import'; "
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        stdout = result.stdout.strip()
+        # If transformer_lens isn't installed at all, skip gracefully
+        if "ModuleNotFoundError" in stderr and "transformer_lens" in stderr:
+            import pytest
+            pytest.skip("transformer_lens not installed — skipping lazy-import check")
+        raise AssertionError(
+            f"Subprocess lazy-import check failed (returncode={result.returncode}):\n"
+            f"stdout: {stdout}\nstderr: {stderr}"
+        )
+    assert result.stdout.strip() == "OK", (
+        f"Unexpected subprocess output: {result.stdout!r}"
+    )

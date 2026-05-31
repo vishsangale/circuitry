@@ -4,6 +4,10 @@ Sub-spec 1 (core primitive): Site, patch_site, PatchRunner.
 Sub-spec 2 (EAP): EAPRunner, EAPResult, the Node/Edge graph model.
 Sub-spec 3 (AtP*): AtPRunner, AtPResult, AtPNode.
 Sub-spec 4 (ACDC): ACDCRunner, ACDCResult — greedy circuit discovery.
+Sub-spec 5 (SAE features): SAEFeatureRunner — node-level SAE feature attribution.
+         Lazy import: SAEFeatureRunner is resolved on first access to avoid
+         pulling sae_lens (and transitively transformer_lens) at patching
+         import time.  All other names are eagerly imported.
 """
 from __future__ import annotations
 
@@ -29,7 +33,20 @@ __all__ = [
     "PatchHandle",
     "PatchResult",
     "PatchRunner",
+    "SAEFeatureRunner",
     "Site",
     "patch_site",
     "to_hooked_transformer",
 ]
+
+_LAZY = {"SAEFeatureRunner": "circuitry.patching.sae_features"}
+
+
+def __getattr__(name: str) -> object:
+    if name in _LAZY:
+        import importlib
+        mod = importlib.import_module(_LAZY[name])
+        obj = getattr(mod, name)
+        globals()[name] = obj
+        return obj
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
