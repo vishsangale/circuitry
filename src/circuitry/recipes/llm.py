@@ -12,6 +12,16 @@ RECIPE = Recipe(
                   pattern=r".*\.(q|k|v|o)_proj$"),
         HookPoint(source=TensorSource.WEIGHT,
                   pattern=r".*\.(w1|w2|w3|gate_proj|up_proj|down_proj)$"),
+        # MoE router weight (e.g. OlmoeTopKRouter — named `gate`, not `gate_proj`).
+        # Shape is 2-D [n_experts, hidden_size]; normal rank diagnostics apply.
+        HookPoint(source=TensorSource.WEIGHT,
+                  pattern=r".*\.mlp\.gate$"),
+        # MoE batched expert weights (e.g. OlmoeExperts).  These modules store
+        # all experts as a single 3-D tensor [n_experts, d_in, d_out] rather
+        # than as separate leaf Linears.  The recorder iterates the leading
+        # expert axis and emits per-expert weight diagnostics.
+        HookPoint(source=TensorSource.WEIGHT,
+                  pattern=r".*\.mlp\.experts$"),
         # Attention submodule output. Covers HF (`self_attn`), HF-GPT-2 (`attn`),
         # and canonical LLaMA reference (`attention`).
         HookPoint(source=TensorSource.OUTPUT,
@@ -34,7 +44,7 @@ RECIPE = Recipe(
                   pattern=r".*\.layers\.\d+$"),
     ],
     weight_diagnostics=["effective_rank", "attention_head_rank", "stable_rank",
-                        "heavy_tail_alpha", "sv_histogram",
+                        "condition_number", "heavy_tail_alpha", "sv_histogram",
                         # v1.3 training-dynamics:
                         "update_delta", "rank_trajectory", "direction_cosine"],
     activation_diagnostics=["gate_stats", "dead_fraction", "kurtosis",

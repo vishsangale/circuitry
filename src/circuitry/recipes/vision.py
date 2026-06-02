@@ -8,10 +8,23 @@ from circuitry.recorder.hooks import HookPoint, TensorSource
 RECIPE = Recipe(
     name="vision",
     hook_points=[
-        HookPoint(source=TensorSource.WEIGHT,
-                  pattern=r"(conv\d+|fc\d+|patch_embed|blocks\.\d+\.(attn|mlp))(\.weight)?$"),
-        HookPoint(source=TensorSource.OUTPUT,
-                  pattern=r"(conv\d+|fc\d+|blocks\.\d+\.(attn|mlp))$"),
+        HookPoint(
+            source=TensorSource.WEIGHT,
+            pattern=(
+                r"(conv\d*|fc\d*|downsample\.\d+|patch_embed"
+                r"|blocks\.\d+\.(attn|mlp)"
+                r"|encoder\.layers\.encoder_layer_\d+\.(self_attention|mlp)"
+                r")(\.weight)?$"
+            ),
+        ),
+        HookPoint(
+            source=TensorSource.OUTPUT,
+            pattern=(
+                r"(conv\d*|fc\d*|downsample\.\d+|blocks\.\d+\.(attn|mlp)"
+                r"|encoder\.layers\.encoder_layer_\d+\.(self_attention|mlp)"
+                r")$"
+            ),
+        ),
     ],
     weight_diagnostics=["effective_rank", "stable_rank"],
     activation_diagnostics=["dead_fraction", "participation_ratio"],

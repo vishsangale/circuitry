@@ -128,9 +128,10 @@ def test_llm_recipe_has_down_proj_input_hook():
     assert len(matches) == 1, [hp.pattern for hp in r.hook_points]
 
 
-def test_llm_recipe_has_ten_hook_points():
+def test_llm_recipe_has_twelve_hook_points():
+    # 10 original + 2 MoE additions (mlp.gate router, mlp.experts batched experts).
     r = get_recipe("llm")
-    assert len(r.hook_points) == 10
+    assert len(r.hook_points) == 12
 
 
 def test_llm_recipe_includes_new_activation_diagnostics():
