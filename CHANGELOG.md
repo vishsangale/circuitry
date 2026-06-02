@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — real-model evaluation fixes
+
+Fixes for the 20 findings surfaced by the v1.7.0 whole-library real-model evaluation
+(`docs/observations/2026-05-31-real-model-evaluation.md`). Every fix ships with a regression
+test (`tests/**/test_*_eval_findings.py`); the v1.6 SAE golden freeze stays byte-for-byte intact.
+
+### Fixed
+- **F1 — SVD-derived weight diagnostics were biased + non-deterministic on any matrix with
+  min-dim > 512** (i.e. every real LLM layer). `singular_values` now defaults to `max_dim=None`
+  (full, deterministic SVD); `condition_number`/`effective_rank`/`stable_rank`/`heavy_tail_alpha`
+  gained a `max_dim` (and `seed`) passthrough so the perf hatch is opt-in. On a 1024² matrix
+  `condition_number` went from ~5.7 (290× low, varying run-to-run) to the exact numpy value.
+- **F38 — scalar rank primitives silently mis-ranked batched 3-D expert tensors** (returned
+  ≈`n_experts`). `effective_rank`/`stable_rank`/`heavy_tail_alpha`/`condition_number` now RAISE on
+  ndim > 2; `spectral.rank_trajectory` folds conv weights to 2-D before calling.
+- **F31 — `grad_norm_per_module` crashed on sparse `nn.Embedding` gradients** (standard recsys
+  setup). Sparse grads are densified before the norm.
+- **F2 — `attention_pattern_entropy` reported the induction-probe's attention, not the training
+  batch's.** The induction-score probe forward now snapshots/restores `_main_pass_attn`.
+- **F29 — `Recorder.attach()` crashed on every SDPA-attention HF model** (Qwen2/Llama-3.x/
+  Mistral/Gemma). `_set_output_attentions_true` now degrades gracefully (skips attention
+  diagnostics with a warning) instead of raising.
+- **F3 — faithfulness/completeness/ACDC were wrong for `layer_norm`-normalized SAEs** (incl. the
+  standard OpenAI v5 GPT-2 SAEs). `compute_f_per_site` now decodes in the same call as its encode
+  (paired `sae_decompose`); byte-identical for non-stateful SAEs.
+- **F4 — `variant='ig'` + `include_error_node=True` silently dropped all error→feature edges.**
+  The IG writer hook now builds the interpolated error leaf and produces error→feature edges.
+- **F11 — `completeness()` omitted `ablation_eps` under `include_error_node`.** Now threaded
+  consistently with `faithfulness()`.
+- **F8 — `scan_run` ran activation diagnostics with no forward pass** (silent empties + permanently
+  disabled the logit-lens). Activation diagnostics are guarded; `scan_run` gained an optional
+  `forward_fn` to enable them on checkpoints.
+- **F23 — `compare_runs` silently NaN'd on a metric-family mismatch** (e.g. scan-vs-live). Now warns.
+- **F7 — vision recipe missed ResNet's `fc` head and `downsample` convs** (29% capture). Patterns
+  broadened.
+- **F30 — vision recipe matched 0 modules on torchvision ViT-B/16** (hard RuntimeError on attach).
+  Added the `encoder.layers.encoder_layer_N.*` patterns.
+- **F33 — `embedding_alignment` silently returned `{}` for an `nn.ModuleList` item tower.**
+  Output hooks now fire on ModuleList children and the diagnostic aggregates them.
+- **F37 — silent under-coverage when a weight family matched 0 modules** (e.g. MoE). The recorder
+  now emits an aggregate warning.
+
+### Added
+- **F9 — `condition_number` added to the `llm` recipe** (now accurate after F1).
+- **F13 — `FeatureACDCRunner.run()`/`.sweep()` accept `variant`/`n_ig_steps`** (Stage-1 IG).
+- **F32 — two_tower recipe covers standard DLRM names** (`embed_tables`/`bottom_mlp`/`top_mlp`).
+- **F34 — per-table activation diagnostics** for `nn.ModuleList` embedding-table towers.
+- **F36 / F39 — MoE coverage:** the `llm` recipe matches MoE router (`mlp.gate`) and batched-expert
+  (`mlp.experts`) weights; the recorder emits **per-expert** weight diagnostics for the 3-D expert
+  tensors.
+
+### Changed
+- `core.weight.singular_values` default flipped from `max_dim=512` to `max_dim=None` (accurate by
+  default; `max_dim` is now an opt-in perf hatch). See design §10. The scalar rank primitives now
+  require ≤2-D input. The live recorder consequently computes full SVDs on wide weights by default —
+  per-emit weight-diagnostic cost rises on large models versus the old subsampled default.
+
 ## [1.7.0] — 2026-05-31
 
 ### Added
