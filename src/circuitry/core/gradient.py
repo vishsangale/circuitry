@@ -18,6 +18,10 @@ def grad_norm_per_module(grads: Mapping[str, torch.Tensor]) -> dict[str, float]:
     for name, g in grads.items():
         if g is None:
             continue
+        # Sparse gradients (e.g. nn.Embedding(sparse=True), standard in recsys)
+        # have no vector_norm kernel — densify first (F31).
+        if g.is_sparse:
+            g = g.to_dense()
         out[name] = float(torch.linalg.vector_norm(g.to(torch.float32)).item())
     return out
 

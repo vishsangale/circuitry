@@ -23,25 +23,51 @@ def _as_2d(W: ArrayLike) -> torch.Tensor:
     return t.to(dtype=torch.float32 if t.dtype not in (torch.float32, torch.float64) else t.dtype)
 
 
+def _require_at_most_2d(W: ArrayLike, fn: str) -> None:
+    """Reject >2-D inputs to the scalar rank diagnostics (F38).
+
+    For a 3-D *batched* tensor — e.g. an MoE expert stack
+    ``[n_experts, d_in, d_out]`` — silently reshaping the leading axis into
+    rows yields a semantically wrong rank (≈ ``n_experts`` instead of the
+    per-expert rank). The shape alone cannot distinguish that case from a
+    legitimate conv weight, so these primitives require ≤2-D and the caller
+    must decide how to fold extra axes (e.g. ``rank_trajectory`` flattens conv
+    weights to ``[out, in*kh*kw]``; a MoE-aware caller iterates per expert).
+    """
+    ndim = torch.as_tensor(W).ndim
+    if ndim > 2:
+        raise ValueError(
+            f"{fn} requires a 1-D or 2-D tensor, got ndim={ndim} "
+            f"(shape {tuple(torch.as_tensor(W).shape)}). Reshape/fold the extra "
+            "axes explicitly — a batched (e.g. MoE-expert) tensor must be "
+            "handled per-slice, not flattened into rows."
+        )
+
+
 def singular_values(
     W: ArrayLike,
     k: int | None = None,
-    max_dim: int | None = 512,
+    max_dim: int | None = None,
     *,
     seed: int | None = None,
     use_gram: bool | str = "auto",
 ) -> torch.Tensor:
     """Singular values of ``W`` in descending order.
 
-    ``max_dim`` caps the SVD cost on wide matrices by truncating to a
-    ``max_dim``-column random subsample before the decomposition.  Pass
-    ``max_dim=None`` to disable.  ``k`` truncates the returned vector.
+    By default (``max_dim=None``) the full, deterministic SVD is computed, so
+    every SVD-derived diagnostic is accurate and reproducible.  Setting
+    ``max_dim`` is an opt-in *performance* hatch that caps SVD cost on wide
+    matrices by truncating to a ``max_dim``-column random subsample before the
+    decomposition — this biases σ_min and the spectral tail and (unless
+    ``seed`` is set) is non-deterministic, so use it only when wide-matrix SVD
+    cost is the bottleneck.  ``k`` truncates the returned vector.
 
     Args:
-        seed: When not ``None``, the subsample draw uses a seeded
+        seed: When not ``None``, the subsample draw (only relevant when
+            ``max_dim`` triggers subsampling) uses a seeded
             ``torch.Generator`` so results are reproducible across calls on
-            the same matrix.  Default ``None`` preserves the previous
-            unseeded (non-deterministic) behaviour.
+            the same matrix.  Default ``None`` leaves the subsample draw
+            unseeded (non-deterministic).
         use_gram: Control the ``eigvalsh(Gram)`` fast path for strongly
             rectangular matrices.
 
@@ -116,11 +142,17 @@ def singular_values(
     return s
 
 
-def effective_rank(W: ArrayLike, eps: float = 1e-12) -> float:
+def effective_rank(
+    W: ArrayLike, eps: float = 1e-12, *, max_dim: int | None = None, seed: int | None = None
+) -> float:
     """Roy & Vetterli (2007) effective rank: ``exp(H(p))`` where ``p`` is the
     normalized singular-value distribution.
+
+    Requires a ≤2-D input (see :func:`_require_at_most_2d`). ``max_dim``/``seed``
+    are the opt-in perf hatch documented on :func:`singular_values`.
     """
-    return _effective_rank_from_sv(singular_values(W), eps)
+    _require_at_most_2d(W, "effective_rank")
+    return _effective_rank_from_sv(singular_values(W, max_dim=max_dim, seed=seed), eps)
 
 
 def _effective_rank_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
@@ -132,11 +164,16 @@ def _effective_rank_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
     return float(math.exp(H))
 
 
-def stable_rank(W: ArrayLike) -> float:
+def stable_rank(
+    W: ArrayLike, *, max_dim: int | None = None, seed: int | None = None
+) -> float:
     """``||W||_F^2 / ||W||_2^2``. Lower-bounds the algebraic rank and is
     numerically robust on near-singular matrices.
+
+    Requires a ≤2-D input (see :func:`_require_at_most_2d`).
     """
-    return _stable_rank_from_sv(singular_values(W))
+    _require_at_most_2d(W, "stable_rank")
+    return _stable_rank_from_sv(singular_values(W, max_dim=max_dim, seed=seed))
 
 
 def _stable_rank_from_sv(s: torch.Tensor) -> float:
@@ -145,16 +182,22 @@ def _stable_rank_from_sv(s: torch.Tensor) -> float:
     return float((s.pow(2).sum() / (s[0].pow(2))).item())
 
 
-def condition_number(W: ArrayLike, eps: float = 1e-12) -> float:
+def condition_number(
+    W: ArrayLike, eps: float = 1e-12, *, max_dim: int | None = None
+) -> float:
     """``sigma_max / sigma_min``. Returns ``+inf`` if the smallest singular
     value is below ``eps``.
 
     Always uses the full SVD path (``use_gram=False``) because accurate
     ``sigma_min`` is the numerically sensitive quantity and the Gram path
     squares the condition number, destroying precision for small singular
-    values.
+    values. ``max_dim`` is the opt-in perf hatch from :func:`singular_values`
+    (default ``None`` → full, accurate SVD); note that subsampling biases
+    ``sigma_min`` so the result is only a lower bound on the true condition
+    number. Requires a ≤2-D input.
     """
-    return _condition_number_from_sv(singular_values(W, use_gram=False), eps)
+    _require_at_most_2d(W, "condition_number")
+    return _condition_number_from_sv(singular_values(W, max_dim=max_dim, use_gram=False), eps)
 
 
 def _condition_number_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
@@ -163,14 +206,17 @@ def _condition_number_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
     return float((s[0] / s[-1]).item())
 
 
-def heavy_tail_alpha(W: ArrayLike, top_frac: float = 0.5) -> float:
+def heavy_tail_alpha(
+    W: ArrayLike, top_frac: float = 0.5, *, max_dim: int | None = None, seed: int | None = None
+) -> float:
     """Hill estimator of the tail index of the squared-singular-value
     distribution. Computed on the top ``top_frac`` (default half) of squared
     singular values — the empirically robust default.
 
-    Returns ``+inf`` on degenerate inputs.
+    Returns ``+inf`` on degenerate inputs. Requires a ≤2-D input.
     """
-    return _heavy_tail_alpha_from_sv(singular_values(W), top_frac)
+    _require_at_most_2d(W, "heavy_tail_alpha")
+    return _heavy_tail_alpha_from_sv(singular_values(W, max_dim=max_dim, seed=seed), top_frac)
 
 
 def _heavy_tail_alpha_from_sv(s: torch.Tensor, top_frac: float = 0.5) -> float:

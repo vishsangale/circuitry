@@ -38,12 +38,21 @@ def _esd_from_sv(s: torch.Tensor, bins: int = 100) -> tuple[torch.Tensor, torch.
     return edges, counts
 
 
+def _flatten_to_2d(t: torch.Tensor) -> torch.Tensor:
+    """Fold a ≥2-D parameter to 2-D as ``[shape[0], -1]`` for the rank
+    primitive. Correct for conv weights (``[out, in, kh, kw] -> [out, in*kh*kw]``);
+    ``effective_rank`` itself rejects >2-D so the fold must happen here."""
+    t = torch.as_tensor(t)
+    return t if t.ndim <= 2 else t.reshape(t.shape[0], -1)
+
+
 def rank_trajectory(
     state_dicts: Sequence[Mapping[str, torch.Tensor]],
 ) -> dict[str, list[float]]:
-    """Effective rank per 2D parameter across an ordered sequence of state dicts.
+    """Effective rank per 2D+ parameter across an ordered sequence of state dicts.
 
-    Non-2D tensors (biases, layer norms) are skipped.
+    1-D tensors (biases, layer norms) are skipped. Conv and other ≥2-D weights
+    are folded to 2-D as ``[out, -1]`` before the rank is computed.
     """
     if not state_dicts:
         return {}
@@ -54,5 +63,5 @@ def rank_trajectory(
             if k not in sd:
                 out[k].append(float("nan"))
             else:
-                out[k].append(weight.effective_rank(sd[k]))
+                out[k].append(weight.effective_rank(_flatten_to_2d(sd[k])))
     return out

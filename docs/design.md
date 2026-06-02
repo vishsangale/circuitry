@@ -112,14 +112,21 @@ Pure functions. Tensors / state-dicts in; floats / arrays / small dataclasses ou
 from circuitry.core import weight, activation, gradient, spectral
 
 # weight-space
-weight.effective_rank(W: Tensor, eps: float = 1e-12) -> float
-weight.stable_rank(W: Tensor) -> float
-weight.condition_number(W: Tensor) -> float
-weight.singular_values(W: Tensor, k: int | None = None, *, seed: int | None = None, use_gram: bool | str = 'auto') -> Tensor
-# seed: if not None, seeds the random subsample (>max_dim columns) for CPU-deterministic cross-step comparison.
-# use_gram: 'auto' uses eigvalsh(W^T W) fast path for strongly-rectangular matrices; False forces full SVD.
-# condition_number always uses the full SVD (use_gram=False) to preserve the exact max/min singular-value ratio.
-weight.heavy_tail_alpha(W: Tensor) -> float
+weight.effective_rank(W: Tensor, eps: float = 1e-12, *, max_dim: int | None = None, seed: int | None = None) -> float
+weight.stable_rank(W: Tensor, *, max_dim: int | None = None, seed: int | None = None) -> float
+weight.condition_number(W: Tensor, eps: float = 1e-12, *, max_dim: int | None = None) -> float
+weight.singular_values(W: Tensor, k: int | None = None, max_dim: int | None = None, *, seed: int | None = None, use_gram: bool | str = 'auto') -> Tensor
+# ACCURATE BY DEFAULT (v1.8): max_dim=None computes the full, deterministic SVD, so every SVD-derived
+#   diagnostic is accurate and reproducible on any matrix (every real LLM layer has min-dim > 512).
+# max_dim: opt-in PERFORMANCE hatch — caps SVD cost on wide matrices by truncating to a max_dim-column
+#   random subsample, which biases sigma_min / the spectral tail and (unless seed is set) is non-deterministic.
+# seed: seeds the subsample draw (only relevant when max_dim triggers subsampling) for CPU-deterministic results.
+# use_gram: 'auto' uses eigvalsh(W^T W) fast path for strongly-rectangular matrices; False forces svdvals.
+# condition_number always uses the full SVD path (use_gram=False) to preserve the exact max/min ratio.
+# ≤2-D CONTRACT (v1.8): effective_rank/stable_rank/heavy_tail_alpha/condition_number RAISE on ndim>2 — a
+#   batched tensor (e.g. an MoE expert stack [n_experts, d_in, d_out]) must be folded/iterated per-slice by
+#   the caller, never silently flattened into rows (which yields ~n_experts instead of the per-expert rank).
+weight.heavy_tail_alpha(W: Tensor, top_frac: float = 0.5, *, max_dim: int | None = None, seed: int | None = None) -> float
 weight.attention_head_rank(W: Tensor, n_heads: int, head_dim: int, axis: int = 0) -> Tensor
 
 # weight-space dynamics (v1.3 — shipped in core/; now wired live)
@@ -508,7 +515,22 @@ The most likely 6-month failure mode is "this is cool, but it doubled my trainin
 
 - **Wall-clock budget (design target):** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead SHOULD be ≤10% of baseline training step time on a 50M-param transformer. This is the design target and CI regression gate. **Validated on GPU at a realistic training step: +5.3%** (RTX 5080, batch 16 × seq 512) — see measurements below.
 - **Per-diagnostic toggle:** every entry in `weight_diagnostics` / `activation_diagnostics` / `gradient_diagnostics` can be disabled via recipe override. The expensive ones (`heavy_tail_alpha`, `singular_values` on large weights) are documented as such.
-- **Subsampling knobs:** weight-space diagnostics support `max_dim` to truncate SVD to top-k singular values, and `sample_axis` to compute on a random column subset. Default `max_dim=512` keeps SVD cost bounded on wide LLM matrices. In v1.4, `singular_values` gained a `seed` kwarg (CPU-deterministic subsample, fixing the unseeded-randperm determinism violation) and a `use_gram='auto'` fast path (eigvalsh(W^T W) for strongly-rectangular matrices); `condition_number` always uses the full SVD to preserve exact max/min singular-value ratio. The Gram fast path reduces SVD cost for matrices where columns << rows (narrowly-rectangular weight matrices not wide enough to trigger the >512 subsample); matrices wider than max_dim=512 are subsampled and fall back to `svdvals` regardless.
+- **Subsampling knobs (accurate by default since v1.8):** `singular_values` and the SVD-derived
+  weight diagnostics now default to `max_dim=None` — the **full, deterministic SVD** — so the numbers
+  emitted live for production-scale models are accurate and reproducible. (Through v1.7 the default was
+  `max_dim=512` random-column subsampling, which silently biased *every* diagnostic on any matrix with
+  min-dim > 512 — i.e. every real LLM layer — and varied run-to-run; this was the headline finding of the
+  v1.7 real-model evaluation, fixed in v1.8.) `max_dim` is retained as an **opt-in performance hatch**:
+  passing a `max_dim` (with a fixed `seed` for reproducibility) caps SVD cost on very wide weights at the
+  cost of biasing σ_min / the spectral tail. The `use_gram='auto'` fast path (eigvalsh(WᵀW) for
+  strongly-rectangular matrices) is unchanged; `condition_number` always uses the full `svdvals` path to
+  preserve the exact max/min ratio. **Perf note:** because the accurate default does the full SVD on wide
+  weights, per-emit weight-diagnostic cost on large models rises versus the old subsampled default — the
+  ≤10% budget above was measured with subsampling. If wide-matrix SVD becomes the live bottleneck, pass an
+  explicit `max_dim` per recipe (accepting the bias) or raise `every_n_steps`. **MoE expert weights** are
+  batched 3-D tensors (`[n_experts, d_in, d_out]`); the scalar rank primitives reject >2-D (see §4.1) and
+  the recorder iterates the expert axis, emitting **per-expert** diagnostics rather than a single
+  semantically-wrong flattened rank.
 - **Lazy hooks:** activation hooks only run the forward pass capture on the emit step (every N steps). The hook checks `self._should_capture()` and is a no-op otherwise, avoiding per-step allocation cost.
 - **Async writer option:** `MetricWriter` adapters MAY implement non-blocking writes (a background thread draining a queue). The TB adapter does this by default; tests use the synchronous null writer.
 - **Drift probe overhead:** the v1.4 `drift_probe` diagnostic requires a second forward pass on `probe_batch` per emit step. It is **off by default** (`enabled={"drift_probe": False}`) and adds zero overhead at default settings. Its per-emit cost is proportional to probe batch size and is not separately characterised here — benchmark it if you enable it in production.
