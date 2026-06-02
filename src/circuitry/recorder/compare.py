@@ -24,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import pathlib
+import warnings
 
 from circuitry.recorder._metrics import group, load_rows, stats
 
@@ -168,6 +169,21 @@ def compare_runs(
 
     fam_a = _family_stats(grouped_a)  # section -> (mean_last, trend)
     fam_b = _family_stats(grouped_b)
+
+    only_in_a = sorted(set(fam_a) - set(fam_b))
+    only_in_b = sorted(set(fam_b) - set(fam_a))
+    if only_in_a or only_in_b:
+        parts: list[str] = []
+        if only_in_a:
+            parts.append(f"only in run_a: {only_in_a}")
+        if only_in_b:
+            parts.append(f"only in run_b: {only_in_b}")
+        warnings.warn(
+            f"compare_runs: metric-family sets differ — {'; '.join(parts)}. "
+            "Absent families receive NaN sentinels in the output.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     all_sections = sorted(set(fam_a) | set(fam_b))
 

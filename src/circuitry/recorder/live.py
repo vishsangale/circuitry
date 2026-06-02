@@ -158,6 +158,13 @@ class Recorder:
         self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
+        # Modules whose primary weight is a batched 3-D expert tensor (e.g.
+        # OlmoeExperts.gate_up_proj / down_proj).  Populated at attach() time.
+        # Maps module_name → list of param_names for all batched-expert params
+        # in the module's subtree. The recorder iterates the leading expert axis
+        # for each param and emits per-expert weight diagnostics instead of
+        # passing a 3-D tensor to the rank primitives (which raise on >2-D input).
+        self._moe_expert_params: dict[str, list[str]] = {}
         # Cross-step weight snapshots for training-dynamics diagnostics (v1.3).
         # Detached CPU copies of ctx.weights from prior emit steps.
         # Empty at attach(); populated after each emit; cleared in detach().
@@ -171,6 +178,11 @@ class Recorder:
         self._ref_probe_activations: dict[str, torch.Tensor] | None = None
         # Warn-once flag for errors during the drift-probe forward pass.
         self._warned_probe_forward = False
+        # Set to True by _set_output_attentions_true() when the model's
+        # attn_implementation rejects output_attentions=True (e.g. sdpa/flash).
+        # When True the induction_score and attention_pattern_entropy blocks
+        # skip silently rather than raising.
+        self._attn_diags_sdpa_skip = False
 
     # ---- internal helpers ------------------------------------------------
 
@@ -373,14 +385,41 @@ class Recorder:
                 for mn in names:
                     rec = self._inventory.find_primary_weight(mn)
                     if rec is None:
-                        parent_cls = type(name_to_mod.get(mn, self.model)).__name__
-                        logger.warning(
-                            "circuitry: hook_point[%d] %s: module %r (%s) has no "
-                            "resolvable 2-D+ weight in its subtree — skipping",
-                            idx, hp.source.value, mn, parent_cls,
-                        )
-                        matched_lines.append(f"{mn} → UNRESOLVED ({parent_cls})")
-                        unresolved += 1
+                        # For MoE batched-expert modules the subtree has multiple
+                        # 3-D params (gate_up_proj, down_proj) — find_primary_weight
+                        # returns None because there are >1 candidates.  Fall back
+                        # to checking for multiple 3-D params directly; if found,
+                        # register ALL of them and flag the module as MoE-experts.
+                        # We identify batched-expert params as 3-D tensors whose
+                        # leaf_attr is NOT "weight" (Conv weights are 3-D but
+                        # have leaf_attr=="weight"; expert batches use the param
+                        # name itself, e.g. "gate_up_proj").
+                        prefix = mn + "." if mn else ""
+                        batched = [
+                            r for r in self._inventory.parameters
+                            if len(r.shape) == 3
+                            and r.leaf_attr != "weight"  # not a Conv weight
+                            and (
+                                r.owning_module_name == mn
+                                or (prefix and r.owning_module_name.startswith(prefix))
+                            )
+                        ]
+                        if batched:
+                            self._moe_expert_params[mn] = [r.name for r in batched]
+                            for r in batched:
+                                tail = r.name[len(mn) + 1:] if mn else r.name
+                                matched_lines.append(
+                                    f"{mn} → {tail} {tuple(r.shape)} [moe_experts]"
+                                )
+                        else:
+                            parent_cls = type(name_to_mod.get(mn, self.model)).__name__
+                            logger.warning(
+                                "circuitry: hook_point[%d] %s: module %r (%s) has no "
+                                "resolvable 2-D+ weight in its subtree — skipping",
+                                idx, hp.source.value, mn, parent_cls,
+                            )
+                            matched_lines.append(f"{mn} → UNRESOLVED ({parent_cls})")
+                            unresolved += 1
                     else:
                         # Don't overwrite an earlier WEIGHT mapping with a GRAD
                         # one (they should be identical, but be explicit).
@@ -415,6 +454,29 @@ class Recorder:
             totals["matched"] += len(names)
             totals["resolved"] += hp_resolved
             totals["unresolved"] += hp_unresolved
+
+        # F37: aggregate WARNING when weight-source HookPoints collectively match
+        # 0 modules.  The per-HookPoint messages above are terse (one line each);
+        # this summary gives users one actionable signal at WARNING level that
+        # weight diagnostics will be silent for those patterns — e.g. on MoE
+        # models where the standard MLP-proj pattern finds nothing.
+        _zero_weight_hps = [
+            hp_info
+            for hp_info in summary_hook_points
+            if hp_info["source"] in (TensorSource.WEIGHT.value, TensorSource.GRAD.value)
+            and hp_info["matched"] == 0
+        ]
+        if _zero_weight_hps:
+            _zero_labels = [hp_info["label"] for hp_info in _zero_weight_hps]
+            logger.warning(
+                "circuitry: %d weight pattern(s) matched 0 modules — weight "
+                "diagnostics will not run for those patterns. "
+                "Patterns with 0 matches: %s. "
+                "If this is a MoE model, ensure the recipe includes patterns for "
+                "the expert and router modules.",
+                len(_zero_weight_hps),
+                ", ".join(_zero_labels),
+            )
 
         (self.run_dir / "circuitry" / "matched_modules.txt").write_text(
             "\n".join(matched_lines)
@@ -522,16 +584,33 @@ class Recorder:
         """Enable per-head attention output via the HF config (not a forward
         kwarg, which breaks wrappers whose forward lacks **kwargs). Records the
         original value(s) so detach() can restore exactly. Call LAST in attach()
-        so a failed attach never leaves the config mutated."""
+        so a failed attach never leaves the config mutated.
+
+        If the model's attention implementation (e.g. sdpa / flash_attention_2)
+        does not support output_attentions, the assignment raises ValueError.
+        In that case we degrade gracefully: set ``_attn_diags_sdpa_skip=True``
+        so induction_score / attention_pattern_entropy emit no tags, and log a
+        single warning instead of propagating the exception.
+        """
         cfg = getattr(self.model, "config", None)
         text_cfg = getattr(cfg, "text_config", None)
         for source in (cfg, text_cfg):
             if source is None:
                 continue
-            self._output_attentions_restore.append(
-                (source, getattr(source, "output_attentions", False))
-            )
-            source.output_attentions = True
+            orig = getattr(source, "output_attentions", False)
+            try:
+                source.output_attentions = True
+            except (ValueError, AttributeError) as exc:
+                logger.warning(
+                    "circuitry: could not enable output_attentions on model "
+                    "config (%s). induction_score and attention_pattern_entropy "
+                    "will be skipped. To capture attention diagnostics reload "
+                    'the model with attn_implementation="eager". Reason: %s',
+                    type(source).__name__, exc,
+                )
+                self._attn_diags_sdpa_skip = True
+                return
+            self._output_attentions_restore.append((source, orig))
 
     def _restore_output_attentions(self) -> None:
         for source, original in self._output_attentions_restore:
@@ -592,10 +671,24 @@ class Recorder:
         name_to_param = dict(self.model.named_parameters())
         weights: dict[str, torch.Tensor] = {}
         gradients: dict[str, torch.Tensor] = {}
+        # MoE batched-expert weights: module_name → list of (param_name, tensor).
+        # These 3-D tensors are handled per-expert in _run_diagnostics and are
+        # NOT placed in ctx.weights (which the rank primitives expect to be 2-D).
+        moe_weights: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for idx, hp in enumerate(self.recipe.hook_points):
             if hp.source not in (TensorSource.WEIGHT, TensorSource.GRAD):
                 continue
             for mod_name in self._matched[idx]:
+                # MoE batched-expert module: collect all their 3-D params.
+                if mod_name in self._moe_expert_params and hp.source is TensorSource.WEIGHT:
+                    entries: list[tuple[str, torch.Tensor]] = []
+                    for pname in self._moe_expert_params[mod_name]:
+                        p = name_to_param.get(pname)
+                        if isinstance(p, torch.Tensor):
+                            entries.append((pname, p.detach()))
+                    if entries:
+                        moe_weights[mod_name] = entries
+                    continue
                 param_name = self._param_for_module.get(mod_name)
                 if param_name is None:
                     continue  # already WARNed at attach()
@@ -618,7 +711,7 @@ class Recorder:
             user=dict(user),
         )
 
-        self._run_diagnostics(ctx)
+        self._run_diagnostics(ctx, moe_weights=moe_weights)
         # Discard activations now that we've consumed them.
         self._captured_activations.clear()
         # Roll cross-step weight snapshots forward (v1.3 training-dynamics).
@@ -634,8 +727,14 @@ class Recorder:
     def _enabled(self, name: str) -> bool:
         return self.recipe.enabled.get(name, True)
 
-    def _run_diagnostics(self, ctx: StepContext) -> None:
+    def _run_diagnostics(
+        self,
+        ctx: StepContext,
+        moe_weights: dict[str, list[tuple[str, torch.Tensor]]] | None = None,
+    ) -> None:
         assert self._writer is not None
+        if moe_weights is None:
+            moe_weights = {}
 
         # Singular values of each weight matrix are computed at most once per
         # step and shared across all SVD-derived diagnostics (effective_rank,
@@ -732,6 +831,20 @@ class Recorder:
                     continue
                 for mod_name, w in ctx.weights.items():
                     self._writer.add_scalar(f"weight/{name}/{mod_name}", float(fn(_sv(w))), ctx.step)
+                # MoE batched-expert weights: iterate leading expert axis so each
+                # 2-D slice [d_in, d_out] goes to the rank primitives individually.
+                # Tags: weight/<diag>/<mod_name>/expert_<i> where <mod_name> is
+                # the experts module name (e.g. "model.layers.0.mlp.experts") and
+                # <i> is the expert index within the batch.
+                for experts_mod, param_entries in moe_weights.items():
+                    for pname, w3d in param_entries:
+                        # param name relative to the experts module
+                        param_short = pname[len(experts_mod) + 1:] if pname.startswith(experts_mod + ".") else pname
+                        n_experts = w3d.shape[0]
+                        for ei in range(n_experts):
+                            w2d = w3d[ei]  # shape [d_in, d_out] — 2-D, safe for rank primitives
+                            tag = f"weight/{name}/{experts_mod}/{param_short}/expert_{ei}"
+                            self._writer.add_scalar(tag, float(fn(_sv(w2d))), ctx.step)
 
         for name in self.recipe.activation_diagnostics:
             if not self._enabled(name):
@@ -826,7 +939,7 @@ class Recorder:
                     )
                 continue
             if name == "induction_score":
-                if self._induction_probe is None:
+                if self._induction_probe is None or self._attn_diags_sdpa_skip:
                     continue
                 from circuitry.core.attention import induction_score as _is
                 # Find matched self_attn modules from the hook points.
@@ -861,6 +974,12 @@ class Recorder:
                     mod.register_forward_hook(_mk_capture(mn))
                     for mn, mod in self_attn_modules.items()
                 ]
+                # Snapshot the training-forward attention before the probe pass
+                # so that attention_pattern_entropy (processed later in the same
+                # step loop) reads the TRAINING attention, not the probe's.
+                # The permanent _main_pass_attn capture hook fires during the
+                # probe forward and would otherwise overwrite the training values.
+                _main_pass_attn_snapshot = dict(self._main_pass_attn)
                 try:
                     probe_dev = next(self.model.parameters()).device
                     probe = self._induction_probe.to(probe_dev)
@@ -872,6 +991,9 @@ class Recorder:
                 finally:
                     for h in handles:
                         h.remove()
+                    # Restore training-forward attention regardless of whether
+                    # the probe forward succeeded or raised.
+                    self._main_pass_attn.update(_main_pass_attn_snapshot)
                 for mn, attn in captured.items():
                     try:
                         scores = _is(
@@ -890,6 +1012,8 @@ class Recorder:
                         )
                 continue
             if name == "attention_pattern_entropy":
+                if self._attn_diags_sdpa_skip:
+                    continue
                 from circuitry.core.attention import (
                     attention_pattern_entropy as _ape,
                 )

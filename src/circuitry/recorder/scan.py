@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import pathlib
 import re
+import warnings
 from collections.abc import Callable
 
 import torch
 import torch.nn as nn
 
 from circuitry.recipes import Recipe, get_recipe
+from circuitry.recorder.hooks import TensorSource
 from circuitry.recorder.live import Recorder, _resolve_writer
 from circuitry.writers.base import MetricWriter
 
@@ -37,6 +39,7 @@ def scan_run(
     model_factory: Callable[[], nn.Module],
     writer: MetricWriter | str = "tensorboard",
     strict: bool = True,
+    forward_fn: Callable[[nn.Module], None] | None = None,
 ) -> None:
     """Replay each checkpoint through the recipe's weight diagnostics.
 
@@ -50,6 +53,14 @@ def scan_run(
 
     ``strict`` controls whether unmatched HookPoints cause an error; see
     ``Recorder`` for details.
+
+    ``forward_fn`` is an optional callable ``(model) -> None`` that performs a
+    forward pass on the model (e.g. ``lambda m: m(dummy_input)``).  When the
+    recipe contains activation diagnostics and ``forward_fn`` is provided,
+    scan_run calls it before each ``rec.step()`` so that OUTPUT hooks are fired
+    and ``ctx.activations`` is populated.  When activation diagnostics are
+    requested but ``forward_fn`` is not provided, a ``UserWarning`` is emitted
+    once per run and activation families are silently absent from the output.
     """
     run_dir = pathlib.Path(run_dir)
     out_dir = pathlib.Path(out_dir)
@@ -60,6 +71,23 @@ def scan_run(
         )
 
     recipe = recipe if isinstance(recipe, Recipe) else get_recipe(recipe)
+
+    # Warn once per run when the recipe requests activation diagnostics but no
+    # forward_fn was supplied — the activation families will be absent from the
+    # output (ctx.activations stays empty without a forward pass).
+    has_output_hooks = any(
+        hp.source is TensorSource.OUTPUT for hp in recipe.hook_points
+    )
+    if recipe.activation_diagnostics and has_output_hooks and forward_fn is None:
+        warnings.warn(
+            "scan_run: recipe contains activation_diagnostics "
+            f"{recipe.activation_diagnostics!r} but no forward_fn was supplied. "
+            "Activation families will be absent from the scan output. "
+            "Pass forward_fn=lambda m: m(dummy_input) to enable them.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     model = model_factory()
     resolved_writer = _resolve_writer(writer, out_dir)
     rec = Recorder(model, run_dir=out_dir, recipe=recipe,
@@ -69,6 +97,8 @@ def scan_run(
         for step, ckpt_path in ckpts:
             sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)
             model.load_state_dict(sd)
+            if forward_fn is not None:
+                forward_fn(model)
             rec.step(step)
     finally:
         rec.detach()
