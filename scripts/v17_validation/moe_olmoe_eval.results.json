@@ -1,0 +1,58 @@
+{
+  "model": "allenai/OLMoE-1B-7B-0924",
+  "t1": {
+    "total_named_modules": 231,
+    "total_pattern_matches": 210,
+    "expert_gate_up_modules": 0,
+    "expert_down_modules": 0,
+    "expert_weight_pattern_matches": 0,
+    "verdict": "EXPERTS MISSED - 0 expert weight diagnostics emitted"
+  },
+  "t2": {
+    "crashed": false,
+    "metrics_emitted": 0,
+    "crash_info": null
+  },
+  "t3": {
+    "locate_layers_ok": true,
+    "resolver_from_config_ok": true,
+    "site_results": {
+      "resid_post": {
+        "ok": true,
+        "type": "OlmoeDecoderLayer",
+        "path": "model.layers.0"
+      },
+      "mlp_out": {
+        "ok": true,
+        "type": "OlmoeSparseMoeBlock",
+        "path": "model.layers.0.mlp"
+      },
+      "attn_out": {
+        "ok": true,
+        "type": "OlmoeAttention",
+        "path": "model.layers.0.self_attn"
+      }
+    }
+  },
+  "t4": {
+    "gate_up_proj_shape": [
+      64,
+      2048,
+      2048
+    ],
+    "effective_rank_ok": true,
+    "effective_rank": 63.94838581308619,
+    "stable_rank_ok": true,
+    "stable_rank": 41.72320556640625,
+    "W_single_shape": [
+      2048,
+      2048
+    ],
+    "condition_circuitry": 7.424479007720947,
+    "condition_numpy": 339851.6875,
+    "condition_ratio": 2.184623257967771e-05,
+    "sigma_min_circuitry": 0.32385849952697754,
+    "sigma_min_numpy": 1.380289268126944e-05,
+    "subsampled": true
+  }
+}

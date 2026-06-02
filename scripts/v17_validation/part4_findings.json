@@ -1,0 +1,23 @@
+[
+  "BUG | scan/update_delta | update_delta is identically zero for all checkpoints \u2014 ALIASING suspected | tag=weight/update_delta/model.layers.0.attn.q_proj, all values=[0.0, 0.0, 0.0, 0.0] | Verify copy=True in _prev_weights snapshot; test on GPU run",
+  "GOOD | scan/update_delta | update_delta correctly skipped at first checkpoint (step=30) | first update_delta step=60 | No action needed",
+  "BUG | scan/direction_cosine | direction_cosine is identically zero \u2014 probable aliasing or same prev snapshot | tag=weight/direction_cosine/model.layers.0.attn.q_proj, values=[0.0, 0.0, 0.0] | Check _prev_prev_weights copy=True semantics",
+  "GAP | scan/rank_trajectory | rank_trajectory across checkpoints \u2014 all values identical (static rank?) | tag=weight/rank_trajectory/model.layers.0.attn.q_proj, steps=[60, 90, 120, 150], vals=[25.231, 25.231, 25.231, 25.231] | Verify training produces actual rank changes",
+  "GOOD | scan/build_report | build_report succeeded on real scan output | path=/tmp/claude-501/circuitry_scan_out_x9norjqt/inspect/report.md, size=10562B, tags=96 | No action needed",
+  "GOOD | JsonlWriter | Wrote 40 scalar + 1 histogram + 1 text rows cleanly | path=/tmp/claude-501/circuitry_jsonl_h0obrfu5/metrics.jsonl, size=3010B | No action needed",
+  "GOOD | JsonlWriter/histogram | Histogram artifact .npy file written | path=/tmp/claude-501/circuitry_jsonl_h0obrfu5/circuitry/artifacts/test_hist-step000000019.npy, size=528B | No action needed",
+  "GAP | TensorBoardWriter | async_writes defaults to False (SYNC), contradicting design.md \u00a710 claim of async-by-default | async_writes default=False (tensorboard.py line 23) | Either update design.md \u00a710 to say sync-by-default, or flip the default to True",
+  "GOOD | TensorBoardWriter | TFEvents file readable by EventAccumulator; scalars verified | path=/tmp/claude-501/circuitry_tb_2z43skz5/events.out.tfevents.1780339690.Vishs-MBP.hsd1.wa.comcast.net.86170.0, size=606B, tag=tb_test/metric, n_events=10 | No action needed",
+  "GOOD | TensorBoardWriter/async | async_writes=True: TFEvents file written and non-empty after flush+close | path=/tmp/claude-501/circuitry_tb_async_q7zhhyl0/events.out.tfevents.1780339690.Vishs-MBP.hsd1.wa.comcast.net.86170.1, size=636B | No action needed",
+  "GOOD | NullWriter | NullWriter no-ops cleanly for all add_* / flush / close | No exception raised, no file written | No action needed",
+  "GOOD | compare_runs | compare_runs produces valid FamilyDelta with non-NaN deltas | families=6, max_abs_delta=0.6133, trend_agrees=6/6 | No action needed",
+  "GOOD | build_compare_report | Markdown report has correct table header | path=/tmp/claude-501/cmp_report_jmfg5ga8/compare.md, size=665B | No action needed",
+  "GOOD | compare_runs/missing-file | compare_runs raises FileNotFoundError when metrics.jsonl is absent | compare_runs: no metrics.jsonl found in /tmp/claude-501/cmp_empty_xsmhrtqo | No action needed",
+  "GOOD | CLI/--help | --help prints usage text and exits 0 | rc=0, output='usage: circuitry [-h] [--version] {list-recipes,report,compare,scan} ...\\n\\npositi' | No action needed",
+  "GOOD | CLI/--version | --version prints version string | output='circuitry 1.7.0' | No action needed",
+  "GOOD | CLI/list-recipes | list-recipes prints registered recipe names | recipes='llm\\ntwo_tower\\nvision' | No action needed",
+  "GOOD | CLI/report | report subcommand writes markdown report to --out path | rc=0, path=/tmp/claude-501/cli_report_fvkgfs0p/cli_report.md, size=10676B | No action needed",
+  "GOOD | CLI/compare | compare subcommand writes compare report | rc=0, path=/tmp/claude-501/cli_compare_nat40ajk/cli_compare.md, size=668B | No action needed",
+  "ERGO | CLI/scan | scan subcommand exits 2 with clear message pointing to programmatic API | rc=2, msg='circuitry scan: requires a model factory not yet exposed via the CLI.\\n  Use circuitry.recorder.scan.scan_run(...) programmatically for now.\\n  Discovered checkpoints: /tmp/claude-501/circuitry_scan_out_x9norjqt/checkpoints' | Expected placeholder behavior \u2014 add --model-factory dotted:path in future release to complete the workflow",
+  "GOOD | CLI/report/compact | --compact produces smaller report (per-tag tables suppressed) | compact=374B vs full=10562B | No action needed"
+]

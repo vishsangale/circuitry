@@ -1,0 +1,105 @@
+{
+  "model_type": "llama_hf",
+  "n_params": 656000,
+  "loss_start": 6.2655,
+  "loss_end": 6.2824,
+  "metrics_rows": 2466,
+  "n_tags": 244,
+  "n_steps_emitted": 100,
+  "families_present": [
+    "activation",
+    "grad",
+    "spectral",
+    "train",
+    "weight"
+  ],
+  "report_ok": true,
+  "scan_run_ok": true,
+  "scan_run_rows": 112,
+  "condition_number_check": {
+    "W_shape": [
+      1024,
+      1024
+    ],
+    "cond_circuitry": 5.677152156829834,
+    "cond_numpy": 1649.1401498994546,
+    "ratio_circuitry_over_numpy": 0.003442492232801415,
+    "sigma_min_subsampled": 9.4924955368042,
+    "sigma_min_full": 0.03892863914370537,
+    "sigma_max_subsampled": 54.37624740600586,
+    "sigma_max_full": 64.20167541503906
+  },
+  "weights_larger_than_512": {},
+  "attn_entropy_check": {
+    "attention_entropy_emitted": true,
+    "n_entropy_tags": 8,
+    "static_analysis": "PASS: _main_pass_attn populated from training forward hook (attach-time hook); induction_score uses a separate local `captured` dict with temporary hooks; no cross-contamination path exists.",
+    "cross_step_entropy_comparison": [
+      {
+        "module": "model.layers.0.self_attn",
+        "head": 0,
+        "independent": 2.54588,
+        "last_emitted": 2.96684,
+        "diff": 0.42096
+      },
+      {
+        "module": "model.layers.0.self_attn",
+        "head": 1,
+        "independent": 2.54616,
+        "last_emitted": 2.96711,
+        "diff": 0.42095
+      },
+      {
+        "module": "model.layers.0.self_attn",
+        "head": 2,
+        "independent": 2.54623,
+        "last_emitted": 2.96727,
+        "diff": 0.42105
+      },
+      {
+        "module": "model.layers.0.self_attn",
+        "head": 3,
+        "independent": 2.54618,
+        "last_emitted": 2.96675,
+        "diff": 0.42057
+      },
+      {
+        "module": "model.layers.1.self_attn",
+        "head": 0,
+        "independent": 2.54616,
+        "last_emitted": 2.96766,
+        "diff": 0.42149
+      },
+      {
+        "module": "model.layers.1.self_attn",
+        "head": 1,
+        "independent": 2.54493,
+        "last_emitted": 2.96798,
+        "diff": 0.42305
+      },
+      {
+        "module": "model.layers.1.self_attn",
+        "head": 2,
+        "independent": 2.54644,
+        "last_emitted": 2.96782,
+        "diff": 0.42138
+      },
+      {
+        "module": "model.layers.1.self_attn",
+        "head": 3,
+        "independent": 2.54651,
+        "last_emitted": 2.96825,
+        "diff": 0.42174
+      }
+    ]
+  },
+  "attach_summary": {
+    "totals": {
+      "matched": 36,
+      "resolved": 36,
+      "unresolved": 0
+    },
+    "zero_match_hookpoints": [],
+    "n_hook_points": 10
+  }
+}
