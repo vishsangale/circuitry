@@ -38,7 +38,8 @@ def test_version_is_a_string():
 
 def test_v02_surface_exports():
     import circuitry
-    assert circuitry.__version__ == "1.8.0"
+    # The exact version is pinned by tests/test_version_consistency.py against the
+    # single source of truth (circuitry.__version__); don't hard-code it here.
     assert hasattr(circuitry, "token_similarity")
     assert hasattr(circuitry, "update_delta")
     assert hasattr(circuitry, "direction_cosine")

@@ -492,9 +492,14 @@ deferred — they are tracked here and at the relevant code sites (`grep -rn "TO
    MoE-only patterns (`mlp.gate` / `mlp.experts`), the aggregate "N weight pattern(s) matched 0
    modules" warning fires on *every* non-MoE attach. Demote to INFO when the only empty families are
    the MoE-specific ones, or split MoE patterns into an opt-in recipe variant. (`recorder/live.py`.)
-3. **Sync the `pyproject.toml` version.** It has read `1.4.2` since the v1.5.0 release while
-   `circuitry.__version__` tracks the real version (now `1.8.0`); align them (or make `pyproject`
-   read the version dynamically) so packaging metadata is correct.
+3. **Sync the `pyproject.toml` version.** ✅ **Done (2026-06-01).** `pyproject.toml` had read
+   `1.4.2` since the v1.5.0 release while `circuitry.__version__` tracked the real version (and the
+   installed metadata had frozen at `1.1.0`) — three different numbers. Resolved by making
+   `pyproject` derive the version dynamically (`[project] dynamic = ["version"]` +
+   `[tool.setuptools.dynamic] version = {attr = "circuitry.__version__"}`), so `__init__.py` is the
+   single source of truth. Guarded by `tests/test_version_consistency.py` (fails if README/CHANGELOG
+   drift from `__version__` or if a static `version` line returns to pyproject) and documented as a
+   repeatable process in `.claude/skills/release-checklist/SKILL.md`.
 4. **F6 — not a library bug.** The tied-score Spearman non-determinism lives only in the eval
    *script* (`scripts/v17_validation/track1_patching_revalidation.py`); the library ranking
    (`atp.verify_top_k`) is deterministic. No library fix; left as-is.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "circuitry"
-version = "1.4.2"
+dynamic = ["version"]
 description = "Mechanistic-interpretability diagnostics for PyTorch — live during training or post-hoc on a checkpoint (LLM / vision / recsys)."
 readme = "README.md"
 license = "MIT"
@@ -45,6 +45,13 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+# Single source of truth for the version: src/circuitry/__init__.py::__version__.
+# Bump it there and the package metadata follows automatically (no second edit).
+# Guarded by tests/test_version_consistency.py; release steps in
+# .claude/skills/release-checklist/SKILL.md.
+[tool.setuptools.dynamic]
+version = { attr = "circuitry.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
