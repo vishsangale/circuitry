@@ -467,6 +467,11 @@ class Recorder:
             and hp_info["matched"] == 0
         ]
         if _zero_weight_hps:
+            # TODO(v1.8 follow-up, F37): the llm recipe now carries MoE-only patterns
+            # (mlp.gate / mlp.experts), so this warning fires on EVERY non-MoE attach.
+            # Refine to be less noisy for the common case — e.g. demote to INFO when the
+            # only 0-match families are the MoE-specific ones, or make MoE patterns an
+            # opt-in recipe variant. See docs/observations/2026-05-31-real-model-evaluation.md.
             _zero_labels = [hp_info["label"] for hp_info in _zero_weight_hps]
             logger.warning(
                 "circuitry: %d weight pattern(s) matched 0 modules — weight "

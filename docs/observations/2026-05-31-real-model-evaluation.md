@@ -473,3 +473,31 @@ HF_TOKEN / license not accepted). The **post-norm caveat remains untested.** To 
 license at huggingface.co/google/gemma-2-2b and `huggingface-cli login` with a token, then re-run.
 (We did not route around the gating with mirrors.) OLMoE uses pre-norm, so it does not substitute
 for the post-norm test.
+
+---
+
+## 11. Post-1.8.0 follow-ups (deferred TODOs)
+
+All 20 test-worthy findings above were fixed and shipped in **v1.8.0** (each with a red→green
+regression test under `tests/**/test_*_eval_findings.py`). The items below were intentionally
+deferred — they are tracked here and at the relevant code sites (`grep -rn "TODO(v1.8 follow-up"`):
+
+1. **Re-validate the §10 ≤10% wall-clock budget on GPU.** The F1 fix makes the live recorder
+   compute the *full* SVD on wide weights by default (the ≤10% budget was measured with the old
+   `max_dim=512` subsample). Run `scripts/bench_50m.py` on the RTX box with the budget scenario
+   (`--every-n-steps 200 --batch-size 16 --seq-len 512`) and record the new overhead. If it
+   exceeds budget, document an explicit per-recipe `max_dim` for perf-sensitive live use (the
+   accuracy/perf trade-off is the user's to make, with the bias documented in §4.1/§10).
+2. **Refine the F37 0-match weight-family warning (noise).** Because the `llm` recipe now carries
+   MoE-only patterns (`mlp.gate` / `mlp.experts`), the aggregate "N weight pattern(s) matched 0
+   modules" warning fires on *every* non-MoE attach. Demote to INFO when the only empty families are
+   the MoE-specific ones, or split MoE patterns into an opt-in recipe variant. (`recorder/live.py`.)
+3. **Sync the `pyproject.toml` version.** It has read `1.4.2` since the v1.5.0 release while
+   `circuitry.__version__` tracks the real version (now `1.8.0`); align them (or make `pyproject`
+   read the version dynamically) so packaging metadata is correct.
+4. **F6 — not a library bug.** The tied-score Spearman non-determinism lives only in the eval
+   *script* (`scripts/v17_validation/track1_patching_revalidation.py`); the library ranking
+   (`atp.verify_top_k`) is deterministic. No library fix; left as-is.
+5. **Gemma-2-2b post-norm caveat (F-blocked).** Still untested — gated HF repo. Accept the license +
+   `huggingface-cli login`, then exercise the `mlp_out`/`attn_out` SAE-site equivalence on a
+   post-norm architecture (the v1.7 caveat scopes equivalence to sequential pre-norm blocks).
