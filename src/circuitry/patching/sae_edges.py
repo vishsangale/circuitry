@@ -83,15 +83,38 @@ def compute_f_per_site(
     inputs: _Inputs,
     sae_sites: dict[Site, Any],
     resolver: Any,
-) -> dict[tuple[int, str], Tensor]:
-    """Capture SAE feature activations per site in a single no_grad forward.
+    *,
+    return_x_hat: bool = False,
+) -> (
+    dict[tuple[int, str], Tensor]
+    | tuple[dict[tuple[int, str], Tensor], dict[tuple[int, str], Tensor]]
+):
+    """Capture SAE feature activations (and optionally reconstructions) per site
+    in a single no_grad forward.
+
+    Uses ``sae_decompose`` (paired encode→decode) so that stateful SAEs with
+    ``normalize_activations='layer_norm'`` store the correct normalization statistics
+    during encode and decode immediately in the same call — never caching ``f`` and
+    decoding later (see ``sae/grad.py`` §92-108).
+
+    Args:
+        return_x_hat: When ``False`` (default) return only ``f_dict`` (the
+            historical contract). When ``True`` also return the paired
+            same-call reconstructions ``x_hat_dict`` — required by the
+            stateful-SAE faithfulness path (F3 fix).
 
     Returns:
-        dict mapping (site.layer, site.component) -> f tensor (detached, on SAE device/dtype).
-        Used for ablation_value computation (corrupted/zero/mean modes).
+        ``f_dict`` keyed by (site.layer, site.component): feature activations
+        (detached, on SAE device/dtype). If ``return_x_hat`` is True, returns
+        ``(f_dict, x_hat_dict)`` where ``x_hat_dict`` holds the SAE
+        reconstructions in model space (used by ``_feature_circuit_forward``
+        via ``ablation_x_hat`` to decode correctly for stateful SAEs).
         Composite key supports multiple sites per layer (P2b).
     """
-    result: dict[tuple[int, str], Tensor] = {}
+    from circuitry.sae.grad import sae_decompose as _sae_decompose_capture
+
+    f_result: dict[tuple[int, str], Tensor] = {}
+    x_hat_result: dict[tuple[int, str], Tensor] = {}
 
     handles: list[Any] = []
     for site, sae in sae_sites.items():
@@ -114,8 +137,11 @@ def compute_f_per_site(
                 getattr(_sae, "dtype", a.dtype),
             )
             with torch.no_grad():
-                f = _sae.encode(a_in)
-            result[_site_k] = f.detach()
+                # Paired encode→decode: sae_decompose ensures stateful SAEs
+                # store the correct norm stats during encode and decode immediately.
+                f, x_hat, _ = _sae_decompose_capture(_sae, a_in)
+            f_result[_site_k] = f.detach()
+            x_hat_result[_site_k] = x_hat.detach()
 
         handles.append(layer_mod.register_forward_hook(_hook))
 
@@ -130,7 +156,9 @@ def compute_f_per_site(
         for h in handles:
             h.remove()
 
-    return result
+    if return_x_hat:
+        return f_result, x_hat_result
+    return f_result
 
 
 def _feature_circuit_forward(
@@ -145,6 +173,7 @@ def _feature_circuit_forward(
     error_in_circuit: dict[tuple[int, str], bool] | None = None,
     ablation_mode: str = "corrupted",
     ablation_eps: dict[tuple[int, str], Tensor] | None = None,
+    ablation_x_hat: dict[tuple[int, str], Tensor] | None = None,
 ) -> Any:
     """Node-set ablation forward (§4.1 / §4.4).
 
@@ -162,12 +191,19 @@ def _feature_circuit_forward(
         sae_sites:       Ordered dict of Site → SAE.
         resolver:        SiteResolver used to route hooks to the correct submodule.
         circuit_nodes:   dict[(layer,component), set[feature_idx]] — IN-CIRCUIT features.
-        ablation_values: dict[(layer,component), Tensor] — ablation activation per site.
+        ablation_values: dict[(layer,component), Tensor] — ablation feature activations per site.
         include_error_node: If True, treat sae_error as a node (§4.4).
         error_in_circuit:   dict[(layer,component), bool] — error node in-circuit per site.
         ablation_mode:   'corrupted' / 'zero' / 'mean' (informational; ablation_values already computed).
         ablation_eps:    dict[(layer,component), Tensor] — eps ablation values for out-of-circuit
                          error nodes (include_error_node=True).
+        ablation_x_hat:  dict[(layer,component), Tensor] — SAE reconstructions (x_hat) from the
+                         ablation context (e.g. corrupted forward), paired with ablation_values.
+                         When provided AND all site features are non-circuit, the hook uses
+                         ``ablation_x_hat + eps_clean`` directly instead of
+                         ``sae.decode(f_ablated)`` — this ensures stateful SAEs with
+                         ``normalize_activations='layer_norm'`` decode in the correct context
+                         (F3 fix).  For non-stateful SAEs the two paths are byte-identical.
 
     Returns:
         Model output (may have .logits or be raw tensor).
@@ -198,6 +234,9 @@ def _feature_circuit_forward(
 
         in_circuit = circuit_nodes.get(sk, set())
         abl_val = ablation_values.get(sk)  # may be None for zero-mode
+        # F3 fix: pre-paired x_hat from ablation context (e.g. corrupted forward).
+        # Only useful when all features at this site are non-circuit — see hook below.
+        abl_x_hat = ablation_x_hat.get(sk) if ablation_x_hat is not None else None
 
         # Error-node circuit membership — per (layer, component)
         err_in_circ = True  # default: treat as always in circuit (frozen eps)
@@ -212,6 +251,7 @@ def _feature_circuit_forward(
             _sae: Any = sae,
             _in_circuit: set = in_circuit,
             _abl_val: Tensor | None = abl_val,
+            _abl_x_hat: Tensor | None = abl_x_hat,
             _mdtype: torch.dtype = m_dtype,
             _mdev: Any = m_device,
             _include_err: bool = include_error_node,
@@ -242,7 +282,20 @@ def _feature_circuit_forward(
                     # Ablate eps to the corrupted/zero/mean value
                     eps = _abl_eps.to(eps.device, eps.dtype)
 
-                recon = _sae.decode(f_ablated) + eps
+                # F3 fix: when all features are non-circuit AND a pre-paired x_hat is
+                # available (from compute_f_per_site's same-call sae_decompose), use it
+                # directly instead of sae.decode(f_ablated).  For stateful SAEs
+                # (normalize_activations='layer_norm'), decode must be paired with its
+                # encode — the clean encode above already set sae._norm_mean/_norm_std to
+                # CLEAN stats, so decoding corrupted f_ablated would use wrong stats.
+                # Using the pre-paired abl_x_hat avoids this mismatch.
+                # For non-stateful SAEs: abl_x_hat == sae.decode(f_ablated) → byte-identical.
+                if _abl_x_hat is not None and len(_in_circuit) == 0:
+                    x_hat_recon = _abl_x_hat.to(f_ablated.device, f_ablated.dtype)
+                else:
+                    x_hat_recon = _sae.decode(f_ablated)
+
+                recon = x_hat_recon + eps
                 recon_cast = recon.to(_mdev, _mdtype)
 
             return _routed_inject(_resolved, output, recon_cast)
@@ -385,6 +438,10 @@ class SAEFeatureCircuit:
         self._model = model
         self._sae_sites = sae_sites
         self._resolver = resolver
+        # Populated by _compute_ablation_values for 'corrupted' mode:
+        # SAE reconstruction (x_hat) from the corrupted forward,
+        # used by faithfulness/completeness for the F3 stateful-SAE fix.
+        self._ablation_x_hat: dict[tuple[int, str], Tensor] | None = None
 
     def ranked(self) -> list[tuple[SAEFeatureEdge, float]]:
         return sorted(self.edges.items(), key=lambda kv: abs(kv[1]), reverse=True)
@@ -442,17 +499,27 @@ class SAEFeatureCircuit:
         corrupted: _Inputs,
         ablation_mode: str,
     ) -> dict[tuple[int, str], Tensor]:
-        """Compute ablation_value dict[(layer,component), Tensor] per §4.1/§4.4."""
+        """Compute ablation_value dict[(layer,component), Tensor] per §4.1/§4.4.
+
+        Returns:
+            dict mapping (site.layer, site.component) -> ablation tensor.
+            For 'corrupted' mode: this is f_corrupt from compute_f_per_site.
+            Also populates self._ablation_x_hat with the SAE reconstruction dict
+            for 'corrupted' mode (None for 'zero'/'mean') — used by faithfulness/
+            completeness for the F3 stateful-SAE fix.
+        """
         if self._model is None or self._sae_sites is None or self._resolver is None:
             raise RuntimeError(
                 "SAEFeatureCircuit must be created by SAEFeatureEdgeRunner.run() "
                 "to use faithfulness/completeness/prune."
             )
-        f_corrupt = compute_f_per_site(
-            self._model, corrupted, self._sae_sites, self._resolver
+        f_corrupt, x_hat_corrupt = compute_f_per_site(
+            self._model, corrupted, self._sae_sites, self._resolver, return_x_hat=True
         )
         if ablation_mode == "corrupted":
+            self._ablation_x_hat = x_hat_corrupt
             return f_corrupt
+        self._ablation_x_hat = None
         if ablation_mode == "zero":
             return {sk: torch.zeros_like(f) for sk, f in f_corrupt.items()}
         if ablation_mode == "mean":
@@ -477,17 +544,21 @@ class SAEFeatureCircuit:
         include_error_node: bool = False,
         error_in_circuit: dict[tuple[int, str], bool] | None = None,
         ablation_eps: dict[tuple[int, str], Tensor] | None = None,
+        ablation_x_hat: dict[tuple[int, str], Tensor] | None = None,
     ) -> float:
         """Compute m(circuit_nodes) — scalar metric under node-set ablation.
 
         Args:
             circuit_nodes:     dict[(layer,component), set[feature_idx]] — IN-CIRCUIT features.
-            ablation_values:   dict[(layer,component), Tensor] — ablation activation per site.
+            ablation_values:   dict[(layer,component), Tensor] — ablation feature activations per site.
             include_error_node: If True, thread error-node membership into the forward.
             error_in_circuit:  dict[(layer,component), bool] — error node in-circuit per site.
             ablation_eps:      dict[(layer,component), Tensor] — eps ablation values for out-of-circuit
                                error nodes (required when include_error_node=True and
                                error node is out of circuit).
+            ablation_x_hat:    dict[(layer,component), Tensor] — SAE reconstructions from the
+                               ablation context (from compute_f_per_site). Passed to
+                               _feature_circuit_forward for the F3 stateful-SAE fix.
         """
         if self._model is None or self._sae_sites is None or self._resolver is None:
             raise RuntimeError(
@@ -504,6 +575,7 @@ class SAEFeatureCircuit:
             include_error_node=include_error_node,
             error_in_circuit=error_in_circuit,
             ablation_eps=ablation_eps,
+            ablation_x_hat=ablation_x_hat,
         )
         with torch.no_grad():
             m = metric(out)
@@ -561,6 +633,8 @@ class SAEFeatureCircuit:
                                 structurally zero and is never computed.
         """
         ablation_values = self._compute_ablation_values(clean, corrupted, ablation_mode)
+        # _compute_ablation_values populates self._ablation_x_hat for 'corrupted' mode (F3 fix).
+        ablation_x_hat = self._ablation_x_hat
 
         # Build error_in_circuit and ablation_eps when include_error_node=True
         error_in_circuit: dict[tuple[int, str], bool] | None = None
@@ -614,6 +688,7 @@ class SAEFeatureCircuit:
             include_error_node=include_error_node,
             error_in_circuit=empty_err_in_circ,
             ablation_eps=ablation_eps,
+            ablation_x_hat=ablation_x_hat,
         )
 
         # m(M): full circuit — all survivors kept; use _all_node_sets() so faithfulness(M)=1
@@ -625,6 +700,7 @@ class SAEFeatureCircuit:
             include_error_node=include_error_node,
             error_in_circuit=full_err_in_circ,
             ablation_eps=ablation_eps,
+            ablation_x_hat=ablation_x_hat,
         )
 
         # m(C): this circuit.
@@ -646,6 +722,7 @@ class SAEFeatureCircuit:
             include_error_node=include_error_node,
             error_in_circuit=circuit_err_in_circ,
             ablation_eps=ablation_eps,
+            ablation_x_hat=ablation_x_hat,
         )
 
         denom = m_full - m_empty
@@ -680,6 +757,8 @@ class SAEFeatureCircuit:
                                 the ablation forward (§4.4).
         """
         ablation_values = self._compute_ablation_values(clean, corrupted, ablation_mode)
+        # _compute_ablation_values populates self._ablation_x_hat for 'corrupted' mode (F3 fix).
+        ablation_x_hat_compl = self._ablation_x_hat
 
         full_nodes = self._all_node_sets()
         circuit_nodes_c = self._circuit_node_sets()
@@ -690,7 +769,8 @@ class SAEFeatureCircuit:
             in_circ = circuit_nodes_c.get(sk, set())
             complement[sk] = all_feats - in_circ
 
-        # Build error_in_circuit kwargs when include_error_node=True
+        # Build error_in_circuit and ablation_eps when include_error_node=True
+        ablation_eps_compl: dict[tuple[int, str], Tensor] | None = None
         if include_error_node:
             # Reuse _error_circuit_membership for the circuit
             err_circ = self._error_circuit_membership()
@@ -701,6 +781,44 @@ class SAEFeatureCircuit:
             # For empty: all out of circuit
             empty_err_in_circ: dict[tuple[int, str], bool] = {sk: False for sk in ablation_values}
 
+            # ablation_eps: for out-of-circuit error nodes use the corrupted eps
+            # (mirrors faithfulness() ~line 571-606 — F11 fix)
+            if self._sae_sites is not None and self._resolver is not None and self._model is not None:
+                from circuitry.sae.grad import sae_decompose as _sae_decompose_compl
+                abl_eps_dict_compl: dict[tuple[int, str], Tensor] = {}
+                for site, sae in self._sae_sites.items():
+                    sk = _site_key(site)
+                    resolved = self._resolver.resolve(self._model, site)
+                    layer_mod = resolved.module
+                    eps_store: dict[str, Tensor] = {}
+
+                    def _eps_hook_compl(
+                        module, inp, output,
+                        _sae=sae, _st=eps_store,
+                        _resolved=resolved,
+                    ) -> None:
+                        a = _routed_extract(_resolved, output).detach()
+                        a_in = a.to(
+                            getattr(_sae, "device", a.device),
+                            getattr(_sae, "dtype", a.dtype),
+                        )
+                        with torch.no_grad():
+                            _, _, eps_c = _sae_decompose_compl(_sae, a_in)
+                        _st["eps"] = eps_c.detach()
+
+                    _h = layer_mod.register_forward_hook(_eps_hook_compl)
+                    try:
+                        with torch.no_grad():
+                            if isinstance(corrupted, dict):
+                                self._model(**corrupted)  # type: ignore[union-attr]
+                            else:
+                                self._model(corrupted)  # type: ignore[union-attr]
+                    finally:
+                        _h.remove()
+                    if "eps" in eps_store:
+                        abl_eps_dict_compl[sk] = eps_store["eps"]
+                ablation_eps_compl = abl_eps_dict_compl
+
         # m(∅): empty circuit
         empty_nodes: dict[tuple[int, str], set[int]] = {sk: set() for sk in ablation_values}
         if include_error_node:
@@ -708,9 +826,14 @@ class SAEFeatureCircuit:
                 clean, corrupted, metric, empty_nodes, ablation_values,
                 include_error_node=True,
                 error_in_circuit=empty_err_in_circ,  # type: ignore[possibly-undefined]
+                ablation_eps=ablation_eps_compl,
+                ablation_x_hat=ablation_x_hat_compl,
             )
         else:
-            m_empty = self._m_of(clean, corrupted, metric, empty_nodes, ablation_values)
+            m_empty = self._m_of(
+                clean, corrupted, metric, empty_nodes, ablation_values,
+                ablation_x_hat=ablation_x_hat_compl,
+            )
 
         # m(M): full circuit
         if include_error_node:
@@ -718,9 +841,14 @@ class SAEFeatureCircuit:
                 clean, corrupted, metric, full_nodes, ablation_values,
                 include_error_node=True,
                 error_in_circuit=full_err_in_circ,  # type: ignore[possibly-undefined]
+                ablation_eps=ablation_eps_compl,
+                ablation_x_hat=ablation_x_hat_compl,
             )
         else:
-            m_full = self._m_of(clean, corrupted, metric, full_nodes, ablation_values)
+            m_full = self._m_of(
+                clean, corrupted, metric, full_nodes, ablation_values,
+                ablation_x_hat=ablation_x_hat_compl,
+            )
 
         # m(M\C): complement circuit
         if include_error_node:
@@ -728,9 +856,14 @@ class SAEFeatureCircuit:
                 clean, corrupted, metric, complement, ablation_values,
                 include_error_node=True,
                 error_in_circuit=comp_err_in_circ,  # type: ignore[possibly-undefined]
+                ablation_eps=ablation_eps_compl,
+                ablation_x_hat=ablation_x_hat_compl,
             )
         else:
-            m_complement = self._m_of(clean, corrupted, metric, complement, ablation_values)
+            m_complement = self._m_of(
+                clean, corrupted, metric, complement, ablation_values,
+                ablation_x_hat=ablation_x_hat_compl,
+            )
 
         denom = m_empty - m_full
         if abs(denom) < 1e-12:
@@ -1429,6 +1562,18 @@ class SAEFeatureEdgeRunner:
             f_U_corrupt_t = f_U_corrupt.to(f_U_clean_t.device, f_U_clean_t.dtype)
             delta_f_U_t = f_U_corrupt_t - f_U_clean_t  # same direction as delta_f_U (fp32)
 
+            # F4 fix: pre-compute clean and corrupt eps for error→feature IG path.
+            # eps_U_clean is captured from err_leaf_U (the detached eps leaf from the
+            # attrib clean forward already run above).  eps_U_corrupt was captured in
+            # Step A (_writer_corr_hook stores "eps").  The IG path interpolates the
+            # error leaf identically to the feature leaf: err_k = eps_clean + α_k·Δeps.
+            eps_U_clean_t: Tensor | None = None
+            delta_eps_U_t: Tensor | None = None
+            if include_error_node and err_leaf_U is not None and eps_U_corrupt is not None:
+                eps_U_clean_t = err_leaf_U.detach()
+                eps_U_corrupt_t = eps_U_corrupt.to(eps_U_clean_t.device, eps_U_clean_t.dtype)
+                delta_eps_U_t = eps_U_corrupt_t - eps_U_clean_t
+
             # Accumulate raw sums; divide by N at end
             edge_sum: dict[SAEFeatureEdge, float] = {}
 
@@ -1436,6 +1581,14 @@ class SAEFeatureEdgeRunner:
                 alpha_k = (k - 0.5) / _n_ig
                 # Interpolated writer feature leaf for step k
                 f_U_k = (f_U_clean_t + alpha_k * delta_f_U_t).detach().requires_grad_(True)
+
+                # F4 fix: interpolated error leaf for step k (only when include_error_node)
+                err_leaf_U_k: Tensor | None = None
+                if eps_U_clean_t is not None and delta_eps_U_t is not None:
+                    err_leaf_U_k = (
+                        eps_U_clean_t + alpha_k * delta_eps_U_t
+                    ).detach().requires_grad_(True)
+                    err_leaf_U_k.retain_grad()
 
                 # Per-step stores (cleared each iteration)
                 writer_k_store: dict[str, Tensor] = {}
@@ -1447,27 +1600,35 @@ class SAEFeatureEdgeRunner:
                     module: nn.Module, inp: Any, output: Any,
                     _sae: Any = writer_sae,
                     _f_U_k: Tensor = f_U_k,
+                    _err_leaf_U_k: Tensor | None = err_leaf_U_k,
+                    _include_err: bool = include_error_node,
                     _st: dict = writer_k_store,
                     _mdtype: torch.dtype = w_dtype,
                     _mdev: Any = w_device,
                     _resolved: Any = writer_resolved,
                 ) -> Any:
-                    """WRITER site (IG step k): inject interpolated f_U_k; eps frozen at clean.
+                    """WRITER site (IG step k): inject interpolated f_U_k.
 
-                    eps_clean is computed from the actual clean activation a_in so it
-                    matches the attrib path exactly (same as _writer_clean_hook without
-                    the leaf structure).
+                    When include_error_node=True, the error term uses an interpolated
+                    err_leaf_U_k (independent grad leaf) so that error→feature VJPs
+                    can be computed — mirrors the attrib _writer_clean_hook construction.
+                    When include_error_node=False, eps is frozen at clean (original behaviour).
                     """
                     a = _routed_extract(_resolved, output)
                     a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-                    # Compute frozen clean eps: eps = a - decode(encode(a))
-                    with torch.no_grad():
-                        f_cl = _sae.encode(a_in)
-                        x_hat_cl = _sae.decode(f_cl)
-                        eps_clean_k = (a_in - x_hat_cl).detach()
                     # Decode from the interpolated leaf
                     x_hat_k = _sae.decode(_f_U_k)
-                    recon = x_hat_k + eps_clean_k  # eps frozen at clean
+                    if _include_err and _err_leaf_U_k is not None:
+                        # Use the interpolated error leaf — gives grad path for error→feature VJP
+                        recon = x_hat_k + _err_leaf_U_k
+                        _st["err_leaf_U_k"] = _err_leaf_U_k
+                    else:
+                        # Compute frozen clean eps: eps = a - decode(encode(a))
+                        with torch.no_grad():
+                            f_cl = _sae.encode(a_in)
+                            x_hat_cl = _sae.decode(f_cl)
+                            eps_clean_k = (a_in - x_hat_cl).detach()
+                        recon = x_hat_k + eps_clean_k  # eps frozen at clean
                     _st["f_U_k"] = _f_U_k
                     recon_cast = recon.to(_mdev, _mdtype)
                     return _routed_inject(_resolved, output, recon_cast)
@@ -1516,6 +1677,8 @@ class SAEFeatureEdgeRunner:
                     #   any mlp_out/attn_out involved → legitimately disconnectable → warn+return {}
                     # Do NOT accumulate partial sums then divide by _n_ig (underscales).
                     del out_k, m_k, f_U_k
+                    if err_leaf_U_k is not None:
+                        del err_leaf_U_k
                     if _is_always_connected(writer_site, reader_site):
                         raise RuntimeError(
                             f"f_D_k.grad is None at IG step k={k} for a resid_post→resid_post pair "
@@ -1534,6 +1697,13 @@ class SAEFeatureEdgeRunner:
 
                 gradf_D_k = f_D_k_live.grad
 
+                # Determine VJP grad inputs for this step:
+                # always f_U_k; add err_leaf_U_k when include_error_node=True (F4 fix)
+                err_leaf_U_k_in_store = writer_k_store.get("err_leaf_U_k")
+                grad_inputs_k: list[Tensor] = [f_U_k]
+                if include_error_node and err_leaf_U_k_in_store is not None:
+                    grad_inputs_k.append(err_leaf_U_k_in_store)
+
                 # Per-j VJP loop (UNCHANGED structure from attrib — one vjp_j alive at a time)
                 for j in downstream_feat_indices:
                     G_j = torch.zeros_like(f_D_k_live)
@@ -1541,7 +1711,7 @@ class SAEFeatureEdgeRunner:
 
                     try:
                         vjp_results_k = torch.autograd.grad(
-                            f_D_k_live, [f_U_k],
+                            f_D_k_live, grad_inputs_k,
                             grad_outputs=G_j,
                             retain_graph=True,
                             allow_unused=True,
@@ -1551,26 +1721,53 @@ class SAEFeatureEdgeRunner:
                         continue
 
                     vjp_j_k = vjp_results_k[0]
-                    if vjp_j_k is None:
+                    vjp_err_j_k = vjp_results_k[1] if len(vjp_results_k) > 1 else None
+
+                    if vjp_j_k is None and vjp_err_j_k is None:
                         del G_j
                         continue
 
-                    vjp_j_k_fp32 = vjp_j_k.to(torch.float32)
                     reader_node = AtPNode(Node("sae_feature", layer=reader_site.layer, neuron=j, component=_r_comp))
 
-                    for i in upstream_feat_indices:
-                        # Accumulate: edge(i→j) += Δf_U[i] · vjp_j_k[i]
-                        contrib = float(
-                            (delta_f_U[..., i] * vjp_j_k_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
-                        )
-                        writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
-                        edge_key = SAEFeatureEdge(writer=writer_node, reader=reader_node)
-                        edge_sum[edge_key] = edge_sum.get(edge_key, 0.0) + contrib
+                    if vjp_j_k is not None:
+                        vjp_j_k_fp32 = vjp_j_k.to(torch.float32)
 
-                    del vjp_j_k, vjp_j_k_fp32, G_j  # FREE per-j
+                        for i in upstream_feat_indices:
+                            # Accumulate: edge(i→j) += Δf_U[i] · vjp_j_k[i]
+                            contrib = float(
+                                (delta_f_U[..., i] * vjp_j_k_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
+                            )
+                            writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
+                            edge_key = SAEFeatureEdge(writer=writer_node, reader=reader_node)
+                            edge_sum[edge_key] = edge_sum.get(edge_key, 0.0) + contrib
+
+                        del vjp_j_k, vjp_j_k_fp32
+
+                    # F4 fix: accumulate error→feature IG contribution at step k
+                    if (
+                        include_error_node
+                        and vjp_err_j_k is not None
+                        and delta_eps_U_t is not None
+                    ):
+                        vjp_err_j_k_fp32 = vjp_err_j_k.to(torch.float32)
+                        contrib_err = float(
+                            (delta_eps_U_t.to(vjp_err_j_k_fp32.device) * vjp_err_j_k_fp32)
+                            .to(torch.float32)
+                            .sum()
+                        )
+                        error_writer_node = AtPNode(
+                            Node("sae_error", layer=writer_site.layer, component=_w_comp)
+                        )
+                        err_edge_key = SAEFeatureEdge(writer=error_writer_node, reader=reader_node)
+                        edge_sum[err_edge_key] = edge_sum.get(err_edge_key, 0.0) + contrib_err
+                        del vjp_err_j_k, vjp_err_j_k_fp32
+
+                    del G_j  # FREE per-j
 
                 # Free per-step graph explicitly
                 del out_k, m_k, f_U_k, f_D_k_live
+                if err_leaf_U_k is not None:
+                    del err_leaf_U_k
 
             # Divide accumulated sums by N to get the IG estimate
             for edge_key, total in edge_sum.items():
@@ -2063,6 +2260,8 @@ class FeatureACDCRunner:
         eap_skip_threshold: float | None = None,
         include_error_node: bool = False,
         top_k_survivors: int = 32,
+        variant: str = "attrib",
+        n_ig_steps: int = 0,
         _initial_circuit: SAEFeatureCircuit | None = None,
     ) -> SAEFeatureCircuit:
         """Greedy node pruning. Returns the pruned SAEFeatureCircuit.
@@ -2081,6 +2280,8 @@ class FeatureACDCRunner:
             eap_skip_threshold:  Skip test for nodes with |score| > threshold.
             include_error_node:  Include sae_error as a node (§4.4).
             top_k_survivors:     Top-K survivors for Stage 1 (ignored if _initial_circuit given).
+            variant:             'attrib' (default) or 'ig' — attribution variant for Stage 1.
+            n_ig_steps:          IG integration steps (used when variant='ig').
             _initial_circuit:    Pre-computed circuit to prune (skip Stage 1).
 
         Returns:
@@ -2096,6 +2297,8 @@ class FeatureACDCRunner:
                 clean, corrupted, metric,
                 top_k_survivors=top_k_survivors,
                 include_error_node=include_error_node,
+                variant=variant,
+                n_ig_steps=n_ig_steps,
             )
         else:
             raise RuntimeError("No edge runner available and no _initial_circuit provided.")
@@ -2130,6 +2333,7 @@ class FeatureACDCRunner:
         # Compute ablation values once (corrupted/zero/mean)
         # ------------------------------------------------------------------
         ablation_values = base_circuit._compute_ablation_values(clean, corrupted, ablation_mode)
+        ablation_x_hat_acdc = base_circuit._ablation_x_hat
 
         # ------------------------------------------------------------------
         # Clean model forward for KL baseline
@@ -2169,6 +2373,7 @@ class FeatureACDCRunner:
                     circuit_nodes=kept_nodes,
                     ablation_values=ablation_values,
                     include_error_node=include_error_node,
+                    ablation_x_hat=ablation_x_hat_acdc,
                 )
 
                 new_kl = self._recovery_kl(circuit_out, clean_out)
@@ -2241,6 +2446,8 @@ class FeatureACDCRunner:
         eap_skip_threshold: float | None = None,
         include_error_node: bool = False,
         top_k_survivors: int = 32,
+        variant: str = "attrib",
+        n_ig_steps: int = 0,
     ) -> list[tuple[float, int, float]]:
         """Run greedy node pruning at each tau; return Pareto frontier.
 
@@ -2259,6 +2466,8 @@ class FeatureACDCRunner:
                 eap_skip_threshold=eap_skip_threshold,
                 include_error_node=include_error_node,
                 top_k_survivors=top_k_survivors,
+                variant=variant,
+                n_ig_steps=n_ig_steps,
             )
             # Count kept nodes (unique (layer, component, feat) tuples across all sites)
             kept: set[tuple[int, str, int]] = set()
@@ -2272,6 +2481,7 @@ class FeatureACDCRunner:
 
             # Compute final KL of the pruned circuit
             ablation_values = circuit._compute_ablation_values(clean, corrupted, ablation_mode)
+            ablation_x_hat_sweep = circuit._ablation_x_hat
             with torch.no_grad():
                 clean_out = self._call_model(clean)
 
@@ -2290,6 +2500,7 @@ class FeatureACDCRunner:
                 circuit_nodes=circuit_nodes,
                 ablation_values=ablation_values,
                 include_error_node=include_error_node,
+                ablation_x_hat=ablation_x_hat_sweep,
             )
             final_kl = self._recovery_kl(circuit_out, clean_out)
 
