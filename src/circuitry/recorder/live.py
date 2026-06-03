@@ -156,6 +156,7 @@ def _resolve_writer(writer: MetricWriter | str, run_dir: pathlib.Path) -> Metric
     from circuitry.writers.jsonl import JsonlWriter
     from circuitry.writers.null import NullWriter
     table = {
+        "auto": lambda: _make_auto_writer(run_dir),
         "tensorboard": lambda: _make_tensorboard_writer(run_dir),
         "jsonl": lambda: JsonlWriter(run_dir),
         "null": lambda: NullWriter(),
@@ -168,6 +169,24 @@ def _resolve_writer(writer: MetricWriter | str, run_dir: pathlib.Path) -> Metric
 def _make_tensorboard_writer(run_dir: pathlib.Path):
     from circuitry.writers.tensorboard import TensorBoardWriter
     return TensorBoardWriter(run_dir)
+
+
+def _make_auto_writer(run_dir: pathlib.Path):
+    """Prefer TensorBoard when the optional extra is installed; otherwise fall
+    back to the no-dep jsonl writer with a one-time warning. This is the default
+    so a lean ``pip install circuitry`` works out of the box. Pass
+    ``writer="tensorboard"`` explicitly to get a hard error when it's missing."""
+    try:
+        return _make_tensorboard_writer(run_dir)
+    except ImportError:
+        from circuitry.writers.jsonl import JsonlWriter
+        logger.warning(
+            "circuitry: writer=\"auto\" — the 'tensorboard' extra is not "
+            "installed, falling back to the jsonl writer (metrics.jsonl). "
+            "Install `pip install \"circuitry[tensorboard]\"` for TensorBoard "
+            "output, or pass writer=\"jsonl\" to silence this warning."
+        )
+        return JsonlWriter(run_dir)
 
 
 class Recorder:
@@ -183,7 +202,7 @@ class Recorder:
         model: nn.Module,
         run_dir: str | pathlib.Path,
         recipe: str | Recipe,
-        writer: MetricWriter | str = "tensorboard",
+        writer: MetricWriter | str = "auto",
         every_n_steps: int = 200,
         strict: bool = True,
     ) -> None:

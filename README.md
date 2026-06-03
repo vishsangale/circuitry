@@ -9,8 +9,14 @@ Mechanistic-interpretability diagnostics for PyTorch — works across LLMs, visi
 ## Install
 
 ```bash
-pip install -e .          # editable, from a checkout
+pip install -e .                 # core: torch + numpy only
+pip install -e ".[tensorboard]"  # + TensorBoard writer
+pip install -e ".[sae]"          # + SAE features (sae-lens)
+pip install -e ".[all]"          # everything
 ```
+
+`tensorboard` and `sae-lens` are optional extras. With a core-only install the
+default `writer="auto"` falls back to the no-dep JSONL writer.
 
 ## Quickstart
 
@@ -20,8 +26,8 @@ from circuitry import Recorder
 recorder = Recorder(
     model,
     run_dir="runs/my_run",
-    recipe="llm",            # or "vision", "two_tower"
-    writer="tensorboard",    # or "jsonl", "null"
+    recipe="llm",            # or "vision", "two_tower", "recsys"
+    writer="auto",           # tensorboard if installed, else jsonl; or "jsonl"/"null"
     every_n_steps=200,
 )
 recorder.attach()

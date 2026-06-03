@@ -19,19 +19,27 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+# Lean core: only torch + numpy. The jsonl writer is the no-dep default
+# (writer="auto" prefers tensorboard when installed, else falls back to jsonl),
+# and the SAE / patching paths lazy-import sae-lens. Install the extras below
+# to enable those features:  pip install "circuitry[tensorboard]"  /  [sae]  /  [all].
 dependencies = [
     "torch>=2.1",
     "numpy>=1.24",
-    "tensorboard>=2.14",
-    "sae-lens>=4.0.0",
 ]
 
 [project.optional-dependencies]
+tensorboard = ["tensorboard>=2.14"]
+sae = ["sae-lens>=4.0.0"]
+all = ["tensorboard>=2.14", "sae-lens>=4.0.0"]
 dev = [
     "pytest>=8",
     "pytest-benchmark>=4",
     "import-linter>=2",
     "ruff==0.15.15",  # pinned: unpinned ruff drifts new lint rules into CI (v1.2.0)
+    # The test suite exercises the optional feature paths, so dev pulls them in.
+    "tensorboard>=2.14",
+    "sae-lens>=4.0.0",
 ]
 
 [project.scripts]

@@ -20,6 +20,17 @@ All notable changes to this project will be documented in this file. The format 
   `num_heads`/`head_dim` attributes read directly off a `self_attn`/`attn`/`attention` submodule.
   The "no usable metadata" warning moved from first-emit to `attach()` and names what was
   searched. Test: `tests/recorder/test_head_meta_resolution.py`.
+
+### Changed
+- **`sae-lens` and `tensorboard` are now optional extras, not hard dependencies (fingerprint
+  eval #2).** A lean `pip install circuitry` pulls only `torch` + `numpy`. Install
+  `circuitry[tensorboard]`, `circuitry[sae]`, or `circuitry[all]` for those features. The default
+  `writer` is now `"auto"` — TensorBoard when the extra is installed, else the no-dep `jsonl`
+  writer (with a one-time warning); `writer="tensorboard"` (explicit) raises a clear,
+  install-pointing `ImportError` when the extra is absent. The SAE loader raises the same friendly
+  error. `import circuitry` never pulls either package. Test: `tests/test_optional_deps.py`.
+
+### Fixed
 - **Dense-model strict-attach regression (v1.8.0).** The MoE-only weight HookPoints added to the
   stock `llm` recipe in v1.8.0 (`.*\.mlp\.gate$`, `.*\.mlp\.experts$`) match 0 modules on any
   dense (non-MoE) model, so `Recorder.attach()` with the default `strict=True` **raised** — the

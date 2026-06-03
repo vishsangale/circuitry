@@ -806,8 +806,10 @@ def test_sae_reconstruction_dispatcher_emits_five_keys(tmp_path):
 
     fake = _FakeSAE()
 
-    with patch("circuitry.sae.loader.sae_lens") as mock_sae_lens:
-        mock_sae_lens.SAE.from_pretrained.return_value = (fake, {}, None)
+    # load_sae now imports sae_lens lazily (it's an optional extra), so patch
+    # the real sae_lens.SAE the function reaches rather than a module-level name.
+    with patch("sae_lens.SAE") as mock_SAE:
+        mock_SAE.from_pretrained.return_value = (fake, {}, None)
         model = _Tiny()
         recipe = Recipe(
             name="sae_only",

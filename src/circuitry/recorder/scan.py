@@ -37,7 +37,7 @@ def scan_run(
     recipe: str | Recipe,
     out_dir: str | pathlib.Path,
     model_factory: Callable[[], nn.Module],
-    writer: MetricWriter | str = "tensorboard",
+    writer: MetricWriter | str = "auto",
     strict: bool = True,
     forward_fn: Callable[[nn.Module], None] | None = None,
 ) -> None:
@@ -47,9 +47,10 @@ def scan_run(
     checkpoint state-dict; the same model is reused with ``load_state_dict``
     across checkpoints (cheaper than rebuilding).
 
-    ``writer`` defaults to TensorBoard for back-compatibility; pass
+    ``writer`` defaults to ``"auto"`` (TensorBoard when the optional
+    ``tensorboard`` extra is installed, else the no-dep jsonl writer); pass
     ``"jsonl"`` (or a custom ``MetricWriter`` instance) to make the scan
-    output consumable by ``build_report``.
+    output consumable by ``build_report``, or ``"tensorboard"`` to require it.
 
     ``strict`` controls whether unmatched HookPoints cause an error; see
     ``Recorder`` for details.

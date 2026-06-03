@@ -206,7 +206,7 @@ recorder = Recorder(
     model,
     run_dir="runs/my_run",
     recipe="llm",                  # str name or Recipe instance
-    writer="tensorboard",          # or "jsonl", "null"
+    writer="auto",                 # default: tensorboard if installed, else jsonl; or "tensorboard"/"jsonl"/"null"
     every_n_steps=200,
 )
 recorder.attach()
@@ -380,7 +380,9 @@ class MetricWriter(Protocol):
 
 `add_image` is essential for vision recipes (activation maps, weight kernels visualized as heatmaps) and for matrix-as-image debug views even in LLM recipes (e.g. plotting `W_O @ W_V` per head). `dataformats` follows TB's convention.
 
-The TensorBoard adapter (default) is a thin wrapper over `torch.utils.tensorboard.SummaryWriter`. The JSONL adapter writes one JSON line per `add_scalar` call and dumps tensors / images to side files under `<run_dir>/circuitry/artifacts/` (no extra deps); the `scan` / `report` workflow reads this format. The null adapter is a no-op for tests. Third-party loggers (wandb, mlflow, etc.) are not shipped in v0.3.0 — implement `MetricWriter` (~50 LOC) and pass the instance to `Recorder(writer=...)`.
+The TensorBoard adapter is a thin wrapper over `torch.utils.tensorboard.SummaryWriter`. The JSONL adapter writes one JSON line per `add_scalar` call and dumps tensors / images to side files under `<run_dir>/circuitry/artifacts/` (no extra deps); the `scan` / `report` workflow reads this format. The null adapter is a no-op for tests. Third-party loggers (wandb, mlflow, etc.) are not shipped in v0.3.0 — implement `MetricWriter` (~50 LOC) and pass the instance to `Recorder(writer=...)`.
+
+**Optional dependencies (extras).** Core install (`pip install circuitry`) pulls only `torch` + `numpy`. `tensorboard` and `sae-lens` are optional extras — install `circuitry[tensorboard]`, `circuitry[sae]`, or `circuitry[all]`. The default `writer="auto"` resolves to the TensorBoard adapter when the extra is installed and otherwise falls back to the no-dep JSONL adapter (one-time warning); `writer="tensorboard"` (explicit) raises an install-pointing `ImportError` when the extra is missing, and the SAE loader does the same. `import circuitry` never imports either package — both are lazy-loaded at the writer/SAE call site.
 
 ### 4.6 Intervention mode (v1.0)
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sae_lens
-
 
 def load_sae(release: str, sae_id: str, device: str = "cpu"):
     """Load a SAELens-format SAE from the HF Hub and move it to `device`.
@@ -13,6 +11,13 @@ def load_sae(release: str, sae_id: str, device: str = "cpu"):
     `(sae, cfg, sparsity)` from `from_pretrained`; we unwrap the first
     element transparently.
     """
+    try:
+        import sae_lens
+    except ImportError as _e:
+        raise ImportError(
+            "circuitry: SAE features require the 'sae-lens' package, which is "
+            "an optional extra. Install it with `pip install \"circuitry[sae]\"`."
+        ) from _e
     result = sae_lens.SAE.from_pretrained(
         release=release, sae_id=sae_id, device=device
     )

@@ -14,7 +14,16 @@ import threading
 from typing import Any
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError as _e:  # pragma: no cover - exercised on lean installs
+    raise ImportError(
+        "circuitry: the TensorBoard writer requires the 'tensorboard' package, "
+        "which is an optional extra. Install it with "
+        "`pip install \"circuitry[tensorboard]\"`, or use the no-dep default "
+        "writer=\"jsonl\" (or writer=\"auto\", which falls back to jsonl)."
+    ) from _e
 
 _SENTINEL: Any = object()
 
