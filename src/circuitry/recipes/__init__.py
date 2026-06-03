@@ -27,6 +27,13 @@ class Recipe:
     sae_checkpoints: dict[str, tuple[str, str]] | None = None
     induction_probe_seq_len: int = 25
     lens_max_tokens: int | None = None
+    # Explicit attention-head metadata for attention_head_rank, used when the
+    # model exposes no resolvable ``config`` (custom non-HF models). Keys:
+    # ``n_heads`` (required), ``n_kv_heads`` (optional, defaults to n_heads),
+    # ``head_dim`` (optional — derived from ``hidden_size`` if both that and
+    # n_heads are supplied). When set this overrides config-based resolution.
+    # See recorder._resolve_attn_meta for the full search order.
+    attn_head_meta: dict[str, int] | None = None
     # v1.4 drift-probe config fields (Workstream B).
     # probe_batch: fixed input tensor for the second forward pass that captures
     # reference activations and computes representational drift.  None = no

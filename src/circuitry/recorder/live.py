@@ -68,6 +68,61 @@ class _AttnMeta:
         self.head_dim = head_dim
 
 
+def _first_attr(obj: Any, names: tuple[str, ...]) -> int | None:
+    """Return the first present, int-coercible, non-None attribute in *names*."""
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _attn_meta_from_config(source: Any) -> _AttnMeta | None:
+    """Build ``_AttnMeta`` from an HF-style config object, or ``None``."""
+    if source is None:
+        return None
+    n_heads = getattr(source, "num_attention_heads", None)
+    if n_heads is None:
+        return None
+    n_heads = int(n_heads)
+    if n_heads == 0:
+        return None
+    n_kv_heads = int(getattr(source, "num_key_value_heads", n_heads) or n_heads)
+    head_dim = getattr(source, "head_dim", None)
+    if head_dim is None:
+        hidden = getattr(source, "hidden_size", None)
+        if hidden is None:
+            return None
+        head_dim = int(hidden) // n_heads
+    return _AttnMeta(n_heads=n_heads, n_kv_heads=n_kv_heads, head_dim=int(head_dim))
+
+
+def _attn_meta_from_attn_module(mod: nn.Module) -> _AttnMeta | None:
+    """Read head metadata directly off an attention submodule (config-less
+    custom models that still name their projections q_proj/k_proj/...)."""
+    n_heads = _first_attr(
+        mod, ("num_attention_heads", "num_heads", "n_heads", "n_head")
+    )
+    if not n_heads:
+        return None
+    n_kv_heads = (
+        _first_attr(mod, ("num_key_value_heads", "num_kv_heads", "n_kv_heads"))
+        or n_heads
+    )
+    head_dim = _first_attr(mod, ("head_dim", "head_size", "d_head"))
+    if head_dim is None:
+        embed = _first_attr(
+            mod, ("embed_dim", "hidden_size", "d_model", "all_head_size")
+        )
+        if not embed:
+            return None
+        head_dim = embed // n_heads
+    return _AttnMeta(n_heads=n_heads, n_kv_heads=n_kv_heads, head_dim=head_dim)
+
+
 class _LensMeta:
     """Resolved unembed + final-LN for logit_lens_kl dispatch.
 
@@ -199,6 +254,48 @@ class Recorder:
     def _should_capture(self, step: int) -> bool:
         return step % self.every_n_steps == 0
 
+    def _resolve_attn_meta(self) -> _AttnMeta | None:
+        """Resolve attention-head metadata for attention_head_rank.
+
+        Order: (1) explicit ``recipe.attn_head_meta``; (2) any submodule
+        exposing a ``.config`` (or ``.config.text_config``) with
+        ``num_attention_heads`` — ``named_modules()`` yields the model itself
+        first, then ``model.model`` etc., so this covers plain HF models,
+        multimodal ``text_config``, and HF-wrapped ``model.model.config``;
+        (3) head attributes read directly off a ``self_attn`` / ``attn`` /
+        ``attention`` submodule for config-less custom models. ``None`` means
+        nothing resolved (caller warns)."""
+        ov = self.recipe.attn_head_meta
+        if ov:
+            n_heads = ov.get("n_heads")
+            if n_heads:
+                n_heads = int(n_heads)
+                n_kv = int(ov.get("n_kv_heads", n_heads) or n_heads)
+                head_dim = ov.get("head_dim")
+                if head_dim is None:
+                    hidden = ov.get("hidden_size")
+                    if hidden and n_heads:
+                        head_dim = int(hidden) // n_heads
+                if head_dim:
+                    return _AttnMeta(n_heads, n_kv, int(head_dim))
+
+        for _name, mod in self.model.named_modules():
+            cfg = getattr(mod, "config", None)
+            if cfg is None:
+                continue
+            for source in (getattr(cfg, "text_config", None), cfg):
+                meta = _attn_meta_from_config(source)
+                if meta is not None:
+                    return meta
+
+        for name, mod in self.model.named_modules():
+            short = name.rsplit(".", 1)[-1]
+            if short in ("self_attn", "attn", "attention"):
+                meta = _attn_meta_from_attn_module(mod)
+                if meta is not None:
+                    return meta
+        return None
+
     # ---- lifecycle -------------------------------------------------------
 
     def attach(self) -> None:
@@ -222,30 +319,24 @@ class Recorder:
         import json as _json
 
         # If the recipe requests attention_head_rank, resolve head metadata
-        # from model.config once. Skip silently if config is missing or
-        # incomplete — WARN at step time on first emit so users see why.
+        # once. Resolution order (see _resolve_attn_meta): explicit
+        # recipe.attn_head_meta -> any submodule exposing a `.config` with
+        # num_attention_heads (covers model.config, text_config, and
+        # HF-wrapped model.model.config) -> head attrs read directly off an
+        # attention submodule (config-less custom models). WARN here at
+        # attach() — not at first emit — naming what was searched, so a
+        # config-less model surfaces the gap before any step runs.
         if "attention_head_rank" in self.recipe.weight_diagnostics:
-            cfg = getattr(self.model, "config", None)
-            text_cfg = getattr(cfg, "text_config", None)  # multimodal HF
-            for source in (text_cfg, cfg):
-                if source is None:
-                    continue
-                n_heads = getattr(source, "num_attention_heads", None)
-                if n_heads is None:
-                    continue
-                n_kv_heads = getattr(source, "num_key_value_heads", n_heads)
-                head_dim = getattr(source, "head_dim", None)
-                if head_dim is None:
-                    hidden = getattr(source, "hidden_size", None)
-                    if hidden is None or n_heads == 0:
-                        continue
-                    head_dim = hidden // n_heads
-                self._attn_meta = _AttnMeta(
-                    n_heads=int(n_heads),
-                    n_kv_heads=int(n_kv_heads),
-                    head_dim=int(head_dim),
+            self._attn_meta = self._resolve_attn_meta()
+            if self._attn_meta is None:
+                logger.warning(
+                    "circuitry: attention_head_rank requested but head metadata "
+                    "could not be resolved (searched recipe.attn_head_meta, "
+                    "model.config / .text_config, every submodule's .config, and "
+                    "num_heads/head_dim attributes on self_attn/attn/attention "
+                    "submodules). Pass recipe.attn_head_meta={'n_heads': ..., "
+                    "'head_dim': ...} to enable it; emitting no head-rank tags."
                 )
-                break
 
         if "logit_lens_kl" in self.recipe.activation_diagnostics:
             try:
@@ -769,11 +860,8 @@ class Recorder:
                 continue
             if name == "attention_head_rank":
                 if self._attn_meta is None:
-                    logger.warning(
-                        "circuitry: attention_head_rank requested but model "
-                        "has no usable config (num_attention_heads / head_dim) — "
-                        "skipping"
-                    )
+                    # Already warned once at attach() (with the full search
+                    # list); stay quiet per emit step.
                     continue
                 meta = self._attn_meta
                 for mod_name, w in ctx.weights.items():

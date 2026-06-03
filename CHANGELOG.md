@@ -12,6 +12,14 @@ All notable changes to this project will be documented in this file. The format 
   `valid_mask` argument (`True` marks a valid query row, broadcastable to `(B, H, T_query)`;
   a 2-D `(B, T)` mask is auto-expanded across heads) restricts the average to chosen rows.
   Test: `tests/core/test_attention.py`.
+- **`attention_head_rank` emitted zero output on most real models (fingerprint eval #1).** Head
+  metadata was read only from `model.config` (+ `text_config`), so HF-wrapped models
+  (metadata on `model.model.config`) and config-less custom models resolved to nothing — *zero*
+  head-rank tags across all 68 fingerprint variants. Resolution is now: explicit
+  `Recipe.attn_head_meta` → any submodule exposing a `.config` with `num_attention_heads` →
+  `num_heads`/`head_dim` attributes read directly off a `self_attn`/`attn`/`attention` submodule.
+  The "no usable metadata" warning moved from first-emit to `attach()` and names what was
+  searched. Test: `tests/recorder/test_head_meta_resolution.py`.
 - **Dense-model strict-attach regression (v1.8.0).** The MoE-only weight HookPoints added to the
   stock `llm` recipe in v1.8.0 (`.*\.mlp\.gate$`, `.*\.mlp\.experts$`) match 0 modules on any
   dense (non-MoE) model, so `Recorder.attach()` with the default `strict=True` **raised** — the
@@ -27,6 +35,9 @@ All notable changes to this project will be documented in this file. The format 
 - **`HookPoint.optional`** (default `False`) — marks a pattern as structurally absent on some of
   the architectures a recipe targets (MoE patterns on a dense model; DLRM/GRU patterns on a
   transformer-recsys model), so a 0-match is a soft skip rather than a strict-attach failure.
+- **`Recipe.attn_head_meta`** (`dict | None`) — explicit attention-head metadata
+  (`n_heads` / `n_kv_heads` / `head_dim` / `hidden_size`) so `attention_head_rank` works on
+  config-less custom models; overrides config-based resolution.
 - **Stock `recsys` recipe** (`circuitry.recipes.recsys`) — covers sequential recommenders
   (SASRec / BERT4Rec / GRU4Rec): item/position-embedding anchor plus optional attention /
   FFN / norm / block / GRU patterns. Complementary to the existing `two_tower` recipe (which
