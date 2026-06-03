@@ -2,9 +2,13 @@
 
 Tracking doc for open work and future improvements. Released through **v1.8.0** (2026-06-01);
 tags + GitHub Releases v0.1.0 → v1.8.0 are published. An Unreleased cycle on
-`feat/recsys-and-attach-fix` carries a dense-model strict-attach fix (`HookPoint.optional`),
-the sequential-recsys recipe, and version single-sourcing. The design contract is
-`docs/design.md` — any change to a CI-enforced invariant must amend it first.
+`feat/recsys-and-attach-fix` carries: version single-sourcing; a dense-model strict-attach fix
+(`HookPoint.optional`); the sequential-recsys recipe; and the real-model-eval follow-ups —
+NaN-aware/`valid_mask` attention entropy (recsys B), broadened `attention_head_rank` metadata
+resolution (fingerprint #1), `sae-lens`/`tensorboard` as optional extras + `writer="auto"`
+(fingerprint #2), `Recipe.forward_fn` for non-HF probe passes (recsys C/D), and flexible
+`scan_run(checkpoints=...)` discovery (fingerprint #3). The design contract is `docs/design.md`
+— any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
 **[val]** validation / benchmarking · **[docs]** documentation · **[hygiene]** repo housekeeping.
@@ -50,35 +54,38 @@ actioned this cycle (CHANGELOG Unreleased); the rest are triaged below with seve
   (SASRec / BERT4Rec / GRU4Rec), complementary to `two_tower`.
 
 **Correctness:**
-- [ ] **[bug] `attention_pattern_entropy` returns NaN for left-padded models (recsys B).** PAD
-  query rows attend to an all-`-inf` key set; `softmax` → NaN propagates through `-p log p`. Add
-  an optional `pad_mask` / `valid_mask` arg (boolean-broadcastable to `(B, H, T)`) to
-  `core/attention.py::attention_pattern_entropy`; average entropy over valid query rows only.
-  Until then recsys users compute masked entropy manually (recipe NOTE-C).
+- [x] **[bug] `attention_pattern_entropy` returns NaN for left-padded models (recsys B).** Done
+  (Unreleased) — the per-head mean is now NaN-aware (drops fully-`-inf`-masked PAD rows
+  automatically; identical on unpadded patterns) and accepts an optional `valid_mask`
+  (`True`=valid query row, broadcastable to `(B, H, T)`, 2-D `(B, T)` auto-expanded across heads)
+  in `core/attention.py::attention_pattern_entropy`. NOTE-C updated. Test:
+  `tests/core/test_attention.py`.
 
 **Usability / API (MEDIUM):**
-- [ ] **[feat] `attention_head_rank` head-metadata resolution (fingerprint #1 + recsys D-variant).**
-  Head metadata is read only from `model.config` (+ `config.text_config`). Misses HF-wrapped
-  models (`model.model.config`) and config-less custom models (head attrs on the attention
-  submodule) — it produced *zero* head-rank output across all 68 fingerprint variants. Fix any
-  subset: (a) walk submodules for a `.config` exposing `num_attention_heads`; (b) accept explicit
-  `n_heads` / `n_kv_heads` / `head_dim` via a Recorder / `scan_run` kwarg or recipe field;
-  (c) move the "no usable config" warning from first-emit to `attach()` and say what was searched.
-- [ ] **[feat] Custom forward entry point — `Recipe.forward_fn` (recsys C/D).** `induction_score`,
-  `logit_lens_kl`, `drift_probe`, and attention capture assume HF-style `model(probe,
-  output_attentions=True)` / `model.config`. Non-HF models (SASRec's `predict_scores`) `TypeError`
-  or silently no-op. Add a `forward_fn(model, batch) -> output` recipe field; emit a WARNING when
-  `_set_output_attentions_true()` finds no `model.config`; consider a recipe-level `attn_kwargs`
-  injected into matched attention forwards (`need_weights=True`) as an alternative to the monkeypatch.
-- [ ] **[feat] `scan_run` checkpoint discovery is too rigid (fingerprint #3).** Only globs
-  `<run_dir>/checkpoints/step*.pt` and parses `stepNNN`. Accept an explicit
-  `checkpoints: list[(step, path)]` / list of paths / glob / single-file argument; keep
-  `step*.pt` as the default. Enables single-snapshot + arbitrary-named retrospective scans.
-- [ ] **[debt] `sae-lens` / `tensorboard` are hard deps but only lazy-imported (fingerprint #2).**
-  `import circuitry`, `get_recipe("llm")`, `Recorder`, `scan_run` all work without sae-lens (only
-  `sae/*`, `patching/*`, and recipe SAE paths use it). Move to extras — `circuitry[sae]`,
-  `circuitry[tensorboard]` — with a friendly `ImportError` at the lazy sites and the `jsonl` writer
-  as the no-dep default, so a lean core install is `pip install circuitry`.
+- [x] **[feat] `attention_head_rank` head-metadata resolution (fingerprint #1 + recsys D-variant).**
+  Done (Unreleased) — resolution order is now (a) explicit `Recipe.attn_head_meta`
+  (`n_heads`/`n_kv_heads`/`head_dim`/`hidden_size`); (b) any submodule exposing a `.config` with
+  `num_attention_heads` (covers `model.config`, `text_config`, HF-wrapped `model.model.config`);
+  (c) `num_heads`/`head_dim` attrs read off a `self_attn`/`attn`/`attention` submodule. The "no
+  usable metadata" warning moved to `attach()` and names what was searched. Test:
+  `tests/recorder/test_head_meta_resolution.py`.
+- [x] **[feat] Custom forward entry point — `Recipe.forward_fn` (recsys C/D).** Done (Unreleased) —
+  added `Recipe.forward_fn(model, batch) -> output`; the recorder's internal probe passes
+  (`induction_score`, `drift_probe`) call it when set, else fall back to `model(probe,
+  output_attentions=True)` with a `TypeError` fallback. A non-HF model with no resolvable
+  `config` now warns once at `attach()` pointing at `forward_fn`. (Recipe-level `attn_kwargs` for
+  `need_weights=True` injection remains a possible future refinement.) Test:
+  `tests/recorder/test_forward_fn_and_scan_discovery.py`.
+- [x] **[feat] `scan_run` checkpoint discovery is too rigid (fingerprint #3).** Done (Unreleased)
+  — `scan_run(checkpoints=...)` accepts a single file, a glob string, a list of paths, or a list
+  of explicit `(step, path)` pairs; `step*.pt` stays the default. Enables single-snapshot +
+  arbitrary-named retrospective scans. Test: `tests/recorder/test_forward_fn_and_scan_discovery.py`.
+- [x] **[debt] `sae-lens` / `tensorboard` are hard deps but only lazy-imported (fingerprint #2).**
+  Done (Unreleased) — moved to extras (`circuitry[sae]`, `circuitry[tensorboard]`, `circuitry[all]`);
+  core install is `torch` + `numpy` only. Default `writer="auto"` (tensorboard if installed, else
+  jsonl with a one-time warning); explicit `writer="tensorboard"` and the SAE loader raise a
+  friendly install-pointing `ImportError`. `import circuitry` never pulls either. Test:
+  `tests/test_optional_deps.py`.
 
 **DX / docs (LOW):**
 - [ ] **[feat] `.only()` / `.disable()` are invisible on the dataclass lists (fingerprint #4).**

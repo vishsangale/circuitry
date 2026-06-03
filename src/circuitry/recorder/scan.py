@@ -7,10 +7,11 @@ filename (which sorts by step under the conventional ``step000000100.pt`` form).
 
 from __future__ import annotations
 
+import glob as _glob
 import pathlib
 import re
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import torch
 import torch.nn as nn
@@ -22,14 +23,57 @@ from circuitry.writers.base import MetricWriter
 
 _STEP_RX = re.compile(r"step(\d+)")
 
+# Accepted forms for the explicit ``checkpoints`` argument of scan_run.
+CheckpointsArg = (
+    str
+    | pathlib.Path
+    | Sequence[str | pathlib.Path]
+    | Sequence[tuple[int, str | pathlib.Path]]
+)
+
+
+def _step_of(p: pathlib.Path) -> int:
+    m = _STEP_RX.search(p.stem)
+    return int(m.group(1)) if m else 0
+
 
 def _discover_checkpoints(run_dir: pathlib.Path) -> list[tuple[int, pathlib.Path]]:
     ckpts = sorted((run_dir / "checkpoints").glob("step*.pt"))
-    out: list[tuple[int, pathlib.Path]] = []
-    for p in ckpts:
-        m = _STEP_RX.search(p.stem)
-        out.append((int(m.group(1)) if m else 0, p))
-    return out
+    return [(_step_of(p), p) for p in ckpts]
+
+
+def _coerce_checkpoints(
+    checkpoints: CheckpointsArg, run_dir: pathlib.Path
+) -> list[tuple[int, pathlib.Path]]:
+    """Resolve an explicit ``checkpoints`` argument into ``(step, path)`` pairs.
+
+    Accepts: a single file path; a glob string (matched against cwd, then under
+    ``run_dir``); a list of paths; or a list of explicit ``(step, path)`` pairs.
+    Steps are parsed from ``stepNNN`` in the filename when not given (0 if
+    absent). The result is sorted by step for deterministic emission order.
+    """
+    # List/tuple of explicit (step, path) pairs.
+    if (
+        isinstance(checkpoints, (list, tuple))
+        and checkpoints
+        and isinstance(checkpoints[0], (list, tuple))
+    ):
+        out = [(int(s), pathlib.Path(p)) for s, p in checkpoints]
+    # List/tuple of paths.
+    elif isinstance(checkpoints, (list, tuple)):
+        paths = [pathlib.Path(p) for p in checkpoints]
+        out = [(_step_of(p), p) for p in paths]
+    else:
+        # Single string/Path: a concrete file or a glob pattern.
+        s = str(checkpoints)
+        if any(ch in s for ch in "*?["):
+            matched = sorted(_glob.glob(s))
+            if not matched:
+                matched = sorted(str(p) for p in run_dir.glob(s))
+            out = [(_step_of(pathlib.Path(m)), pathlib.Path(m)) for m in matched]
+        else:
+            out = [(_step_of(pathlib.Path(s)), pathlib.Path(s))]
+    return sorted(out, key=lambda sp: sp[0])
 
 
 def scan_run(
@@ -40,12 +84,19 @@ def scan_run(
     writer: MetricWriter | str = "auto",
     strict: bool = True,
     forward_fn: Callable[[nn.Module], None] | None = None,
+    checkpoints: CheckpointsArg | None = None,
 ) -> None:
     """Replay each checkpoint through the recipe's weight diagnostics.
 
     ``model_factory`` produces a fresh model whose architecture matches the
     checkpoint state-dict; the same model is reused with ``load_state_dict``
     across checkpoints (cheaper than rebuilding).
+
+    ``checkpoints`` overrides discovery. By default scan_run globs
+    ``<run_dir>/checkpoints/step*.pt`` and parses ``stepNNN``. Pass any of: a
+    single checkpoint file; a glob string (e.g. ``"runs/*/ckpt_*.pt"``); a list
+    of paths; or a list of explicit ``(step, path)`` pairs (for arbitrarily
+    named checkpoints). Steps are parsed from the filename when not given.
 
     ``writer`` defaults to ``"auto"`` (TensorBoard when the optional
     ``tensorboard`` extra is installed, else the no-dep jsonl writer); pass
@@ -65,11 +116,18 @@ def scan_run(
     """
     run_dir = pathlib.Path(run_dir)
     out_dir = pathlib.Path(out_dir)
-    ckpts = _discover_checkpoints(run_dir)
-    if not ckpts:
-        raise FileNotFoundError(
-            f"no checkpoints found under {run_dir / 'checkpoints'}"
-        )
+    if checkpoints is None:
+        ckpts = _discover_checkpoints(run_dir)
+        if not ckpts:
+            raise FileNotFoundError(
+                f"no checkpoints found under {run_dir / 'checkpoints'}"
+            )
+    else:
+        ckpts = _coerce_checkpoints(checkpoints, run_dir)
+        if not ckpts:
+            raise FileNotFoundError(
+                f"explicit checkpoints argument resolved to no files: {checkpoints!r}"
+            )
 
     recipe = recipe if isinstance(recipe, Recipe) else get_recipe(recipe)
 

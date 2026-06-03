@@ -219,6 +219,9 @@ scan_run(
     run_dir="runs/my_run",
     recipe="llm",
     out_dir="runs/my_run/tb_retro",
+    # checkpoints=...  # optional: override the default <run_dir>/checkpoints/step*.pt
+    #                  # glob with a file, a glob string, a list of paths, or a list
+    #                  # of explicit (step, path) pairs (single-snapshot / custom names)
 )
 
 build_report(
@@ -257,6 +260,8 @@ class Recipe:
     expected_min_matches: dict[str, int] = field(default_factory=dict)  # pattern → min modules
     enabled: dict[str, bool] = field(default_factory=dict)  # name → False to suppress; absent = True
     module_prefix: str | None = None  # if set, only modules under this dotted prefix are matched
+    attn_head_meta: dict[str, int] | None = None  # explicit n_heads/n_kv_heads/head_dim for attention_head_rank on config-less models
+    forward_fn: Callable[..., object] | None = None  # custom (model, batch) -> output for the recorder's probe passes (non-HF models)
 ```
 
 Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e.g. `get_recipe("llm").with_prefix("model.language_model")` for multimodal HF models). Returns a new `Recipe` via `dataclasses.replace`; the original is not mutated. Latest-wins: calling `.with_prefix("a").with_prefix("b")` yields `module_prefix="b"`. If `expected_min_matches` is set, lower the thresholds after scoping — whole-model counts don't hold after a prefix filter.
@@ -264,6 +269,8 @@ Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e
 Use `Recipe.with_sae(mapping)` (v0.9) to attach SAE checkpoints: `mapping` is a `dict[str, tuple[str, str]]` of `module_name → (release, sae_id)`. Returns a new `Recipe` with `sae_checkpoints` populated. SAE checkpoints are loaded lazily at `attach()` time; the user must also add `"sae_reconstruction"` to `activation_diagnostics` to incur per-step encode+decode cost.
 
 Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns a new `Recipe` with those names set to `False` in `enabled`. Use `Recipe.only(names)` to keep only the listed diagnostics and disable the rest. Both raise `ValueError` on any name not in `weight_diagnostics + activation_diagnostics + gradient_diagnostics`; custom `DiagnosticFn` callables are not name-addressable and are unaffected.
+
+`attn_head_meta` and `forward_fn` support non-HF / config-less models. `attention_head_rank` resolves head metadata in order: `attn_head_meta` (explicit `n_heads`/`n_kv_heads`/`head_dim`/`hidden_size`) → any submodule's `.config` (covers `model.config`, `text_config`, and HF-wrapped `model.model.config`) → `num_heads`/`head_dim` attributes on a `self_attn`/`attn`/`attention` submodule. The recorder's internal probe passes (`induction_score`, `drift_probe`) call `forward_fn(model, batch)` when set — the entry point for models whose `forward` isn't HF-style (e.g. SASRec's `predict_scores`) — otherwise `model(probe, output_attentions=True)` with a `TypeError` fallback. A non-HF model with no resolvable `config` warns once at `attach()` pointing at `forward_fn`.
 
 > The `Recorder` maintains two internal CPU weight snapshots (`_prev_weights`,
 > `_prev_prev_weights`) to support cross-step weight-dynamics primitives. Both are

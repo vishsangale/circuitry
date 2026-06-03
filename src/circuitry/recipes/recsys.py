@@ -86,6 +86,12 @@ These break on models whose forward entry-point is not an HF-style ``forward()``
     from circuitry.recipes.recsys import RECIPE
     recipe = dataclasses.replace(RECIPE,
         enabled={**RECIPE.enabled, "induction_score": True, "logit_lens_kl": True})
+
+As of the recsys-followups cycle the recorder honours ``Recipe.forward_fn`` for
+its internal probe passes (``induction_score`` / ``drift_probe``).  Set it to a
+``(model, batch) -> output`` callable that invokes the model's real entry point
+(e.g. ``lambda m, b: m.predict_scores(b)``) so these diagnostics work on non-HF
+models.  A model with no resolvable ``config`` also warns once at ``attach()``.
 """
 
 from __future__ import annotations

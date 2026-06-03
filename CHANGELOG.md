@@ -46,15 +46,25 @@ All notable changes to this project will be documented in this file. The format 
 - **`HookPoint.optional`** (default `False`) — marks a pattern as structurally absent on some of
   the architectures a recipe targets (MoE patterns on a dense model; DLRM/GRU patterns on a
   transformer-recsys model), so a 0-match is a soft skip rather than a strict-attach failure.
-- **`Recipe.attn_head_meta`** (`dict | None`) — explicit attention-head metadata
-  (`n_heads` / `n_kv_heads` / `head_dim` / `hidden_size`) so `attention_head_rank` works on
-  config-less custom models; overrides config-based resolution.
 - **Stock `recsys` recipe** (`circuitry.recipes.recsys`) — covers sequential recommenders
   (SASRec / BERT4Rec / GRU4Rec): item/position-embedding anchor plus optional attention /
   FFN / norm / block / GRU patterns. Complementary to the existing `two_tower` recipe (which
   keeps two-tower + DLRM retrieval and the `embedding_alignment` diagnostic). Contributed from a
   real-model SASRec evaluation (`docs/observations/2026-06-01-recsys-sasrec-evaluation.md`);
   documents the known caveats (left-pad NaN entropy, `need_weights=False`, non-HF `forward`).
+- **`Recipe.attn_head_meta`** (`dict | None`) — explicit attention-head metadata
+  (`n_heads` / `n_kv_heads` / `head_dim` / `hidden_size`) so `attention_head_rank` works on
+  config-less custom models; overrides config-based resolution.
+- **`Recipe.forward_fn`** (`(model, batch) -> output`, default `None`) — custom forward entry
+  point for the recorder's internal probe passes (`induction_score`, `drift_probe`), so non-HF
+  models whose `forward` is not HF-style (e.g. SASRec's `predict_scores`) can drive them instead
+  of `TypeError`-ing or silently no-op'ing (recsys eval C/D). A non-HF model with no resolvable
+  `config` now warns once at `attach()` pointing at `forward_fn`. Test:
+  `tests/recorder/test_forward_fn_and_scan_discovery.py`.
+- **`scan_run(checkpoints=...)`** — overrides the default `<run_dir>/checkpoints/step*.pt` glob.
+  Accepts a single checkpoint file, a glob string, a list of paths, or a list of explicit
+  `(step, path)` pairs, enabling single-snapshot and arbitrarily-named retrospective scans
+  (fingerprint eval #3).
 
 ## [1.8.0] — 2026-06-01
 

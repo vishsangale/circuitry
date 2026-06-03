@@ -34,6 +34,14 @@ class Recipe:
     # n_heads are supplied). When set this overrides config-based resolution.
     # See recorder._resolve_attn_meta for the full search order.
     attn_head_meta: dict[str, int] | None = None
+    # Custom forward entry point for the recorder's internal probe passes
+    # (induction_score, drift_probe). HF-style diagnostics call
+    # ``model(probe, output_attentions=True)``; non-HF models whose forward
+    # entry point differs (e.g. SASRec.predict_scores) ``TypeError`` or no-op.
+    # Set ``forward_fn(model, batch) -> output`` to run the right forward; the
+    # recorder's capture hooks still fire during that call. When ``None`` the
+    # recorder uses the HF-style call with a wrapper-safe fallback.
+    forward_fn: Callable[..., object] | None = None
     # v1.4 drift-probe config fields (Workstream B).
     # probe_batch: fixed input tensor for the second forward pass that captures
     # reference activations and computes representational drift.  None = no

@@ -702,6 +702,22 @@ class Recorder:
             self._captured_activations[name] = t.detach()
         return _hook
 
+    def _probe_forward(self, probe: Any) -> Any:
+        """Run a forward pass for an internal probe (induction / drift).
+
+        Uses ``recipe.forward_fn(model, batch)`` when supplied — the entry point
+        for non-HF models (e.g. SASRec.predict_scores) whose ``forward`` is not
+        HF-style. Otherwise calls ``model(probe, output_attentions=True)`` with a
+        ``TypeError`` fallback to ``model(probe)`` for wrappers whose forward
+        lacks ``**kwargs``. The recorder's capture hooks fire either way.
+        """
+        if self.recipe.forward_fn is not None:
+            return self.recipe.forward_fn(self.model, probe)
+        try:
+            return self.model(probe, output_attentions=True)
+        except TypeError:
+            return self.model(probe)
+
     def _set_output_attentions_true(self) -> None:
         """Enable per-head attention output via the HF config (not a forward
         kwarg, which breaks wrappers whose forward lacks **kwargs). Records the
@@ -716,6 +732,20 @@ class Recorder:
         """
         cfg = getattr(self.model, "config", None)
         text_cfg = getattr(cfg, "text_config", None)
+        if cfg is None and text_cfg is None:
+            # Non-HF model: no config to flip, so attention capture would
+            # silently no-op. Warn once and point at the recipe.forward_fn
+            # escape hatch (and the eager-attention requirement).
+            self._attn_diags_sdpa_skip = True
+            logger.warning(
+                "circuitry: attention_pattern_entropy / induction_score "
+                "requested but the model has no resolvable `config` (non-HF "
+                "model). Per-head attention can't be enabled via config, so "
+                "these diagnostics will emit no tags. Provide a "
+                "recipe.forward_fn(model, batch) that returns per-head "
+                "attention (e.g. need_weights=True) to capture them."
+            )
+            return
         for source in (cfg, text_cfg):
             if source is None:
                 continue
@@ -1103,10 +1133,7 @@ class Recorder:
                     probe_dev = next(self.model.parameters()).device
                     probe = self._induction_probe.to(probe_dev)
                     with torch.inference_mode():
-                        try:
-                            self.model(probe, output_attentions=True)
-                        except TypeError:
-                            self.model(probe)
+                        self._probe_forward(probe)
                 finally:
                     for h in handles:
                         h.remove()
@@ -1232,7 +1259,7 @@ class Recorder:
                 ]
                 try:
                     with torch.inference_mode():
-                        self.model(probe)
+                        self._probe_forward(probe)
                 except Exception as _probe_err:
                     if not self._warned_probe_forward:
                         logger.warning(
