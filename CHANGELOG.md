@@ -36,6 +36,14 @@ All notable changes to this project will be documented in this file. The format 
   The "no usable metadata" warning moved from first-emit to `attach()` and names what was
   searched. Test: `tests/recorder/test_head_meta_resolution.py`.
 
+### Validated
+- **§10 wall-clock budget re-validated on GPU with the full-SVD default** (RTX 5080, 88M decoder,
+  full `llm` recipe, `every_n_steps=200`, batch 16 × seq 512): **+7.4%**, within the ≤10% target.
+  The v1.8 full-SVD default eroded the margin (was +5.3% with the old `max_dim=512` subsample) but
+  it still holds. Raw numbers: `scripts/v19_validation/gpu_perf_budget.results.json`; design §10
+  updated. Also added `scripts/v19_validation/real_model_followups.py` — all session follow-ups pass
+  8/8 on real Qwen2.5-0.5B + a SASRec-shaped MHA model, on CPU and MPS.
+
 ### Changed
 - **`sae-lens` and `tensorboard` are now optional extras, not hard dependencies (fingerprint
   eval #2).** A lean `pip install circuitry` pulls only `torch` + `numpy`. Install

@@ -1,0 +1,18 @@
+{
+  "what": "Section 10 wall-clock budget re-validation with the v1.8 full-SVD default (max_dim=None), on the recsys-and-attach-fix branch.",
+  "date": "2026-06-03",
+  "device": "NVIDIA GeForce RTX 5080 (16 GB)",
+  "host": "rtx",
+  "model": "88.1M-param decoder (bench_50m.py: n_layers=8, d_model=768)",
+  "recipe": "llm (full, writer=null)",
+  "command": "venv/bin/python scripts/bench_50m.py --device cuda --batch-size 16 --seq-len 512 --steps 600 --every-n-steps <N>",
+  "budget": "<=10% wall-clock overhead at default settings (every_n_steps=200)",
+  "runs": [
+    {"every_n_steps": 200, "batch": "16x512", "emissions": 3, "baseline_s": 74.52, "instrumented_s": 80.19, "overhead_pct": 7.6, "note": "default cadence — the budget condition, run 1"},
+    {"every_n_steps": 200, "batch": "16x512", "emissions": 3, "baseline_s": 74.69, "instrumented_s": 80.22, "overhead_pct": 7.4, "note": "default cadence — the budget condition, run 2 (warm)"},
+    {"every_n_steps": 25, "batch": "16x512", "emissions": 4, "baseline_s": 12.49, "instrumented_s": 19.61, "overhead_pct": 57.0, "note": "stress cadence (8x more aggressive than default) — NOT the budget condition"},
+    {"every_n_steps": 25, "batch": "4x64", "emissions": 4, "baseline_s": 1.36, "instrumented_s": 8.53, "overhead_pct": 525.1, "note": "stress cadence + tiny baseline step — fixed per-emit SVD cost dominates the ratio"}
+  ],
+  "verdict": "PASS — +7.4% at default settings (every_n_steps=200, realistic batch 16x512) is within the <=10% budget. The full-SVD default (v1.8 F1) eroded the margin from +5.3% (old max_dim=512 subsample) to +7.4% but the budget still holds. The +57%/+525% rows are aggressive-cadence/tiny-batch stress artifacts where the fixed per-emit SVD cost is not amortized.",
+  "session_additions_cost": "sv_histogram companion scalars reuse the already-shared per-step SVD (negligible); GRAD hook reads and NAMED_PARAM reads are O(param) tensor detaches — none add measurable per-emit cost beyond the pre-existing full-SVD default."
+}

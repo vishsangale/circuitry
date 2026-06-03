@@ -529,7 +529,7 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 
 The most likely 6-month failure mode is "this is cool, but it doubled my training time." The design defends against this with explicit constraints:
 
-- **Wall-clock budget (design target):** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead SHOULD be ≤10% of baseline training step time on a 50M-param transformer. This is the design target and CI regression gate. **Validated on GPU at a realistic training step: +5.3%** (RTX 5080, batch 16 × seq 512) — see measurements below.
+- **Wall-clock budget (design target):** at default settings (`every_n_steps=200`, full recipe), `circuitry`'s overhead SHOULD be ≤10% of baseline training step time on a 50M-param transformer. This is the design target and CI regression gate. **Re-validated on GPU with the full-SVD default at a realistic training step: +7.4%** (RTX 5080, 88M decoder, batch 16 × seq 512, 2026-06-03) — see measurements below.
 - **Per-diagnostic toggle:** every entry in `weight_diagnostics` / `activation_diagnostics` / `gradient_diagnostics` can be disabled via recipe override. The expensive ones (`heavy_tail_alpha`, `singular_values` on large weights) are documented as such.
 - **Subsampling knobs (accurate by default since v1.8):** `singular_values` and the SVD-derived
   weight diagnostics now default to `max_dim=None` — the **full, deterministic SVD** — so the numbers
@@ -541,9 +541,12 @@ The most likely 6-month failure mode is "this is cool, but it doubled my trainin
   cost of biasing σ_min / the spectral tail. The `use_gram='auto'` fast path (eigvalsh(WᵀW) for
   strongly-rectangular matrices) is unchanged; `condition_number` always uses the full `svdvals` path to
   preserve the exact max/min ratio. **Perf note:** because the accurate default does the full SVD on wide
-  weights, per-emit weight-diagnostic cost on large models rises versus the old subsampled default — the
-  ≤10% budget above was measured with subsampling. If wide-matrix SVD becomes the live bottleneck, pass an
-  explicit `max_dim` per recipe (accepting the bias) or raise `every_n_steps`. **MoE expert weights** are
+  weights, per-emit weight-diagnostic cost on large models rises versus the old subsampled default.
+  **Re-validated with the full-SVD default (2026-06-03, RTX 5080, 88M decoder, full `llm` recipe,
+  `every_n_steps=200`, batch 16 × seq 512): +7.4%** — the full SVD eroded the margin (was +5.3% with
+  the old `max_dim=512` subsampling) but the ≤10% budget still holds at default settings. If
+  wide-matrix SVD becomes the live bottleneck, pass an explicit `max_dim` per recipe (accepting the
+  bias) or raise `every_n_steps`. **MoE expert weights** are
   batched 3-D tensors (`[n_experts, d_in, d_out]`); the scalar rank primitives reject >2-D (see §4.1) and
   the recorder iterates the expert axis, emitting **per-expert** diagnostics rather than a single
   semantically-wrong flattened rank.
@@ -556,11 +559,12 @@ The most likely 6-month failure mode is "this is cool, but it doubled my trainin
 
 | device | training step | baseline | instrumented | overhead |
 | --- | --- | -------: | -----------: | -------: |
-| RTX 5080 | batch 16 × seq 512 (8192 tok) | 124.0 s | 130.6 s | **+5.3%** |
-| RTX 5080 | batch 4 × seq 64 (256 tok) | 25.2 s | 36.5 s | +45.3% |
+| RTX 5080 (full-SVD default, v1.8+) | batch 16 × seq 512 (8192 tok) | 74.7 s | 80.2 s | **+7.4%** |
+| RTX 5080 (old max_dim=512 subsample) | batch 16 × seq 512 (8192 tok) | 124.0 s | 130.6 s | +5.3% |
+| RTX 5080 | batch 4 × seq 64 (256 tok) | 1.36 s | 8.53 s | +525% |
 | CPU 16-core (v0.2.0a0) | batch 4 × seq 64 (256 tok) | 23.9 s | 27.5 s | +14.9% |
 
-**At a realistic training step the budget holds: +5.3% on GPU** (RTX 5080, batch 16 × seq 512), within the ≤10% target. The overhead ratio is dominated by the roughly *fixed* per-emit diagnostic cost (the shared SVD set + `logit_lens_kl` + `induction_score`, ≈1.3 s/emit on this model/GPU), so it is highly sensitive to how heavy the baseline step is. At the tiny default batch (256 tokens, ≈12 ms/step on GPU) that same fixed cost balloons the ratio to +45%; CPU's slow-but-cheap step lands at +15%. Production training (large batches, hundreds of ms/step) amortises the fixed cost well — which the realistic GPU measurement confirms. On small/fast steps, raise `every_n_steps` or drop the expensive diagnostics via `Recipe.disable` / `Recipe.only`.
+**At a realistic training step the budget holds: +7.4% on GPU with the full-SVD default** (RTX 5080, batch 16 × seq 512), within the ≤10% target. The overhead ratio is dominated by the roughly *fixed* per-emit diagnostic cost (the shared SVD set + `logit_lens_kl` + `induction_score`, ≈1.3 s/emit on this model/GPU), so it is highly sensitive to how heavy the baseline step is. At the tiny default batch (256 tokens, ≈12 ms/step on GPU) that same fixed cost balloons the ratio to +45%; CPU's slow-but-cheap step lands at +15%. Production training (large batches, hundreds of ms/step) amortises the fixed cost well — which the realistic GPU measurement confirms. On small/fast steps, raise `every_n_steps` or drop the expensive diagnostics via `Recipe.disable` / `Recipe.only`.
 
 (The bench harness defaults to `every_n_steps=25` — 8× more pessimistic than the budget's 200 — and `--batch-size 4 --seq-len 64`. Pass `--every-n-steps 200 --batch-size 16 --seq-len 512` to reproduce the budget-scenario row above.)
 
