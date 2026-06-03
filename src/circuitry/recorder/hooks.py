@@ -30,6 +30,15 @@ class HookPoint:
     pattern: str | None = None
     modules: list[nn.Module] | None = None
     selector: Callable[[nn.Module], list[str]] | None = None
+    optional: bool = False
+    """If True, a 0-match is a soft skip even under ``strict=True``.
+
+    Use for patterns that are *structurally absent* on some architectures the
+    recipe also targets — e.g. MoE router/expert patterns on a dense model, or
+    DLRM/GRU patterns on a transformer-recsys model. Genuinely-required patterns
+    must stay ``optional=False`` so strict mode still catches a misconfigured
+    recipe (a pattern that should have matched but didn't).
+    """
 
     def __post_init__(self) -> None:
         targets = sum(x is not None for x in (self.pattern, self.modules, self.selector))

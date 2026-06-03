@@ -14,14 +14,16 @@ RECIPE = Recipe(
                   pattern=r".*\.(w1|w2|w3|gate_proj|up_proj|down_proj)$"),
         # MoE router weight (e.g. OlmoeTopKRouter — named `gate`, not `gate_proj`).
         # Shape is 2-D [n_experts, hidden_size]; normal rank diagnostics apply.
+        # optional=True: absent on dense models, so a 0-match must not fail strict
+        # attach (the common case — see tests/recorder/test_optional_hookpoints.py).
         HookPoint(source=TensorSource.WEIGHT,
-                  pattern=r".*\.mlp\.gate$"),
+                  pattern=r".*\.mlp\.gate$", optional=True),
         # MoE batched expert weights (e.g. OlmoeExperts).  These modules store
         # all experts as a single 3-D tensor [n_experts, d_in, d_out] rather
         # than as separate leaf Linears.  The recorder iterates the leading
         # expert axis and emits per-expert weight diagnostics.
         HookPoint(source=TensorSource.WEIGHT,
-                  pattern=r".*\.mlp\.experts$"),
+                  pattern=r".*\.mlp\.experts$", optional=True),
         # Attention submodule output. Covers HF (`self_attn`), HF-GPT-2 (`attn`),
         # and canonical LLaMA reference (`attention`).
         HookPoint(source=TensorSource.OUTPUT,

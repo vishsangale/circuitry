@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Dense-model strict-attach regression (v1.8.0).** The MoE-only weight HookPoints added to the
+  stock `llm` recipe in v1.8.0 (`.*\.mlp\.gate$`, `.*\.mlp\.experts$`) match 0 modules on any
+  dense (non-MoE) model, so `Recorder.attach()` with the default `strict=True` **raised** — the
+  stock recipe was unusable out of the box on plain Llama/GPT-2-shaped models. `HookPoint` now
+  carries an `optional` flag: a 0-match on an optional HookPoint is a soft skip even under
+  `strict=True`, while genuinely-required patterns still raise. The MoE patterns are marked
+  optional. This also resolves the F37 follow-up — the companion 0-match weight warning no longer
+  fires on every dense attach. Surfaced by an external evaluation of 67 custom dense 1M-param LMs
+  (`FEEDBACK-2026-06-01-leaderboard-fingerprint.md` #7). Regression test:
+  `tests/recorder/test_optional_hookpoints.py`.
+
+### Added
+- **`HookPoint.optional`** (default `False`) — marks a pattern as structurally absent on some of
+  the architectures a recipe targets (MoE patterns on a dense model; DLRM/GRU patterns on a
+  transformer-recsys model), so a 0-match is a soft skip rather than a strict-attach failure.
+
 ## [1.8.0] — 2026-06-01
 
 Fixes for the 20 findings surfaced by the v1.7.0 whole-library real-model evaluation

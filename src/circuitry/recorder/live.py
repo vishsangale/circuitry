@@ -352,12 +352,19 @@ class Recorder:
 
             if len(names) == 0:
                 msg = f"HookPoint {idx} ({label}) matched 0 modules"
-                if self.strict:
+                if self.strict and not hp.optional:
                     raise RuntimeError(
                         msg + " — refusing to attach (pass strict=False to skip "
                         "unmatched HookPoints with a warning)"
                     )
-                logger.warning("circuitry: %s — skipping this HookPoint", msg)
+                if hp.optional:
+                    # Structurally-absent pattern for this architecture (e.g. MoE
+                    # patterns on a dense model) — expected, INFO not WARNING.
+                    logger.info(
+                        "circuitry: %s — optional HookPoint not present in this "
+                        "model, skipping", msg)
+                else:
+                    logger.warning("circuitry: %s — skipping this HookPoint", msg)
                 matched_lines.append("")
                 summary_hook_points.append({
                     "idx": idx,
@@ -366,6 +373,7 @@ class Recorder:
                     "matched": 0,
                     "resolved": 0,
                     "unresolved": 0,
+                    "optional": hp.optional,
                 })
                 continue
             expected = self.recipe.expected_min_matches.get(hp.pattern or "", 0)
@@ -460,18 +468,17 @@ class Recorder:
         # this summary gives users one actionable signal at WARNING level that
         # weight diagnostics will be silent for those patterns — e.g. on MoE
         # models where the standard MLP-proj pattern finds nothing.
+        # Exclude optional HookPoints (e.g. MoE patterns on a dense model): their
+        # absence is expected for the architecture and must not raise warning noise
+        # on every common-case attach. Resolves the F37 follow-up.
         _zero_weight_hps = [
             hp_info
             for hp_info in summary_hook_points
             if hp_info["source"] in (TensorSource.WEIGHT.value, TensorSource.GRAD.value)
             and hp_info["matched"] == 0
+            and not hp_info.get("optional", False)
         ]
         if _zero_weight_hps:
-            # TODO(v1.8 follow-up, F37): the llm recipe now carries MoE-only patterns
-            # (mlp.gate / mlp.experts), so this warning fires on EVERY non-MoE attach.
-            # Refine to be less noisy for the common case — e.g. demote to INFO when the
-            # only 0-match families are the MoE-specific ones, or make MoE patterns an
-            # opt-in recipe variant. See docs/observations/2026-05-31-real-model-evaluation.md.
             _zero_labels = [hp_info["label"] for hp_info in _zero_weight_hps]
             logger.warning(
                 "circuitry: %d weight pattern(s) matched 0 modules — weight "
