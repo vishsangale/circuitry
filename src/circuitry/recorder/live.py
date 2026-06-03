@@ -552,6 +552,28 @@ class Recorder:
                     )
                 hp_resolved = len(names) - unresolved
                 hp_unresolved = unresolved
+            elif hp.source is TensorSource.NAMED_PARAM:
+                # NAMED_PARAM matches parameter names directly; the matched name
+                # IS the param name, so the module→param mapping is the identity.
+                # Skip non-≥2-D params (the rank diagnostics require 2-D) with a
+                # warning, mirroring WEIGHT's "primary 2-D weight" guarantee.
+                name_to_param = dict(self.model.named_parameters())
+                unresolved = 0
+                for pn in names:
+                    p = name_to_param.get(pn)
+                    if p is None or p.ndim < 2:
+                        logger.warning(
+                            "circuitry: hook_point[%d] named_param %r is missing "
+                            "or not >=2-D — skipping (weight diagnostics need 2-D)",
+                            idx, pn,
+                        )
+                        matched_lines.append(f"{pn} → UNRESOLVED (<2-D or missing)")
+                        unresolved += 1
+                        continue
+                    self._param_for_module[pn] = pn
+                    matched_lines.append(f"{pn} {tuple(p.shape)} [named_param]")
+                hp_resolved = len(names) - unresolved
+                hp_unresolved = unresolved
             else:
                 # OUTPUT / INPUT: hooks attach to the module itself; nothing
                 # to resolve.
@@ -568,6 +590,7 @@ class Recorder:
                 "matched": len(names),
                 "resolved": hp_resolved,
                 "unresolved": hp_unresolved,
+                "optional": hp.optional,
             })
             totals["matched"] += len(names)
             totals["resolved"] += hp_resolved
@@ -828,7 +851,9 @@ class Recorder:
         # NOT placed in ctx.weights (which the rank primitives expect to be 2-D).
         moe_weights: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for idx, hp in enumerate(self.recipe.hook_points):
-            if hp.source not in (TensorSource.WEIGHT, TensorSource.GRAD):
+            if hp.source not in (
+                TensorSource.WEIGHT, TensorSource.GRAD, TensorSource.NAMED_PARAM
+            ):
                 continue
             for mod_name in self._matched[idx]:
                 # MoE batched-expert module: collect all their 3-D params.
@@ -847,7 +872,7 @@ class Recorder:
                 p = name_to_param.get(param_name)
                 if not isinstance(p, torch.Tensor):
                     continue
-                if hp.source is TensorSource.WEIGHT:
+                if hp.source in (TensorSource.WEIGHT, TensorSource.NAMED_PARAM):
                     weights[mod_name] = p.detach()
                 else:  # GRAD
                     if p.grad is not None:

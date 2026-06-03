@@ -22,6 +22,13 @@ class TensorSource(str, Enum):
     INPUT = "input"
     OUTPUT = "output"
     GRAD = "grad"
+    # NAMED_PARAM matches its ``pattern`` against parameter names
+    # (``model.named_parameters()``) rather than module names, and feeds the
+    # matched ≥2-D parameter to the weight diagnostics keyed by its parameter
+    # name. Use it to reach a fused parameter that the WEIGHT source can't —
+    # e.g. ``nn.MultiheadAttention.in_proj_weight`` (a direct Parameter on the
+    # module, not a child Linear's ``.weight``). Pattern only; ≥2-D params only.
+    NAMED_PARAM = "named_param"
 
 
 @dataclass
@@ -76,6 +83,11 @@ def match_modules(model: nn.Module, hp: HookPoint) -> list[str]:
       - ``modules``  : reverse-lookup each instance to its name
       - ``selector`` : delegate; selector must return module names
     """
+    if hp.source is TensorSource.NAMED_PARAM and hp.pattern is not None:
+        # Match against parameter names, not module names (e.g. to reach a fused
+        # nn.MultiheadAttention.in_proj_weight that has no owning child module).
+        rx = re.compile(hp.pattern)
+        return [n for n, _ in model.named_parameters() if rx.search(n)]
     name_to_mod = dict(model.named_modules())
     if hp.pattern is not None:
         rx = re.compile(hp.pattern)

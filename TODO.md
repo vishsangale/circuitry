@@ -101,10 +101,12 @@ actioned this cycle (CHANGELOG Unreleased); the rest are triaged below with seve
   — `sv_histogram` now also emits `spectral/per_param/<m>/sv_max`, `sv_min`, and `spectral_entropy`
   scalars (new `core.weight.spectral_entropy` primitive) so the spectrum shows up in tabular/CSV
   exports. Tests: `tests/core/test_weight.py`, `tests/recorder/test_step_extensions.py`.
-- [ ] **[feat] `in_proj_weight` unreachable by the recipe DSL (recsys follow-up #3).**
-  `nn.MultiheadAttention`'s fused `in_proj_weight` can't be hooked as a WEIGHT target (only
-  `out_proj.weight` resolves). Consider a `TensorSource.NAMED_PARAM` source or an explicit
-  parameter-name hookpoint.
+- [x] **[feat] `in_proj_weight` unreachable by the recipe DSL (recsys follow-up #3).** Done
+  (Unreleased) — added `TensorSource.NAMED_PARAM`, whose `pattern` matches parameter names and
+  feeds the matched ≥2-D parameter to the weight diagnostics. Reaches the fused
+  `nn.MultiheadAttention.in_proj_weight` (and any other named param) that the WEIGHT
+  primary-weight resolver can't. recsys NOTE-A + design §4.4 updated. Test:
+  `tests/recorder/test_named_param_source.py`.
 - [x] **[bug] Gradient diagnostics emit nothing on SASRec (recsys follow-up #5).** Done
   (Unreleased) — root cause: the recorder populates `ctx.gradients` ONLY from `TensorSource.GRAD`
   hook points, but the `recsys` recipe (and, latently, `two_tower` and `vision`) declared a

@@ -85,6 +85,12 @@ All notable changes to this project will be documented in this file. The format 
   `direction_cosine`) need ≥2 emitted steps. `scan_run` now warns once when trajectory diagnostics
   are requested with fewer than two checkpoints (documented in the docstring + design §4.2), so the
   gap isn't mistaken for a recorder failure (fingerprint eval #5).
+- **`TensorSource.NAMED_PARAM`** — a HookPoint source whose `pattern` matches against *parameter*
+  names (`model.named_parameters()`) and feeds the matched ≥2-D parameter to the weight
+  diagnostics. Reaches fused parameters the `WEIGHT` source can't resolve — e.g.
+  `nn.MultiheadAttention.in_proj_weight` (a direct `Parameter` on the module, so the primary-weight
+  resolver returns nothing). Non-≥2-D matches are skipped with a warning. Test:
+  `tests/recorder/test_named_param_source.py` (recsys follow-up #3).
 
 ## [1.8.0] — 2026-06-01
 

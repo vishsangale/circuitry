@@ -40,8 +40,11 @@ than one candidate — so a WEIGHT hookpoint on the fused
 
 To get weight diagnostics on attention, hook the projection module directly:
   - ``.*\\.self_attn\\.out_proj$`` — resolves to ``out_proj.weight`` (unique 2-D param)
-    (``in_proj_weight`` is not reachable by the recipe DSL; see open follow-up #3
-    in docs/observations/2026-06-01-recsys-sasrec-evaluation.md.)
+  - the fused ``in_proj_weight`` is reachable via the ``NAMED_PARAM`` source
+    (matches against parameter names), e.g.
+    ``HookPoint(source=TensorSource.NAMED_PARAM, pattern=r".*\\.in_proj_weight$")``.
+    The stock recipe hooks only ``out_proj`` to stay architecture-neutral; add a
+    NAMED_PARAM hookpoint when you specifically want in-projection diagnostics.
 
 NOTE-B — attention_pattern_entropy + need_weights
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

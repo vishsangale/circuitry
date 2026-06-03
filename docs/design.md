@@ -333,10 +333,11 @@ Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns
 ```python
 @dataclass
 class HookPoint:
-    source: TensorSource                          # WEIGHT, INPUT, OUTPUT, or GRAD
+    source: TensorSource                          # WEIGHT, INPUT, OUTPUT, GRAD, or NAMED_PARAM
     pattern: str | None = None                    # regex against named_modules() (recipe default)
     modules: list[nn.Module] | None = None        # explicit instances (advanced)
     selector: Callable[[nn.Module], list[str]] | None = None  # programmatic name selector
+    optional: bool = False                        # a 0-match is a soft skip even under strict=True
     # exactly one of {pattern, modules, selector} must be set
 ```
 
@@ -345,6 +346,8 @@ This gives three matching modes:
 1. **Pattern (default)** — used by all stock recipes. Regex against `dict(model.named_modules()).keys()`.
 2. **Explicit modules** — pass `nn.Module` instances directly. For Mamba / MoE / custom architectures where regex is fragile.
 3. **Programmatic selector** — a function that walks `model` and returns module names. Use when the right hook set depends on runtime structure (e.g. only experts that fired this step).
+
+`source=TensorSource.NAMED_PARAM` is a special case: its `pattern` matches against **parameter** names (`dict(model.named_parameters()).keys()`), not module names, and the matched ≥2-D parameter is fed to the weight diagnostics keyed by its parameter name. Use it to reach a fused parameter that the `WEIGHT` source can't resolve — e.g. `nn.MultiheadAttention.in_proj_weight`, a direct `Parameter` on the module rather than a child `Linear`'s `.weight` (the module owns two 2-D params, so the WEIGHT primary-weight resolver returns nothing). Non-≥2-D matches (e.g. a 1-D bias) are skipped with a warning, mirroring the WEIGHT source's 2-D guarantee.
 
 Brittleness mitigation (addressing recipe-matched-wrong-subset failure mode):
 
