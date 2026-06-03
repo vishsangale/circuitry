@@ -2,7 +2,14 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.9.0] — 2026-06-03
+
+Real-model evaluation follow-ups: every finding from the two v1.8.0 field reports (67-LM
+leaderboard fingerprint + trained SASRec) is resolved, plus an Apple-Silicon portability fix
+surfaced by real-model validation. New public surface: the sequential-`recsys` recipe,
+`Recipe.forward_fn`, `TensorSource.NAMED_PARAM`, `core.weight.spectral_entropy`,
+`Recipe.effective_diagnostics()`, and optional `sae-lens`/`tensorboard` extras. The §10 GPU
+wall-clock budget was re-validated with the full-SVD default (+7.4%, within ≤10%).
 
 ### Fixed
 - **Weight diagnostics hard-crashed on Apple Silicon (MPS).** `singular_values` (and the
