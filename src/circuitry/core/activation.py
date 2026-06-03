@@ -210,6 +210,12 @@ def repr_drift(
         ref_2d = ref_2d[idx]
         cur_2d = cur_2d[idx]
 
+    if ref_2d.device.type == "mps":
+        # MPS has no float64; compute the CKA Gram products on CPU (float64) so
+        # representational-drift stays device-deterministic on Apple Silicon.
+        ref_2d = ref_2d.cpu()
+        cur_2d = cur_2d.cpu()
+
     # promote to float64 for numerically stable Gram products
     R = ref_2d.to(dtype=torch.float64)
     C = cur_2d.to(dtype=torch.float64)

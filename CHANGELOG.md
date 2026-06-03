@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Fixed
+- **Weight diagnostics hard-crashed on Apple Silicon (MPS).** `singular_values` (and the
+  `repr_drift` CKA path) promote to `float64` for accuracy, which MPS does not support, so every
+  SVD-based weight diagnostic raised `TypeError: Cannot convert a MPS Tensor to float64` on a model
+  living on `mps`. The primitives now offload the `float64` decomposition to CPU when the input is
+  an MPS tensor — preserving the full-precision accuracy default and keeping the result
+  device-deterministic instead of crashing. Surfaced by real-model validation on an M-series Mac
+  (`scripts/v19_validation/real_model_followups.py`). Tests: `tests/core/test_weight.py`
+  (MPS-guarded).
 - **Gradient diagnostics silently emitted nothing on `recsys`, `two_tower`, and `vision` (recsys
   eval #5).** The recorder populates `ctx.gradients` only from `TensorSource.GRAD` hook points, but
   those three recipes declared a gradient diagnostic (`norms_per_param` / `grad_norm_per_module`)

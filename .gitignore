@@ -44,3 +44,6 @@ scratch/
 tmp/
 runs/
 *.log
+
+# Bench / validation stdout captures (keep .results.json, ignore raw logs)
+scripts/**/*.out

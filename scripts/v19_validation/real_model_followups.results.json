@@ -1,0 +1,48 @@
+{
+  "device": "mps",
+  "model": "Qwen/Qwen2.5-0.5B",
+  "passed": 8,
+  "total": 8,
+  "results": [
+    {
+      "check": "fp1+recsys5+fp6: llm real run (head-rank/grad/sv-scalars)",
+      "passed": true,
+      "detail": "n_heads=14 head_rank_tags=768 grad_tags=97 sv_scalar_tags=507 entropy_tags=336"
+    },
+    {
+      "check": "recsysB: entropy finite on real left-padded attention",
+      "passed": true,
+      "detail": "layer0 attn had_nan_rows=False -> 14 finite per-head entropies"
+    },
+    {
+      "check": "recsys5: recsys recipe grad tags",
+      "passed": true,
+      "detail": "recsys grad tags: 9 (e.g. grad/per_param/encoder.item_emb/norm)"
+    },
+    {
+      "check": "recsys3: NAMED_PARAM reaches in_proj_weight",
+      "passed": true,
+      "detail": "in_proj_weight diagnostics: 6 tags across 2 blocks"
+    },
+    {
+      "check": "recsysC/D: forward_fn drives probe",
+      "passed": true,
+      "detail": "forward_fn invoked 1x for the drift probe"
+    },
+    {
+      "check": "fp3+fp5: scan arbitrary checkpoints + traj warning",
+      "passed": true,
+      "detail": "2-ckpt scan: update_delta emitted, no warn; 1-ckpt scan: warned"
+    },
+    {
+      "check": "fp4: effective_diagnostics reflection",
+      "passed": true,
+      "detail": "active=['effective_rank', 'norms_per_param'] (raw lists unchanged)"
+    },
+    {
+      "check": "fp2: lean import (no sae_lens/tensorboard)",
+      "passed": true,
+      "detail": "import circuitry imports neither sae_lens nor tensorboard"
+    }
+  ]
+}

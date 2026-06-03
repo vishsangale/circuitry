@@ -90,6 +90,13 @@ def singular_values(
             required.
     """
     M = _as_2d(W)
+    if M.device.type == "mps":
+        # MPS has no float64 and incomplete linalg coverage, so the float64 Gram
+        # path (and some svdvals shapes) raise. Run the decomposition on CPU in
+        # full float64 — the v1.8 accuracy default — so the primitive stays
+        # device-deterministic on Apple Silicon instead of crashing. The
+        # downstream reductions are scalar / device-agnostic.
+        M = M.cpu()
     subsampled = False
     if max_dim is not None and min(M.shape) > max_dim:
         # Sample columns from the longer axis to keep SVD bounded.

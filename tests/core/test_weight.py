@@ -343,3 +343,26 @@ def test_spectral_entropy_equals_log_effective_rank():
 def test_spectral_entropy_rejects_3d():
     with pytest.raises(ValueError, match="spectral_entropy"):
         weight.spectral_entropy(torch.randn(2, 3, 4))
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
+def test_singular_values_on_mps_matches_cpu():
+    """MPS has no float64; singular_values must offload to CPU and match, not
+    crash on the float64 Gram path (surfaced by real-model validation)."""
+    torch.manual_seed(0)
+    W = torch.randn(128, 32)  # rectangular -> Gram path (float64)
+    s_cpu = weight.singular_values(W)
+    s_mps = weight.singular_values(W.to("mps"))
+    assert torch.allclose(s_cpu, s_mps.cpu(), atol=1e-4)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
+def test_weight_diagnostics_run_on_mps():
+    W = torch.randn(96, 96, device="mps")
+    assert math.isfinite(weight.effective_rank(W))
+    assert math.isfinite(weight.condition_number(W))
+    assert math.isfinite(weight.stable_rank(W))
+    assert math.isfinite(weight.spectral_entropy(W))
+    # strongly-rectangular -> Gram float64 path on CPU
+    Wr = torch.randn(256, 16, device="mps")
+    assert math.isfinite(weight.effective_rank(Wr))
