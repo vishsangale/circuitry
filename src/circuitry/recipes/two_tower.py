@@ -74,6 +74,9 @@ RECIPE = Recipe(
     name="two_tower",
     hook_points=[
         HookPoint(source=TensorSource.WEIGHT, pattern=_WEIGHT_PATTERN),
+        # GRAD mirrors WEIGHT so grad_norm_per_module has gradients to read —
+        # ctx.gradients is populated only from GRAD hook points.
+        HookPoint(source=TensorSource.GRAD, pattern=_WEIGHT_PATTERN),
         HookPoint(source=TensorSource.OUTPUT, pattern=_OUTPUT_PATTERN),
     ],
     weight_diagnostics=["effective_rank", "stable_rank"],

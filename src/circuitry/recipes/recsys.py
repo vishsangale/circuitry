@@ -173,6 +173,15 @@ RECIPE = Recipe(
         HookPoint(source=TensorSource.WEIGHT, pattern=_W_FFN_LINEARS, optional=True),
         # ---- WEIGHT: GRU (GRU4Rec) ----
         HookPoint(source=TensorSource.WEIGHT, pattern=_W_GRU, optional=True),
+        # ---- GRAD: mirror the WEIGHT patterns so norms_per_param has gradients
+        #      to read. ctx.gradients is populated ONLY from GRAD hook points, so
+        #      a recipe that declares a gradient diagnostic but no GRAD hook emits
+        #      zero gradient tags (recsys eval #5). The embedding anchor is
+        #      required; the rest are optional like their WEIGHT counterparts. ----
+        HookPoint(source=TensorSource.GRAD, pattern=_W_EMBS),
+        HookPoint(source=TensorSource.GRAD, pattern=_W_ATTN_OUT_PROJ, optional=True),
+        HookPoint(source=TensorSource.GRAD, pattern=_W_FFN_LINEARS, optional=True),
+        HookPoint(source=TensorSource.GRAD, pattern=_W_GRU, optional=True),
         # ---- OUTPUT: attention (see NOTE-B/C for need_weights and PAD NaN) ----
         HookPoint(source=TensorSource.OUTPUT, pattern=_O_ATTN, optional=True),
         # ---- OUTPUT: FFN / MLP ----

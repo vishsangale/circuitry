@@ -17,6 +17,17 @@ RECIPE = Recipe(
                 r")(\.weight)?$"
             ),
         ),
+        # GRAD mirrors WEIGHT so grad_norm_per_module has gradients to read —
+        # ctx.gradients is populated only from GRAD hook points.
+        HookPoint(
+            source=TensorSource.GRAD,
+            pattern=(
+                r"(conv\d*|fc\d*|downsample\.\d+|patch_embed"
+                r"|blocks\.\d+\.(attn|mlp)"
+                r"|encoder\.layers\.encoder_layer_\d+\.(self_attention|mlp)"
+                r")(\.weight)?$"
+            ),
+        ),
         HookPoint(
             source=TensorSource.OUTPUT,
             pattern=(

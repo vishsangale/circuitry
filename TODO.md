@@ -104,9 +104,12 @@ actioned this cycle (CHANGELOG Unreleased); the rest are triaged below with seve
   `nn.MultiheadAttention`'s fused `in_proj_weight` can't be hooked as a WEIGHT target (only
   `out_proj.weight` resolves). Consider a `TensorSource.NAMED_PARAM` source or an explicit
   parameter-name hookpoint.
-- [ ] **[bug?] Gradient diagnostics emit nothing on SASRec (recsys follow-up #5).** `norms_per_param`
-  produced 0 gradient tags though the FFN linears have WEIGHT hooks. Investigate whether GRAD
-  hookpoints require a same-module WEIGHT hookpoint, or a `step()`-ordering issue.
+- [x] **[bug] Gradient diagnostics emit nothing on SASRec (recsys follow-up #5).** Done
+  (Unreleased) — root cause: the recorder populates `ctx.gradients` ONLY from `TensorSource.GRAD`
+  hook points, but the `recsys` recipe (and, latently, `two_tower` and `vision`) declared a
+  gradient diagnostic with no GRAD hook point. Each recipe now ships GRAD hooks mirroring its
+  WEIGHT patterns; a guard test (`tests/recipes/test_gradient_hookpoints.py`) asserts every stock
+  recipe with a gradient diagnostic has a GRAD hook point. (Only `llm` had wired it correctly.)
 
 ---
 

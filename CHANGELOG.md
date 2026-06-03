@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Fixed
+- **Gradient diagnostics silently emitted nothing on `recsys`, `two_tower`, and `vision` (recsys
+  eval #5).** The recorder populates `ctx.gradients` only from `TensorSource.GRAD` hook points, but
+  those three recipes declared a gradient diagnostic (`norms_per_param` / `grad_norm_per_module`)
+  with no GRAD hook point — so `grad/*` tags never emitted. Each recipe now ships GRAD hook points
+  mirroring its WEIGHT patterns. A new guard test
+  (`tests/recipes/test_gradient_hookpoints.py`) asserts every stock recipe that declares a
+  gradient diagnostic has at least one GRAD hook point, preventing recurrence.
 - **`attention_pattern_entropy` returned NaN on left-padded models (recsys eval B).** PAD query
   rows attend to an all-`-inf` key set; `softmax` yields an all-`NaN` row that poisoned the naive
   per-head mean. The per-head mean is now **NaN-aware** — fully-masked PAD rows are dropped
