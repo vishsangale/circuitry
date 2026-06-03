@@ -32,10 +32,10 @@ The library bundles primitives that get re-implemented project-by-project (effec
 | License | MIT |
 | Release target | Public open-source, low-key (clean README, no docs site, not on PyPI for the 0.x line) |
 | Repo location | `~/workspace/circuitry/`, public GitHub `vishsangale/circuitry` |
-| In-scope | Checkpoint inspector (live + scan + report); spectral / rank / weight / activation / gradient primitives; per-modality recipes (LLM / vision / two-tower) |
+| In-scope | Checkpoint inspector (live + scan + report); spectral / rank / weight / activation / gradient primitives; per-modality recipes (LLM / vision / two-tower / sequential-recsys) |
 | Out-of-scope | Architecture-specific diagnostics (those live in consumer codebases via custom `Recipe`s) |
 | API shape | Two layers: pure primitives in `core/` + thin opinionated `Recorder` workflow above |
-| Modality strategy | Modality-agnostic core + per-modality recipes (`recipes/llm.py`, `recipes/vision.py`, `recipes/two_tower.py`) |
+| Modality strategy | Modality-agnostic core + per-modality recipes (`recipes/llm.py`, `recipes/vision.py`, `recipes/two_tower.py`, `recipes/recsys.py`) |
 | Framework support | PyTorch only, single-process (rank-0 only in DDP runs; multi-process path in §11) |
 | Logging | TensorBoard primary, `MetricWriter` Protocol so jsonl / null (and any user-supplied) adapters are 1-file each |
 
@@ -71,7 +71,8 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   ├── recipes/
 │   │   ├── llm.py
 │   │   ├── vision.py
-│   │   └── two_tower.py
+│   │   ├── two_tower.py    # two-tower + DLRM retrieval
+│   │   └── recsys.py       # sequential recsys (SASRec / BERT4Rec / GRU4Rec)
 │   ├── writers/
 │   │   ├── base.py         # MetricWriter Protocol
 │   │   ├── tensorboard.py
@@ -469,7 +470,7 @@ RECIPE = Recipe(
 )
 ```
 
-`recipes/vision.py` swaps the regex for `conv\d+|fc\d+|patch_embed|blocks\.\d+\.(attn|mlp)`. `recipes/two_tower.py` knows about `query_tower`, `item_tower`, `interaction`, and adds an embedding-alignment diagnostic (cosine of query / item tower output means).
+`recipes/vision.py` swaps the regex for `conv\d+|fc\d+|patch_embed|blocks\.\d+\.(attn|mlp)`. `recipes/two_tower.py` knows about `query_tower`, `item_tower`, `interaction` (plus DLRM `embed_tables` / `bottom_mlp` / `top_mlp`), and adds an embedding-alignment diagnostic (cosine of query / item tower output means). `recipes/recsys.py` covers **sequential** recommenders (SASRec / BERT4Rec / GRU4Rec): the item/position embedding is the required anchor and the architecture-variant patterns (attention / FFN / norm / block vs. GRU) are marked `HookPoint(optional=True)` so a model from one sub-family attaches under the default `strict=True` without matching the others — it is complementary to, not a replacement for, `two_tower`.
 
 The recorder walks `model.named_modules()`, matches against each recipe's patterns, registers the appropriate forward / backward hook (or pre-reads `WEIGHT` tensors directly), and at each emit step feeds the captured tensors through the listed primitives and writes the resulting scalars / histograms through the configured `MetricWriter`.
 
