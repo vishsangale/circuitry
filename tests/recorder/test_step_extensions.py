@@ -95,3 +95,26 @@ def test_sv_histogram_emitted(tmp_path):
     art_dir = tmp_path / "circuitry" / "artifacts"
     sv_files = list(art_dir.glob("*sv_histogram*.npy"))
     assert len(sv_files) >= 1
+
+
+def test_sv_histogram_emits_companion_scalars(tmp_path):
+    """sv_histogram also emits sv_max / sv_min / spectral_entropy scalars so the
+    spectrum is visible to scalar/CSV consumers (a histogram alone is not)."""
+    _clear_registry_for_tests()
+    register_recipe(Recipe(
+        name="probe_hist2",
+        hook_points=[HookPoint(source=TensorSource.WEIGHT, pattern=r"^linear$")],
+        weight_diagnostics=["sv_histogram"],
+    ))
+    model = nn.Sequential()
+    model.add_module("linear", nn.Linear(8, 8))
+    rec = Recorder(model, run_dir=tmp_path, recipe="probe_hist2", writer="jsonl",
+                   every_n_steps=1)
+    rec.attach()
+    rec.step(step=0, loss=0.0)
+    rec.detach()
+
+    content = (tmp_path / "metrics.jsonl").read_text()
+    assert "spectral/per_param/linear/sv_max" in content
+    assert "spectral/per_param/linear/sv_min" in content
+    assert "spectral/per_param/linear/spectral_entropy" in content

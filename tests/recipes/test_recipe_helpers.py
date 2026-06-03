@@ -52,6 +52,46 @@ def test_only_unknown_raises():
         r.only(["no_such"])
 
 
+def test_effective_diagnostics_reflects_disable():
+    """effective_diagnostics() drops disabled names; the raw lists are unchanged
+    (the whole point — inspecting the lists after .disable() is misleading)."""
+    r = get_recipe("llm")
+    r2 = r.disable(["effective_rank"])
+    eff = r2.effective_diagnostics()
+    assert "effective_rank" not in eff["weight"]
+    assert "stable_rank" in eff["weight"]  # still active
+    # Raw list is untouched.
+    assert "effective_rank" in r2.weight_diagnostics
+
+
+def test_effective_diagnostics_default_all_enabled():
+    """With no enabled overrides, effective == declared (per family).
+
+    (Uses a clean Recipe — the stock llm recipe disables drift_probe by default,
+    so effective != declared there.)"""
+    from circuitry.recipes import Recipe
+
+    r = Recipe(
+        name="t", hook_points=[],
+        weight_diagnostics=["a", "b"],
+        activation_diagnostics=["c"],
+        gradient_diagnostics=["d"],
+    )
+    assert r.effective_diagnostics() == {
+        "weight": ["a", "b"], "activation": ["c"], "gradient": ["d"],
+    }
+    assert r.active_diagnostics == ["a", "b", "c", "d"]
+
+
+def test_active_diagnostics_flat_and_only():
+    r = get_recipe("llm")
+    r2 = r.only(["effective_rank", "norms_per_param"])
+    active = r2.active_diagnostics
+    assert set(active) == {"effective_rank", "norms_per_param"}
+    # Flat list spans families (weight + gradient here).
+    assert "effective_rank" in active and "norms_per_param" in active
+
+
 def test_only_empty_disables_all():
     r = get_recipe("llm")
     r2 = r.only([])

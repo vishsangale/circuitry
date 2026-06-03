@@ -164,6 +164,28 @@ def _effective_rank_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
     return float(math.exp(H))
 
 
+def spectral_entropy(
+    W: ArrayLike, eps: float = 1e-12, *, max_dim: int | None = None, seed: int | None = None
+) -> float:
+    """Shannon entropy (nats) of the normalized singular-value distribution.
+
+    This is ``log(effective_rank)`` — a scale-free measure of how concentrated
+    the spectrum is (``0`` for a rank-1 matrix, ``log(min(W.shape))`` for a flat
+    spectrum). Emitted as a companion scalar to ``sv_histogram`` so the spectrum
+    shape is visible to scalar / CSV consumers. Requires a ≤2-D input.
+    """
+    _require_at_most_2d(W, "spectral_entropy")
+    return _spectral_entropy_from_sv(singular_values(W, max_dim=max_dim, seed=seed), eps)
+
+
+def _spectral_entropy_from_sv(s: torch.Tensor, eps: float = 1e-12) -> float:
+    s = s[s > eps]
+    if s.numel() == 0:
+        return 0.0
+    p = s / s.sum()
+    return float(-(p * torch.log(p)).sum().item())
+
+
 def stable_rank(
     W: ArrayLike, *, max_dim: int | None = None, seed: int | None = None
 ) -> float:

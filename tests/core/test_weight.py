@@ -317,3 +317,29 @@ def test_gram_degenerate_rank_deficient_no_nan():
     s = weight.singular_values(W, max_dim=None, use_gram=True)
     assert torch.isfinite(s).all()
     assert s.numel() > 0
+
+
+def test_spectral_entropy_rank_one_is_near_zero():
+    """A rank-1 matrix has one nonzero singular value -> entropy ~0 (tiny fp
+    residual singular values keep it from being exactly 0)."""
+    W = torch.outer(torch.arange(1.0, 5.0), torch.arange(1.0, 4.0))
+    assert weight.spectral_entropy(W) == pytest.approx(0.0, abs=1e-4)
+
+
+def test_spectral_entropy_flat_spectrum_is_log_n():
+    """Identity has all singular values equal -> entropy log(n)."""
+    n = 6
+    assert weight.spectral_entropy(torch.eye(n)) == pytest.approx(math.log(n), abs=1e-6)
+
+
+def test_spectral_entropy_equals_log_effective_rank():
+    torch.manual_seed(0)
+    W = torch.randn(12, 8)
+    assert weight.spectral_entropy(W) == pytest.approx(
+        math.log(weight.effective_rank(W)), abs=1e-6
+    )
+
+
+def test_spectral_entropy_rejects_3d():
+    with pytest.raises(ValueError, match="spectral_entropy"):
+        weight.spectral_entropy(torch.randn(2, 3, 4))

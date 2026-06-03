@@ -942,9 +942,23 @@ class Recorder:
             elif name == "sv_histogram":
                 if ctx.weights:
                     for mod_name, w in ctx.weights.items():
+                        s = _sv(w)
                         self._writer.add_histogram(
                             f"spectral/per_param/{mod_name}/sv_histogram",
-                            _sv(w), ctx.step)
+                            s, ctx.step)
+                        # Companion summary scalars so the spectrum is visible to
+                        # scalar / CSV consumers (a histogram alone is invisible
+                        # to tabular exports). Reuses the shared SVD via _sv.
+                        if s.numel():
+                            self._writer.add_scalar(
+                                f"spectral/per_param/{mod_name}/sv_max",
+                                float(s[0].item()), ctx.step)
+                            self._writer.add_scalar(
+                                f"spectral/per_param/{mod_name}/sv_min",
+                                float(s[-1].item()), ctx.step)
+                            self._writer.add_scalar(
+                                f"spectral/per_param/{mod_name}/spectral_entropy",
+                                _w._spectral_entropy_from_sv(s), ctx.step)
             elif name == "update_delta":
                 if not self._prev_weights:
                     continue  # first emit step — no prior snapshot yet

@@ -88,18 +88,18 @@ actioned this cycle (CHANGELOG Unreleased); the rest are triaged below with seve
   `tests/test_optional_deps.py`.
 
 **DX / docs (LOW):**
-- [ ] **[feat] `.only()` / `.disable()` are invisible on the dataclass lists (fingerprint #4).**
-  They toggle `enabled` but don't modify `weight_diagnostics` / `activation_diagnostics` /
-  `gradient_diagnostics`, so inspecting the lists suggests a no-op. Add `effective_diagnostics()` /
-  `active_diagnostics` (lists minus disabled) and/or reflect enabled-state in `Recipe.__repr__`;
-  note the behaviour in the `.only()` / `.disable()` docstrings.
+- [x] **[feat] `.only()` / `.disable()` are invisible on the dataclass lists (fingerprint #4).**
+  Done (Unreleased) — added `Recipe.effective_diagnostics()` (declared lists minus disabled,
+  grouped by family) and `Recipe.active_diagnostics` (flat list); `.only()` / `.disable()`
+  docstrings now point at them. Test: `tests/recipes/test_recipe_helpers.py`.
 - [ ] **[docs] Static vs trajectory diagnostics on single-snapshot scans (fingerprint #5).**
   `update_delta` / `rank_trajectory` / `direction_cosine` need ≥2 emitted steps and emit nothing on
   a one-checkpoint scan. Document the static-vs-trajectory split for retrospective scans; emit a
   one-time warning when a trajectory diagnostic runs with no prior snapshot.
-- [ ] **[docs] `sv_histogram` emits artifacts, not scalars (fingerprint #6).** Invisible to
-  scalar/CSV consumers. Document where the histogram lands and/or emit companion summary scalars
-  (spectral entropy, σ_max/σ_min) so it shows up in tabular exports.
+- [x] **[docs] `sv_histogram` emits artifacts, not scalars (fingerprint #6).** Done (Unreleased)
+  — `sv_histogram` now also emits `spectral/per_param/<m>/sv_max`, `sv_min`, and `spectral_entropy`
+  scalars (new `core.weight.spectral_entropy` primitive) so the spectrum shows up in tabular/CSV
+  exports. Tests: `tests/core/test_weight.py`, `tests/recorder/test_step_extensions.py`.
 - [ ] **[feat] `in_proj_weight` unreachable by the recipe DSL (recsys follow-up #3).**
   `nn.MultiheadAttention`'s fused `in_proj_weight` can't be hooked as a WEIGHT target (only
   `out_proj.weight` resolves). Consider a `TensorSource.NAMED_PARAM` source or an explicit

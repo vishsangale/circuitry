@@ -72,6 +72,14 @@ All notable changes to this project will be documented in this file. The format 
   Accepts a single checkpoint file, a glob string, a list of paths, or a list of explicit
   `(step, path)` pairs, enabling single-snapshot and arbitrarily-named retrospective scans
   (fingerprint eval #3).
+- **`Recipe.effective_diagnostics()` / `Recipe.active_diagnostics`** — reflect which diagnostics
+  will actually run after `.only()` / `.disable()` (which toggle the `enabled` dict, not the
+  `*_diagnostics` lists, so inspecting the lists alone is misleading). Fingerprint eval #4.
+- **`core.weight.spectral_entropy`** + `sv_histogram` companion scalars — `spectral_entropy`
+  (Shannon entropy of the normalized singular-value distribution = `log(effective_rank)`) is a new
+  primitive; the `sv_histogram` diagnostic now also emits `sv_max` / `sv_min` / `spectral_entropy`
+  scalars so the spectrum is visible to scalar/CSV consumers, not just histogram viewers
+  (fingerprint eval #6).
 
 ## [1.8.0] — 2026-06-01
 

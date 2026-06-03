@@ -113,6 +113,11 @@ class Recipe:
 
         Custom ``DiagnosticFn`` callables in ``self.custom`` are not
         name-addressable and are unaffected by this helper.
+
+        .. note::
+            This toggles the ``enabled`` dict; it does NOT mutate the
+            ``*_diagnostics`` lists. Use :meth:`effective_diagnostics` /
+            :attr:`active_diagnostics` to see what will actually run.
         """
         _all = set(
             self.weight_diagnostics + self.activation_diagnostics + self.gradient_diagnostics
@@ -135,6 +140,11 @@ class Recipe:
         not present in those lists.
 
         Custom ``DiagnosticFn`` callables are unaffected.
+
+        .. note::
+            This toggles the ``enabled`` dict; it does NOT mutate the
+            ``*_diagnostics`` lists. Use :meth:`effective_diagnostics` /
+            :attr:`active_diagnostics` to see what will actually run.
         """
         _all = set(
             self.weight_diagnostics + self.activation_diagnostics + self.gradient_diagnostics
@@ -147,6 +157,36 @@ class Recipe:
             )
         new_enabled = {**self.enabled, **{n: (n in set(names)) for n in _all}}
         return dataclasses.replace(self, enabled=new_enabled)
+
+    def effective_diagnostics(self) -> dict[str, list[str]]:
+        """Return the diagnostics that will actually run, grouped by family.
+
+        ``.only()`` / ``.disable()`` toggle the ``enabled`` dict rather than
+        mutating ``weight_diagnostics`` / ``activation_diagnostics`` /
+        ``gradient_diagnostics``, so inspecting those lists directly is
+        misleading after scoping. This returns each list with disabled names
+        (``enabled[name] is False``) removed. A name absent from ``enabled``
+        counts as enabled. Custom ``DiagnosticFn`` callables are not
+        name-addressable and are not reflected here.
+        """
+        def _active(names: list[str]) -> list[str]:
+            return [n for n in names if self.enabled.get(n, True)]
+
+        return {
+            "weight": _active(self.weight_diagnostics),
+            "activation": _active(self.activation_diagnostics),
+            "gradient": _active(self.gradient_diagnostics),
+        }
+
+    @property
+    def active_diagnostics(self) -> list[str]:
+        """Flat list of every enabled diagnostic name, across all families.
+
+        Convenience over :meth:`effective_diagnostics` for a quick membership
+        check (``"logit_lens_kl" in recipe.active_diagnostics``).
+        """
+        d = self.effective_diagnostics()
+        return d["weight"] + d["activation"] + d["gradient"]
 
 
 _REGISTRY: dict[str, Recipe] = {}

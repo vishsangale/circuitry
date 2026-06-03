@@ -128,6 +128,7 @@ weight.singular_values(W: Tensor, k: int | None = None, max_dim: int | None = No
 #   batched tensor (e.g. an MoE expert stack [n_experts, d_in, d_out]) must be folded/iterated per-slice by
 #   the caller, never silently flattened into rows (which yields ~n_experts instead of the per-expert rank).
 weight.heavy_tail_alpha(W: Tensor, top_frac: float = 0.5, *, max_dim: int | None = None, seed: int | None = None) -> float
+weight.spectral_entropy(W: Tensor, eps: float = 1e-12, *, max_dim: int | None = None, seed: int | None = None) -> float  # Shannon entropy (nats) of the normalized singular-value distribution = log(effective_rank); the sv_histogram diagnostic emits it (+ sv_max / sv_min) as companion scalars so the spectrum shows up in scalar/CSV exports
 weight.attention_head_rank(W: Tensor, n_heads: int, head_dim: int, axis: int = 0) -> Tensor
 
 # weight-space dynamics (v1.3 — shipped in core/; now wired live)
