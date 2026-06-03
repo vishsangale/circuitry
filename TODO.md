@@ -1,10 +1,10 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through v1.3.0 (2026-05-30);
-v1.4.0 is in progress on `feat/v1.4-drift-and-perf` (drift probe + SVD determinism +
-Gram fast path + ACDC ablation modes). All tags + GitHub Releases v0.1.0 → v1.3.0 are
-published. The design contract is `docs/design.md` — any change to a CI-enforced
-invariant must amend it first.
+Tracking doc for open work and future improvements. Released through **v1.8.0** (2026-06-01);
+tags + GitHub Releases v0.1.0 → v1.8.0 are published. An Unreleased cycle on
+`feat/recsys-and-attach-fix` carries a dense-model strict-attach fix (`HookPoint.optional`),
+the sequential-recsys recipe, and version single-sourcing. The design contract is
+`docs/design.md` — any change to a CI-enforced invariant must amend it first.
 
 Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** new capability ·
 **[val]** validation / benchmarking · **[docs]** documentation · **[hygiene]** repo housekeeping.
@@ -31,6 +31,75 @@ Legend: **[bug]** correctness · **[debt]** tech debt / cleanup · **[feat]** ne
   matrix can exceed it while a healthy step on a tiny one can fall below it. Consider
   normalizing by parameter element count or by `‖W‖` before thresholding. Non-blocking;
   flagged in the v1.3 adversarial review.
+
+---
+
+## External feedback — real-model evaluations (2026-06-01 / 06-02)
+
+Two field reports run against the freshly-released v1.8.0:
+`docs/observations/2026-06-01-leaderboard-fingerprint-feedback.md` (67 custom dense 1M-param
+LMs, retrospective weight fingerprinting) and
+`docs/observations/2026-06-01-recsys-sasrec-evaluation.md` (trained SASRec D=64). Two items were
+actioned this cycle (CHANGELOG Unreleased); the rest are triaged below with severity.
+
+**Already shipped (Unreleased):**
+- [x] **[bug] Dense-model strict attach (fingerprint #7, HIGH).** MoE-only `llm`-recipe HookPoints
+  hard-failed `strict=True` attach on every dense model. Fixed via `HookPoint.optional`
+  (`tests/recorder/test_optional_hookpoints.py`); also resolves the F37 warning-noise follow-up.
+- [x] **[feat] Sequential-recsys recipe (recsys finding A).** Shipped `recipes/recsys.py`
+  (SASRec / BERT4Rec / GRU4Rec), complementary to `two_tower`.
+
+**Correctness:**
+- [ ] **[bug] `attention_pattern_entropy` returns NaN for left-padded models (recsys B).** PAD
+  query rows attend to an all-`-inf` key set; `softmax` → NaN propagates through `-p log p`. Add
+  an optional `pad_mask` / `valid_mask` arg (boolean-broadcastable to `(B, H, T)`) to
+  `core/attention.py::attention_pattern_entropy`; average entropy over valid query rows only.
+  Until then recsys users compute masked entropy manually (recipe NOTE-C).
+
+**Usability / API (MEDIUM):**
+- [ ] **[feat] `attention_head_rank` head-metadata resolution (fingerprint #1 + recsys D-variant).**
+  Head metadata is read only from `model.config` (+ `config.text_config`). Misses HF-wrapped
+  models (`model.model.config`) and config-less custom models (head attrs on the attention
+  submodule) — it produced *zero* head-rank output across all 68 fingerprint variants. Fix any
+  subset: (a) walk submodules for a `.config` exposing `num_attention_heads`; (b) accept explicit
+  `n_heads` / `n_kv_heads` / `head_dim` via a Recorder / `scan_run` kwarg or recipe field;
+  (c) move the "no usable config" warning from first-emit to `attach()` and say what was searched.
+- [ ] **[feat] Custom forward entry point — `Recipe.forward_fn` (recsys C/D).** `induction_score`,
+  `logit_lens_kl`, `drift_probe`, and attention capture assume HF-style `model(probe,
+  output_attentions=True)` / `model.config`. Non-HF models (SASRec's `predict_scores`) `TypeError`
+  or silently no-op. Add a `forward_fn(model, batch) -> output` recipe field; emit a WARNING when
+  `_set_output_attentions_true()` finds no `model.config`; consider a recipe-level `attn_kwargs`
+  injected into matched attention forwards (`need_weights=True`) as an alternative to the monkeypatch.
+- [ ] **[feat] `scan_run` checkpoint discovery is too rigid (fingerprint #3).** Only globs
+  `<run_dir>/checkpoints/step*.pt` and parses `stepNNN`. Accept an explicit
+  `checkpoints: list[(step, path)]` / list of paths / glob / single-file argument; keep
+  `step*.pt` as the default. Enables single-snapshot + arbitrary-named retrospective scans.
+- [ ] **[debt] `sae-lens` / `tensorboard` are hard deps but only lazy-imported (fingerprint #2).**
+  `import circuitry`, `get_recipe("llm")`, `Recorder`, `scan_run` all work without sae-lens (only
+  `sae/*`, `patching/*`, and recipe SAE paths use it). Move to extras — `circuitry[sae]`,
+  `circuitry[tensorboard]` — with a friendly `ImportError` at the lazy sites and the `jsonl` writer
+  as the no-dep default, so a lean core install is `pip install circuitry`.
+
+**DX / docs (LOW):**
+- [ ] **[feat] `.only()` / `.disable()` are invisible on the dataclass lists (fingerprint #4).**
+  They toggle `enabled` but don't modify `weight_diagnostics` / `activation_diagnostics` /
+  `gradient_diagnostics`, so inspecting the lists suggests a no-op. Add `effective_diagnostics()` /
+  `active_diagnostics` (lists minus disabled) and/or reflect enabled-state in `Recipe.__repr__`;
+  note the behaviour in the `.only()` / `.disable()` docstrings.
+- [ ] **[docs] Static vs trajectory diagnostics on single-snapshot scans (fingerprint #5).**
+  `update_delta` / `rank_trajectory` / `direction_cosine` need ≥2 emitted steps and emit nothing on
+  a one-checkpoint scan. Document the static-vs-trajectory split for retrospective scans; emit a
+  one-time warning when a trajectory diagnostic runs with no prior snapshot.
+- [ ] **[docs] `sv_histogram` emits artifacts, not scalars (fingerprint #6).** Invisible to
+  scalar/CSV consumers. Document where the histogram lands and/or emit companion summary scalars
+  (spectral entropy, σ_max/σ_min) so it shows up in tabular exports.
+- [ ] **[feat] `in_proj_weight` unreachable by the recipe DSL (recsys follow-up #3).**
+  `nn.MultiheadAttention`'s fused `in_proj_weight` can't be hooked as a WEIGHT target (only
+  `out_proj.weight` resolves). Consider a `TensorSource.NAMED_PARAM` source or an explicit
+  parameter-name hookpoint.
+- [ ] **[bug?] Gradient diagnostics emit nothing on SASRec (recsys follow-up #5).** `norms_per_param`
+  produced 0 gradient tags though the FFN linears have WEIGHT hooks. Investigate whether GRAD
+  hookpoints require a same-module WEIGHT hookpoint, or a `step()`-ordering issue.
 
 ---
 
