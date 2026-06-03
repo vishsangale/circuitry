@@ -23,6 +23,15 @@ from circuitry.writers.base import MetricWriter
 
 _STEP_RX = re.compile(r"step(\d+)")
 
+# Cross-step "trajectory" weight diagnostics: each compares consecutive emitted
+# snapshots, so it produces nothing until >= 2 (>= 3 for direction_cosine) steps
+# have been emitted. On a single-snapshot retrospective scan they are silently
+# absent; scan_run warns once when that is the case (see the static-vs-trajectory
+# note in its docstring).
+_TRAJECTORY_DIAGNOSTICS = frozenset(
+    {"update_delta", "rank_trajectory", "direction_cosine"}
+)
+
 # Accepted forms for the explicit ``checkpoints`` argument of scan_run.
 CheckpointsArg = (
     str
@@ -98,6 +107,16 @@ def scan_run(
     of paths; or a list of explicit ``(step, path)`` pairs (for arbitrarily
     named checkpoints). Steps are parsed from the filename when not given.
 
+    **Static vs trajectory diagnostics.** *Static* weight diagnostics
+    (``effective_rank``, ``stable_rank``, ``condition_number``,
+    ``heavy_tail_alpha``, ``sv_histogram``) are computed per checkpoint and work
+    on a single snapshot. *Trajectory* diagnostics (``update_delta``,
+    ``rank_trajectory``, ``direction_cosine``) compare consecutive emitted
+    snapshots and produce nothing until >= 2 (>= 3 for ``direction_cosine``)
+    checkpoints have been scanned. A single-snapshot scan emits only the static
+    families; scan_run warns once when trajectory diagnostics are requested but
+    fewer than two checkpoints are available.
+
     ``writer`` defaults to ``"auto"`` (TensorBoard when the optional
     ``tensorboard`` extra is installed, else the no-dep jsonl writer); pass
     ``"jsonl"`` (or a custom ``MetricWriter`` instance) to make the scan
@@ -130,6 +149,26 @@ def scan_run(
             )
 
     recipe = recipe if isinstance(recipe, Recipe) else get_recipe(recipe)
+
+    # Static vs trajectory: a single-snapshot scan can only produce the static
+    # weight diagnostics (effective_rank, stable_rank, ...). The cross-step
+    # trajectory diagnostics need >= 2 emitted steps and will be silently absent.
+    # Warn once so the gap isn't mistaken for a recorder failure.
+    if len(ckpts) < 2:
+        traj = [
+            d for d in recipe.weight_diagnostics
+            if d in _TRAJECTORY_DIAGNOSTICS and recipe.enabled.get(d, True)
+        ]
+        if traj:
+            warnings.warn(
+                f"scan_run: {len(ckpts)} checkpoint(s) found, but the recipe "
+                f"requests trajectory diagnostics {traj} which compare consecutive "
+                f"snapshots and need >= 2 emitted steps (>= 3 for direction_cosine). "
+                f"They will emit nothing on this scan; the static weight "
+                f"diagnostics still run. Pass >= 2 checkpoints for trajectory output.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # Warn once per run when the recipe requests activation diagnostics but no
     # forward_fn was supplied — the activation families will be absent from the

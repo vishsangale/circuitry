@@ -80,6 +80,11 @@ All notable changes to this project will be documented in this file. The format 
   primitive; the `sv_histogram` diagnostic now also emits `sv_max` / `sv_min` / `spectral_entropy`
   scalars so the spectrum is visible to scalar/CSV consumers, not just histogram viewers
   (fingerprint eval #6).
+- **`scan_run` static-vs-trajectory warning** — a single-snapshot scan can only produce the static
+  weight diagnostics; the cross-step trajectory diagnostics (`update_delta`, `rank_trajectory`,
+  `direction_cosine`) need ≥2 emitted steps. `scan_run` now warns once when trajectory diagnostics
+  are requested with fewer than two checkpoints (documented in the docstring + design §4.2), so the
+  gap isn't mistaken for a recorder failure (fingerprint eval #5).
 
 ## [1.8.0] — 2026-06-01
 

@@ -92,10 +92,11 @@ actioned this cycle (CHANGELOG Unreleased); the rest are triaged below with seve
   Done (Unreleased) — added `Recipe.effective_diagnostics()` (declared lists minus disabled,
   grouped by family) and `Recipe.active_diagnostics` (flat list); `.only()` / `.disable()`
   docstrings now point at them. Test: `tests/recipes/test_recipe_helpers.py`.
-- [ ] **[docs] Static vs trajectory diagnostics on single-snapshot scans (fingerprint #5).**
-  `update_delta` / `rank_trajectory` / `direction_cosine` need ≥2 emitted steps and emit nothing on
-  a one-checkpoint scan. Document the static-vs-trajectory split for retrospective scans; emit a
-  one-time warning when a trajectory diagnostic runs with no prior snapshot.
+- [x] **[docs] Static vs trajectory diagnostics on single-snapshot scans (fingerprint #5).** Done
+  (Unreleased) — `scan_run` warns once when trajectory diagnostics (`update_delta` /
+  `rank_trajectory` / `direction_cosine`) are requested with <2 checkpoints (they compare
+  consecutive snapshots), and the split is documented in the `scan_run` docstring + design §4.2.
+  Test: `tests/recorder/test_scan.py`.
 - [x] **[docs] `sv_histogram` emits artifacts, not scalars (fingerprint #6).** Done (Unreleased)
   — `sv_histogram` now also emits `spectral/per_param/<m>/sv_max`, `sv_min`, and `spectral_entropy`
   scalars (new `core.weight.spectral_entropy` primitive) so the spectrum shows up in tabular/CSV
