@@ -67,11 +67,13 @@ NOTE-C — PAD-row NaN in attention_pattern_entropy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 SASRec uses LEFT-padding.  PAD query rows attend to an all-(-inf) key set;
 ``softmax([-inf, …, -inf])`` returns NaN (not uniform) in PyTorch, which
-propagates through Shannon-entropy computation.  circuitry's
-``attention_pattern_entropy`` has no ``pad_mask`` argument, so it will emit
-NaN for models with left-padded sequences.  Compute masked entropy separately
-(exclude rows where ``attn_weights.isnan().any(dim=-1)``) until that argument
-lands (open follow-up #1).
+propagates through Shannon-entropy computation.  As of the recsys-followups
+cycle ``attention_pattern_entropy`` is NaN-aware: it drops fully-masked PAD
+rows from the per-head mean automatically, and accepts an optional
+``valid_mask`` (``True`` marks a valid query row, broadcastable to
+``(B, H, T_query)``) when you want to restrict the average to specific rows.
+So a left-padded pattern no longer emits NaN; pass ``valid_mask`` only for
+explicit control over which query rows count.
 
 NOTE-D — HF-only diagnostics disabled by default
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

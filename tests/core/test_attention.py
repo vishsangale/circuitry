@@ -113,3 +113,49 @@ def test_entropy_handles_fully_masked_zero_rows_without_nan():
     ents = attention_pattern_entropy(attn)
     assert not math.isnan(ents[0])
     assert ents[0] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_entropy_left_padded_pad_rows_dropped_by_default():
+    """recsys B: LEFT-padded models feed PAD query rows an all-(-inf) key set;
+    ``softmax`` returns an all-NaN row that poisons a naive mean. The per-head
+    mean must be NaN-aware and average only the valid (non-pad) query rows."""
+    seq, n_heads, n_pad = 6, 2, 2  # first n_pad positions are left-padding
+    neg_inf = float("-inf")
+    scores = torch.zeros(1, n_heads, seq, seq)
+    scores[..., :n_pad] = neg_inf       # PAD keys are never attended to
+    scores[:, :, :n_pad, :] = neg_inf   # PAD query rows attend to nothing
+    attn = torch.softmax(scores, dim=-1)
+    assert attn[0, 0, 0].isnan().all()  # sanity: this is the NaN bug source
+    ents = attention_pattern_entropy(attn)
+    # Pre-fix this returned NaN; valid rows attend uniformly over (seq - n_pad)
+    # keys -> entropy ln(seq - n_pad).
+    for e in ents:
+        assert not math.isnan(e)
+        assert e == pytest.approx(math.log(seq - n_pad), abs=1e-5)
+
+
+def test_entropy_valid_mask_restricts_to_valid_rows():
+    """An explicit (B, T) ``valid_mask`` (auto-expanded across heads) must
+    average only the marked query rows."""
+    seq, n_heads = 5, 1
+    attn = torch.full((1, n_heads, seq, seq), 1.0 / seq)  # uniform -> ln(seq)
+    attn[0, 0, 0] = 0.0
+    attn[0, 0, 0, 0] = 1.0  # row 0 one-hot (entropy 0)
+    mask = torch.ones(1, seq, dtype=torch.bool)
+    mask[0, 0] = False  # exclude the one-hot row
+    ents = attention_pattern_entropy(attn, valid_mask=mask)
+    assert ents[0] == pytest.approx(math.log(seq), abs=1e-5)
+    # Without the mask, the entropy-0 row pulls the per-head mean down.
+    ents_nomask = attention_pattern_entropy(attn)
+    assert ents_nomask[0] < ents[0]
+
+
+def test_entropy_all_valid_mask_matches_no_mask():
+    """Backward-compat: an all-True mask on a clean pattern is a no-op."""
+    seq, n_heads = 7, 3
+    torch.manual_seed(0)
+    attn = torch.softmax(torch.randn(1, n_heads, seq, seq), dim=-1)
+    mask = torch.ones(1, n_heads, seq, dtype=torch.bool)
+    masked = attention_pattern_entropy(attn, valid_mask=mask)
+    plain = attention_pattern_entropy(attn)
+    assert masked == pytest.approx(plain, abs=1e-6)

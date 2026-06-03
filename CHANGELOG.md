@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Fixed
+- **`attention_pattern_entropy` returned NaN on left-padded models (recsys eval B).** PAD query
+  rows attend to an all-`-inf` key set; `softmax` yields an all-`NaN` row that poisoned the naive
+  per-head mean. The per-head mean is now **NaN-aware** — fully-masked PAD rows are dropped
+  automatically (identical result on unpadded patterns, so backward-compatible). A new optional
+  `valid_mask` argument (`True` marks a valid query row, broadcastable to `(B, H, T_query)`;
+  a 2-D `(B, T)` mask is auto-expanded across heads) restricts the average to chosen rows.
+  Test: `tests/core/test_attention.py`.
 - **Dense-model strict-attach regression (v1.8.0).** The MoE-only weight HookPoints added to the
   stock `llm` recipe in v1.8.0 (`.*\.mlp\.gate$`, `.*\.mlp\.experts$`) match 0 modules on any
   dense (non-MoE) model, so `Recorder.attach()` with the default `strict=True` **raised** — the

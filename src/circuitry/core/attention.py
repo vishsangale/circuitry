@@ -53,8 +53,24 @@ def induction_score(attn_pattern: Any, *, seq_len_repeat: int) -> list[float]:
     return selected.mean(dim=(0, 2)).tolist()
 
 
-def attention_pattern_entropy(attn_pattern: Any) -> list[float]:
-    """Per-head mean Shannon entropy (nats). See spec §4.2 docstring."""
+def attention_pattern_entropy(
+    attn_pattern: Any, *, valid_mask: Any | None = None
+) -> list[float]:
+    """Per-head mean Shannon entropy (nats). See spec §4.2 docstring.
+
+    ``valid_mask`` (optional) restricts the per-head mean to *valid query
+    positions*. Left-padded models (recsys / decoder inference) feed PAD query
+    rows an all-``-inf`` key set; the resulting softmax row is all-``NaN`` and
+    poisons a naive mean. Pass a boolean mask — ``True`` marks a valid query
+    row — broadcastable to the per-head entropy shape ``(B, H, T_query)``.
+    Common forms: ``(B, T)``, ``(B, 1, T)`` or ``(B, H, T)``; a 2-D ``(B, T)``
+    mask is auto-expanded across the head axis.
+
+    Even **without** a mask the mean is NaN-aware: query rows whose entropy is
+    ``NaN`` (a fully-``-inf``-masked softmax) are dropped from the per-head
+    average. For an unpadded pattern (no NaN rows) this is identical to the
+    plain mean, so the change is backward-compatible.
+    """
     t = _ensure_4d(_as_tensor(attn_pattern)).detach().to(torch.float32)
     # Normalize each query row to a probability distribution before computing
     # entropy. Softmax rows already sum to 1 (no-op within fp tolerance); for
@@ -67,4 +83,15 @@ def attention_pattern_entropy(attn_pattern: Any) -> list[float]:
     # xlogy(p, p) = p * log(p), and xlogy(0, 0) = 0 (no NaN).
     plogp = torch.special.xlogy(p, p)
     entropy = -plogp.sum(dim=-1)  # (batch, n_heads, seq)
-    return entropy.mean(dim=(0, 2)).tolist()
+    if valid_mask is not None:
+        mask = _as_tensor(valid_mask).to(torch.bool)
+        if mask.ndim == entropy.ndim - 1:
+            # (B, T) -> (B, 1, T): insert the head axis for the common
+            # per-(batch, position) padding mask.
+            mask = mask.unsqueeze(1)
+        mask = torch.broadcast_to(mask, entropy.shape)
+        # Mark invalid query rows NaN so nanmean ignores them. NaN already
+        # present at invalid rows (fully-masked softmax) is dropped the same way.
+        entropy = entropy.masked_fill(~mask, float("nan"))
+    # NaN-aware per-head mean over (batch, query) — drops fully-masked PAD rows.
+    return torch.nanmean(entropy, dim=(0, 2)).tolist()

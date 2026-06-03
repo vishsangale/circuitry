@@ -168,7 +168,7 @@ lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, l
 # attention screening (v0.9)
 from circuitry.core import attention
 attention.induction_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]
-attention.attention_pattern_entropy(attn_pattern: Tensor) -> list[float]  # normalizes each query row before entropy → comparable across attention variants (v0.9.2)
+attention.attention_pattern_entropy(attn_pattern: Tensor, *, valid_mask=None) -> list[float]  # normalizes each query row before entropy → comparable across attention variants (v0.9.2); per-head mean is NaN-aware (drops fully-(-inf)-masked PAD rows) and valid_mask (True=valid query row, broadcastable to (B,H,T)) restricts the average — left-padded recsys models no longer return NaN
 
 # SAE workflow (v0.9)
 from circuitry import sae
