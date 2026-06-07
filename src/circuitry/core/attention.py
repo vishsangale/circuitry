@@ -7,6 +7,11 @@ copy_suppression_score — McDougall et al. 2023 same-token attention on the
 same repeated-random-token probe: at position T+i, how much does each head
 attend back to position i (the prior occurrence of the same token)?
 
+attention_sink_score — Xiao et al. 2023 per-head mean attention weight on a
+designated sink position (default 0, the initial / BOS token). Unlike the two
+probe-based diagnostics above, this operates on the live training-forward
+attention pattern so it reflects the actual training distribution.
+
 attention_pattern_entropy — per-head Shannon entropy (nats) of the
 attention distribution over keys.
 """
@@ -90,6 +95,40 @@ def copy_suppression_score(attn_pattern: Any, *, seq_len_repeat: int) -> list[fl
     key_idx = ts                     # first-half positions:  0,   1, ...,  T-1
     selected = t[:, :, query_idx, key_idx]  # (batch, n_heads, seq_len_repeat)
     return selected.mean(dim=(0, 2)).tolist()
+
+
+def attention_sink_score(
+    attn_pattern: Any, *, sink_pos: int = 0
+) -> list[float]:
+    """Per-head mean attention weight on a designated sink position.
+
+    Attention sinks are positions that accumulate disproportionately large
+    attention weights from all subsequent query positions regardless of
+    semantic relevance — the initial token (position 0, often BOS) is the
+    canonical sink in decoder-only LLMs (Xiao et al. 2023,
+    https://arxiv.org/abs/2309.17453). A head with ``attention_sink_score``
+    near 1 directs almost all its attention to the sink position; near 0 it
+    ignores it.
+
+    Unlike :func:`induction_score` and :func:`copy_suppression_score` this
+    primitive operates on the **live training-forward** attention pattern, so
+    it measures the real training distribution rather than a synthetic probe.
+
+    Args:
+        attn_pattern: ``(batch, n_heads, seq, seq)`` or ``(n_heads, seq, seq)``
+            attention weights (not required to be normalized).
+        sink_pos: Key position to treat as the sink.  ``0`` (default) is the
+            initial / BOS token; ``-1`` selects the last position.
+
+    Returns:
+        ``list[float]`` of per-head means over ``(batch, query)`` dimensions.
+        Length equals ``n_heads``.
+    """
+    t = _ensure_4d(_as_tensor(attn_pattern)).detach().to(torch.float32)
+    _batch, n_heads, seq, _seq2 = t.shape
+    pos = sink_pos % seq  # normalize negative indices
+    # t[:, :, :, pos] has shape (batch, n_heads, seq_q); mean over batch+query.
+    return t[:, :, :, pos].mean(dim=(0, 2)).tolist()
 
 
 def attention_pattern_entropy(

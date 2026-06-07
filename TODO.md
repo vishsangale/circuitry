@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through **v1.11.0** (2026-06-07);
+Tracking doc for open work and future improvements. Released through **v1.12.0** (2026-06-07);
 tags + GitHub Releases v0.1.0 → v1.8.0 are published. An Unreleased cycle on
 `feat/recsys-and-attach-fix` carries: version single-sourcing; a dense-model strict-attach fix
 (`HookPoint.optional`); the sequential-recsys recipe; and the real-model-eval follow-ups —

@@ -16,7 +16,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 
 ### Naming clarity
 
-`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6), SAE-reconstruction metrics (`circuitry.sae`), node-level **SAE-feature attribution** (`SAEFeatureRunner`, v1.5), **feature→feature SAE circuits** (`SAEFeatureEdgeRunner` + `FeatureACDCRunner`, v1.6), and **generalized SAE circuits** over `mlp_out`/`attn_out` sites, TransformerLens backend, and integrated-gradients variant (`variant='ig'`, v1.7) have since shipped. The **tuned lens** (Belrose et al. 2023) shipped in v1.10 (`circuitry.tuned_lens` — post-hoc `fit_tuned_lens` + the opt-in `tuned_lens_kl` diagnostic; §4.1, §4.4). **v1.11 adds `copy_suppression_score`** — the per-head same-token attention metric (McDougall et al. 2023) that identifies copy-suppression heads on the repeated-token probe (complement of `induction_score`; §4.1). The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
+`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6), SAE-reconstruction metrics (`circuitry.sae`), node-level **SAE-feature attribution** (`SAEFeatureRunner`, v1.5), **feature→feature SAE circuits** (`SAEFeatureEdgeRunner` + `FeatureACDCRunner`, v1.6), and **generalized SAE circuits** over `mlp_out`/`attn_out` sites, TransformerLens backend, and integrated-gradients variant (`variant='ig'`, v1.7) have since shipped. The **tuned lens** (Belrose et al. 2023) shipped in v1.10 (`circuitry.tuned_lens` — post-hoc `fit_tuned_lens` + the opt-in `tuned_lens_kl` diagnostic; §4.1, §4.4). **v1.11 adds `copy_suppression_score`** — the per-head same-token attention metric (McDougall et al. 2023) that identifies copy-suppression heads on the repeated-token probe (complement of `induction_score`; §4.1). **v1.12 adds `attention_sink_score`** — per-head mean attention weight on the initial token (BOS / position 0), the signature of attention sink heads (Xiao et al. 2023); operates on the live training-forward attention rather than a probe (§4.1). The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
 
 ### Non-goals
 
@@ -55,7 +55,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── gradient.py
 │   │   ├── spectral.py
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl
-│   │   └── attention.py    # induction_score, copy_suppression_score, attention_pattern_entropy
+│   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae
 │   │   └── metrics.py      # sae_reconstruction_error
@@ -172,6 +172,7 @@ lens.tuned_lens_kl(residual: Tensor, translator: tuple[Tensor, Tensor], unembed:
 from circuitry.core import attention
 attention.induction_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]
 attention.copy_suppression_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]  # (v1.11) per-head same-token attention on the repeated-token probe: at position T+i, how much does the head attend back to position i (prior occurrence of the same token)? Complement of induction_score (offset 0 vs +1). High score = copy-suppression head (McDougall et al. 2023). Emitted as activation/copy_suppression_score/<module>/head_N; flagged in the report when last > 0.3.
+attention.attention_sink_score(attn_pattern: Tensor, *, sink_pos: int = 0) -> list[float]  # (v1.12) per-head mean attention weight on a designated sink position (default 0 / BOS). Operates on the live training-forward attention (not the probe), so it reflects the real training distribution. High score = head is a likely attention sink (Xiao et al. 2023). Emitted as activation/attention_sink_score/<module>/head_N; flagged in the report when last > 0.5.
 attention.attention_pattern_entropy(attn_pattern: Tensor, *, valid_mask=None) -> list[float]  # normalizes each query row before entropy → comparable across attention variants (v0.9.2); per-head mean is NaN-aware (drops fully-(-inf)-masked PAD rows) and valid_mask (True=valid query row, broadcastable to (B,H,T)) restricts the average — left-padded recsys models no longer return NaN
 
 # SAE workflow (v0.9)

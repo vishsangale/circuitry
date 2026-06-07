@@ -19,7 +19,7 @@ from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.11.0"
+__version__ = "1.12.0"
 
 __all__ = [
     "HookPoint",

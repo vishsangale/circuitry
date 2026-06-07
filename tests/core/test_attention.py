@@ -1,4 +1,5 @@
-"""Tests for induction_score, copy_suppression_score, attention_pattern_entropy."""
+"""Tests for induction_score, copy_suppression_score, attention_sink_score,
+attention_pattern_entropy."""
 from __future__ import annotations
 
 import math
@@ -8,6 +9,7 @@ import torch
 
 from circuitry.core.attention import (
     attention_pattern_entropy,
+    attention_sink_score,
     copy_suppression_score,
     induction_score,
 )
@@ -145,6 +147,69 @@ def test_copy_suppression_accepts_3d_input():
     scores = copy_suppression_score(attn, seq_len_repeat=n)
     assert len(scores) == 2
     assert scores[1] == pytest.approx(1.0, abs=1e-6)
+
+
+# ---- attention_sink_score ----------------------------------------------------
+
+def test_perfect_sink_head_scores_one():
+    """A head that attends 1.0 to position 0 at every query position scores 1.0."""
+    seq, n_heads = 8, 2
+    attn = torch.zeros(1, n_heads, seq, seq)
+    attn[0, 0, :, 0] = 1.0  # head 0: all attention to position 0
+    scores = attention_sink_score(attn)
+    assert scores[0] == pytest.approx(1.0, abs=1e-6)
+    assert scores[1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_uniform_head_scores_one_over_seq():
+    """Uniform attention gives score 1/seq for any sink position."""
+    seq, n_heads = 8, 3
+    attn = torch.full((1, n_heads, seq, seq), 1.0 / seq)
+    for s in attention_sink_score(attn):
+        assert s == pytest.approx(1.0 / seq, abs=1e-6)
+
+
+def test_sink_pos_negative_index():
+    """sink_pos=-1 selects the last key position."""
+    seq, n_heads = 6, 1
+    attn = torch.zeros(1, n_heads, seq, seq)
+    attn[0, 0, :, seq - 1] = 1.0  # all attention to last position
+    scores = attention_sink_score(attn, sink_pos=-1)
+    assert scores[0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_sink_score_independent_of_other_heads():
+    """Only the column at sink_pos matters; other columns are irrelevant."""
+    seq, n_heads = 5, 2
+    attn = torch.rand(1, n_heads, seq, seq)
+    attn[0, 0, :, 0] = 0.0  # head 0: no attention to pos 0
+    attn[0, 1, :, 0] = 0.5  # head 1: half attention to pos 0
+    scores = attention_sink_score(attn)
+    assert scores[0] == pytest.approx(0.0, abs=1e-6)
+    assert scores[1] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_sink_score_accepts_3d_input():
+    """(n_heads, seq, seq) input (no batch dim) is handled correctly."""
+    seq, n_heads = 4, 2
+    attn = torch.zeros(n_heads, seq, seq)
+    attn[1, :, 0] = 1.0
+    scores = attention_sink_score(attn)
+    assert len(scores) == n_heads
+    assert scores[0] == pytest.approx(0.0, abs=1e-6)
+    assert scores[1] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_sink_score_batched_mean():
+    """Score averages over both batch and query dimensions."""
+    seq, n_heads = 4, 1
+    # batch item 0: all attention to pos 0 → 1.0 per row
+    # batch item 1: no attention to pos 0 → 0.0 per row
+    # mean = 0.5
+    attn = torch.zeros(2, n_heads, seq, seq)
+    attn[0, 0, :, 0] = 1.0
+    scores = attention_sink_score(attn)
+    assert scores[0] == pytest.approx(0.5, abs=1e-6)
 
 
 # ---- attention_pattern_entropy -----------------------------------------------

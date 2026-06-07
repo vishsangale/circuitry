@@ -37,6 +37,8 @@ HERO_SECTIONS = frozenset({
     # v1.11 copy-suppression heads:
     "activation/copy_suppression_score",
     "activation/attention_pattern_entropy",
+    # v1.12 attention sinks:
+    "activation/attention_sink_score",
     "activation/sae",
     # v1.10 tuned lens:
     "activation/tuned_lens_kl",
@@ -99,6 +101,16 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         "direction_reversal",
         lambda last, signed: last < -0.5,
         "direction_cosine strongly negative — update direction reversal (last={last:.3f})",
+    ),
+    (
+        "activation/attention_sink_score",
+        "attention_sink_detected",
+        # A per-head mean > 0.5 on the live training-forward attention means
+        # the head is directing more than half its attention weight to the sink
+        # position (position 0 / BOS by default) — the diagnostic signature of
+        # attention sink heads (Xiao et al. 2023).
+        lambda last, signed: last > 0.5,
+        "attention_sink_score high — potential attention sink head (last={last:.3f})",
     ),
     (
         "activation/copy_suppression_score",

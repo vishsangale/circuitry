@@ -699,7 +699,11 @@ class Recorder:
         # see _set_output_attentions_true) rather than by injecting an
         # output_attentions=True forward kwarg — the kwarg path raises TypeError
         # on wrapper models whose forward() lacks **kwargs.
-        if "attention_pattern_entropy" in self.recipe.activation_diagnostics:
+        _needs_main_pass_attn = any(
+            d in self.recipe.activation_diagnostics
+            for d in ("attention_pattern_entropy", "attention_sink_score")
+        )
+        if _needs_main_pass_attn:
             attn_modules: list[str] = []
             for idx, hp in enumerate(self.recipe.hook_points):
                 if hp.source is not TensorSource.OUTPUT:
@@ -1323,6 +1327,7 @@ class Recorder:
                             f"activation/induction_score/{mn}/head_{i}",
                             s, ctx.step,
                         )
+                continue
             if name == "copy_suppression_score":
                 from circuitry.core.attention import copy_suppression_score as _css
                 for mn, attn in self._get_probe_attn(ctx).items():
@@ -1368,6 +1373,18 @@ class Recorder:
                         self._writer.add_scalar(
                             f"activation/attention_pattern_entropy/{mn}/head_{i}",
                             e, ctx.step,
+                        )
+                continue
+            if name == "attention_sink_score":
+                if self._attn_diags_sdpa_skip:
+                    continue
+                from circuitry.core.attention import attention_sink_score as _ass
+                for mn, attn in self._main_pass_attn.items():
+                    scores = _ass(attn)
+                    for i, s in enumerate(scores):
+                        self._writer.add_scalar(
+                            f"activation/attention_sink_score/{mn}/head_{i}",
+                            s, ctx.step,
                         )
                 continue
             if name == "sae_reconstruction":

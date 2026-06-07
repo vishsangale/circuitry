@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-06-07
+
+**Attention sink head detection.** A new `attention_sink_score` primitive and live/scan
+diagnostic completes the attention-head behavioral triad: induction (offset +1 on probe),
+copy-suppression (offset 0 on probe), and sink (concentration on position 0 in real training
+inputs). Unlike the probe-based pair, this metric runs on the live training-forward attention
+pattern — sinks form on the real distribution, not on a synthetic repeated-token probe.
+
+### Added
+- **`core.attention.attention_sink_score(attn_pattern, *, sink_pos=0) → list[float]`.**
+  Per-head mean attention weight on a designated sink position (default 0 / BOS token) across
+  all query positions and batch elements. `sink_pos=-1` selects the last position. Operates on
+  the live training-forward `(B, H, T, T)` attention tensor, not the induction probe. Tests:
+  `tests/core/test_attention.py`.
+- **`attention_sink_score` activation diagnostic** (Recorder, scan, report). Added to the `llm`
+  recipe's `activation_diagnostics`. Emits `activation/attention_sink_score/<module>/head_N`.
+  The permanent `_main_pass_attn` capture hook now also fires when `attention_sink_score` is in
+  the recipe (previously only gated on `attention_pattern_entropy`). Report `HERO_SECTIONS` and
+  `FLAG_RULES` updated (`attention_sink_detected` fires when last > 0.5). Tests:
+  `tests/recorder/test_attention_sink_diagnostic.py`.
+
 ## [1.11.0] — 2026-06-07
 
 **Copy-suppression head detection.** A new `copy_suppression_score` primitive and live/scan

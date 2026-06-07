@@ -55,6 +55,7 @@ RECIPE = Recipe(
                             "logit_lens_kl", "induction_score",
                             "copy_suppression_score",
                             "attention_pattern_entropy",
+                            "attention_sink_score",
                             # v1.4 drift probe: default OFF; opt in via
                             # recipe.only(["drift_probe"]) or by clearing the
                             # disable and supplying a probe_batch.
