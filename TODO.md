@@ -273,7 +273,12 @@ Specs + plans live under `docs/superpowers/`.
   formation curves, representational drift over a run.
 - [ ] **[feat] Tooling-landscape gap analysis** (Q6): position vs TransformerLens / nnsight /
   pyvene / sae_lens; identify the differentiated surface.
-- [ ] **[feat] Tuned lens** (extends Q3 logit lens) and **copy-suppression heads** (extends Q4).
+- [ ] **[feat] Tuned lens** (extends Q3 logit lens). **Scoped for v1.10** — spec + staged
+  implementation plan in `docs/superpowers/specs/2026-06-07-v1.10-tuned-lens-design.md`
+  (core `tuned_lens_kl` primitive + post-hoc `fit_tuned_lens` workflow + Recorder/scan/report/CLI
+  wiring; bundles the deferred polish bucket — signed report Δ, scale-invariant
+  `update_delta_vanishing`, Gram-matrix SVD speedup).
+- [ ] **[feat] Copy-suppression heads** (extends Q4).
 
 ## Multi-process (design §11 — additive future-release path)
 
