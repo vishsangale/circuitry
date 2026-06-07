@@ -123,6 +123,27 @@ def test_update_delta_l2_when_shifted():
     assert abs(out["w"] - (2.0 ** 0.5)) < 1e-6
 
 
+def test_relative_update_delta_is_scale_invariant():
+    """||ΔW||/||W|| is identical for two matrices that differ only by an overall
+    scale — unlike the absolute update_delta."""
+    base_now = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    base_prev = torch.tensor([[0.9, 0.0], [0.0, 0.9]])
+    small = weight.relative_update_delta({"w": base_now}, {"w": base_prev})
+    big = weight.relative_update_delta({"w": base_now * 1000},
+                                       {"w": base_prev * 1000})
+    assert abs(small["w"] - big["w"]) < 1e-6
+    # And the absolute deltas differ by ~1000x, confirming the scale problem.
+    abs_small = weight.update_delta({"w": base_now}, {"w": base_prev})["w"]
+    abs_big = weight.update_delta({"w": base_now * 1000},
+                                  {"w": base_prev * 1000})["w"]
+    assert abs(abs_big / abs_small - 1000.0) < 1e-3
+
+
+def test_relative_update_delta_zero_when_unchanged():
+    sd = {"w": torch.ones(3, 3)}
+    assert weight.relative_update_delta(sd, sd)["w"] == 0.0
+
+
 def test_direction_cosine_collinear_updates():
     # prev_prev -> prev: +I; prev -> now: +2I (same direction)
     sd_pp = {"w": torch.zeros(2, 2)}

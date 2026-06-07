@@ -1092,6 +1092,14 @@ class Recorder:
                     self._writer.add_scalar(
                         f"weight/update_delta/{mod_name}", val, ctx.step
                     )
+                # Scale-invariant companion (v1.10): ||ΔW|| / ||W||. The
+                # update_delta_vanishing flag keys on this so its threshold means
+                # the same thing across parameter sizes.
+                rel = _w.relative_update_delta(ctx.weights, self._prev_weights)
+                for mod_name, val in rel.items():
+                    self._writer.add_scalar(
+                        f"weight/update_delta_rel/{mod_name}", val, ctx.step
+                    )
             elif name == "direction_cosine":
                 if not self._prev_weights or not self._prev_prev_weights:
                     continue  # need two prior snapshots; skip first two emit steps

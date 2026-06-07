@@ -285,6 +285,33 @@ def update_delta(
     return out
 
 
+def relative_update_delta(
+    sd_now: Mapping[str, torch.Tensor],
+    sd_prev: Mapping[str, torch.Tensor],
+    eps: float = 1e-12,
+) -> dict[str, float]:
+    """Scale-invariant per-parameter update size: ``||ΔW|| / ||W_now||``.
+
+    The absolute :func:`update_delta` (``||ΔW||``) is scale-dependent — a healthy
+    step on a large matrix exceeds the same threshold a healthy step on a tiny
+    one falls below — which made the ``update_delta_vanishing`` report flag
+    unreliable (v1.3 review). This relative form is dimensionless, so a single
+    threshold means the same thing across parameter sizes.
+
+    Returns ``{name: ||sd_now-sd_prev|| / (||sd_now|| + eps)}`` for every name
+    present in both. Names missing from either side are skipped.
+    """
+    out: dict[str, float] = {}
+    for name in sd_now:
+        if name not in sd_prev:
+            continue
+        a = sd_now[name].to(torch.float32)
+        b = sd_prev[name].to(device=a.device, dtype=torch.float32)
+        denom = float(a.norm().item()) + eps
+        out[name] = float((a - b).norm().item()) / denom
+    return out
+
+
 def direction_cosine(
     sd_now: Mapping[str, torch.Tensor],
     sd_prev: Mapping[str, torch.Tensor],

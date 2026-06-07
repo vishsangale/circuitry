@@ -133,6 +133,7 @@ weight.attention_head_rank(W: Tensor, n_heads: int, head_dim: int, axis: int = 0
 
 # weight-space dynamics (v1.3 — shipped in core/; now wired live)
 weight.update_delta(sd_now: Mapping[str, Tensor], sd_prev: Mapping[str, Tensor]) -> dict[str, float]
+weight.relative_update_delta(sd_now: Mapping[str, Tensor], sd_prev: Mapping[str, Tensor], eps: float = 1e-12) -> dict[str, float]  # (v1.10) scale-invariant ||ΔW||/||W||; the recorder emits weight/update_delta_rel/* alongside update_delta and the update_delta_vanishing flag keys on it
 weight.direction_cosine(sd_now: Mapping[str, Tensor], sd_prev: Mapping[str, Tensor],
                         sd_prev_prev: Mapping[str, Tensor]) -> dict[str, float]
 

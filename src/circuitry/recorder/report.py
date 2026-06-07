@@ -42,14 +42,16 @@ HERO_SECTIONS = frozenset({
     "weight/update_delta",
     "weight/rank_trajectory",
     "weight/direction_cosine",
+    # v1.10 scale-invariant update size:
+    "weight/update_delta_rel",
 })
 
 GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
 
 # Declarative flag rules: (section_prefix, flag_label, predicate(last, signed), message_template)
-# NOTE: ``signed = last - first`` (signed trend), NOT the range-delta from _stats.
-# The _stats ``delta`` field is the unsigned range (vmax - vmin) and must NOT be used
-# for trend-direction predicates (rank_collapsing / dead_rising would never fire).
+# NOTE: ``signed = last - first`` (signed trend). Since v1.10 the _stats ``delta``
+# field is also signed (last - first), so the table Δ and the flag trend agree; the
+# explicit ``signed`` below documents intent and is robust to future _stats changes.
 FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
     (
         "activation/dead_fraction",
@@ -82,10 +84,13 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         "rank_trajectory declining (last={last:.2f}, Δ={signed:+.4g})",
     ),
     (
-        "weight/update_delta",
+        # Keys on the scale-invariant ||ΔW||/||W|| companion (v1.10) so the
+        # threshold is dimensionless and means the same across parameter sizes —
+        # the absolute weight/update_delta was scale-dependent (v1.3 review).
+        "weight/update_delta_rel",
         "update_delta_vanishing",
-        lambda last, signed: last < 1e-6,
-        "update_delta near zero — possible gradient vanishing (last={last:.2g})",
+        lambda last, signed: last < 1e-5,
+        "relative update_delta near zero — possible gradient vanishing (last={last:.2g})",
     ),
     (
         "weight/direction_cosine",
@@ -195,7 +200,7 @@ def _render_section(
                 continue
             _, row_id = _section_and_row(tag)
             first, last, vmin, vmax, delta = _stats(grouped[tag])
-            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
+            delta_cell = f"{delta:+.4g}" if delta != 0 else "—"
             out.append(
                 f"| `{row_id}` | {first:.4g} | {last:.4g} | "
                 f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
@@ -207,7 +212,7 @@ def _render_section(
         for tag in sorted_tags:
             _, row_id = _section_and_row(tag)
             first, last, vmin, vmax, delta = _stats(grouped[tag])
-            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
+            delta_cell = f"{delta:+.4g}" if delta != 0 else "—"
             out.append(
                 f"| `{row_id}` | {first:.4g} | {last:.4g} | "
                 f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
@@ -276,7 +281,7 @@ def build_report(
     lines.append("")
     lines.append(
         f"- **{len(grouped)}** scalar tags · **{moving}** moving "
-        f"(Δ > 0) · **{static}** static · **{step_count}** emit step(s) "
+        f"(changed) · **{static}** static · **{step_count}** emit step(s) "
         f"observed."
     )
     if step_count == 1:

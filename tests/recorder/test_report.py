@@ -148,3 +148,30 @@ def test_build_report_summary_block_counts_moving_and_static(tmp_path):
     assert "**1** moving" in md
     assert "**1** static" in md
     assert "**2** emit step" in md
+
+
+def test_delta_column_is_signed_not_unsigned_range(tmp_path):
+    """v1.10 polish: a monotonically *decreasing* metric must render a negative
+    Δ in the table, not the positive unsigned range (vmax - vmin) it showed
+    through v1.9 (which read like an increase)."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/0", "value": 15.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/effective_rank/0", "value": 5.0, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    # The row's Δ cell is last - first = 5 - 15 = -10, NOT the +10 range.
+    assert "-10" in md
+    assert "| +10 |" not in md and "| 10 |" not in md
+
+
+def test_delta_column_signed_positive_for_rising_metric(tmp_path):
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "activation/dead_fraction/0", "value": 0.1, "step": 0, "kind": "scalar"},
+        {"tag": "activation/dead_fraction/0", "value": 0.3, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "+0.2" in md
