@@ -54,7 +54,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── activation.py
 │   │   ├── gradient.py
 │   │   ├── spectral.py
-│   │   ├── lens.py         # logit_lens_kl
+│   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl
 │   │   └── attention.py    # induction_score, attention_pattern_entropy
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae
@@ -162,9 +162,10 @@ spectral.esd(W: Tensor, bins: int = 100) -> tuple[Tensor, Tensor]
 spectral.rank_trajectory(state_dicts: list[dict]) -> dict[str, list[float]]
 # Note: rank_trajectory is now wired live in the Recorder (v1.3) via the SVD cache.
 
-# lens (v0.9)
+# lens (v0.9 logit lens; v1.10 tuned lens)
 from circuitry.core import lens
 lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # chunk_size bounds the (tokens, vocab) transient (v0.9.2)
+lens.tuned_lens_kl(residual: Tensor, translator: tuple[Tensor, Tensor], unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # (v1.10) apply learned affine A·h+b before unembed; A=I,b=0 reduces to logit_lens_kl
 
 # attention screening (v0.9)
 from circuitry.core import attention
