@@ -1,5 +1,5 @@
 """Tests for induction_score, copy_suppression_score, attention_sink_score,
-attention_pattern_entropy."""
+head_specialization, attention_pattern_entropy."""
 from __future__ import annotations
 
 import math
@@ -11,6 +11,7 @@ from circuitry.core.attention import (
     attention_pattern_entropy,
     attention_sink_score,
     copy_suppression_score,
+    head_specialization,
     induction_score,
 )
 
@@ -147,6 +148,56 @@ def test_copy_suppression_accepts_3d_input():
     scores = copy_suppression_score(attn, seq_len_repeat=n)
     assert len(scores) == 2
     assert scores[1] == pytest.approx(1.0, abs=1e-6)
+
+
+# ---- head_specialization -----------------------------------------------------
+
+def test_pure_induction_head_classified_as_induction():
+    types = head_specialization([0.8], [0.05], [0.1])
+    assert types == ["induction"]
+
+
+def test_pure_copy_suppression_classified():
+    types = head_specialization([0.05], [0.6], [0.1])
+    assert types == ["copy_suppression"]
+
+
+def test_pure_sink_classified():
+    types = head_specialization([0.05], [0.05], [0.9])
+    assert types == ["sink"]
+
+
+def test_uniform_when_all_below_threshold():
+    types = head_specialization([0.1], [0.1], [0.1])
+    assert types == ["uniform"]
+
+
+def test_ambiguous_head_takes_strongest_ratio():
+    """Head above both induction (ratio=2.0) and sink (ratio=1.2) thresholds
+    should be classified as induction (higher ratio)."""
+    # ind=0.8 -> ratio 0.8/0.4=2.0; snk=0.6 -> ratio 0.6/0.5=1.2
+    types = head_specialization([0.8], [0.1], [0.6])
+    assert types == ["induction"]
+
+
+def test_multiple_heads_mixed_types():
+    types = head_specialization(
+        [0.8, 0.05, 0.05],   # head 0: induction
+        [0.05, 0.5, 0.05],   # head 1: copy_suppression
+        [0.05, 0.05, 0.9],   # head 2: sink
+    )
+    assert types == ["induction", "copy_suppression", "sink"]
+
+
+def test_mismatched_lengths_raises():
+    with pytest.raises(ValueError, match="same length"):
+        head_specialization([0.5, 0.5], [0.5], [0.5, 0.5])
+
+
+def test_custom_thresholds_respected():
+    """A score of 0.3 qualifies as induction only when the threshold is <= 0.3."""
+    assert head_specialization([0.3], [0.0], [0.0], induction_threshold=0.4) == ["uniform"]
+    assert head_specialization([0.3], [0.0], [0.0], induction_threshold=0.3) == ["induction"]
 
 
 # ---- attention_sink_score ----------------------------------------------------

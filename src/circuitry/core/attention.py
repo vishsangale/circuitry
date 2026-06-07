@@ -12,6 +12,9 @@ designated sink position (default 0, the initial / BOS token). Unlike the two
 probe-based diagnostics above, this operates on the live training-forward
 attention pattern so it reflects the actual training distribution.
 
+head_specialization — classify each head into a behavioral type
+(induction / copy_suppression / sink / uniform) from the three scores above.
+
 attention_pattern_entropy — per-head Shannon entropy (nats) of the
 attention distribution over keys.
 """
@@ -129,6 +132,53 @@ def attention_sink_score(
     pos = sink_pos % seq  # normalize negative indices
     # t[:, :, :, pos] has shape (batch, n_heads, seq_q); mean over batch+query.
     return t[:, :, :, pos].mean(dim=(0, 2)).tolist()
+
+
+def head_specialization(
+    induction: list[float],
+    copy_suppression: list[float],
+    sink: list[float],
+    *,
+    induction_threshold: float = 0.4,
+    copy_suppression_threshold: float = 0.3,
+    sink_threshold: float = 0.5,
+) -> list[str]:
+    """Classify each attention head into a behavioral type.
+
+    For each head, checks which scores exceed their respective thresholds.
+    When none exceed: ``"uniform"``. When exactly one exceeds: that type.
+    When multiple exceed: the type with the highest score-to-threshold ratio
+    wins (the "most strongly typed" signal). Thresholds match the report
+    FLAG_RULES for consistency.
+
+    Args:
+        induction: per-head :func:`induction_score` values.
+        copy_suppression: per-head :func:`copy_suppression_score` values.
+        sink: per-head :func:`attention_sink_score` values.
+        induction_threshold: min score to qualify as induction (default 0.4).
+        copy_suppression_threshold: min score for copy-suppression (default 0.3).
+        sink_threshold: min score for sink (default 0.5).
+
+    Returns:
+        ``list[str]`` of per-head labels — one of ``"induction"``,
+        ``"copy_suppression"``, ``"sink"``, or ``"uniform"``.
+    """
+    if not (len(induction) == len(copy_suppression) == len(sink)):
+        raise ValueError(
+            "head_specialization: induction, copy_suppression, and sink must have "
+            f"the same length, got {len(induction)}, {len(copy_suppression)}, {len(sink)}"
+        )
+    labels: list[str] = []
+    for ind, css, snk in zip(induction, copy_suppression, sink, strict=True):
+        candidates: dict[str, float] = {}
+        if ind >= induction_threshold:
+            candidates["induction"] = ind / induction_threshold
+        if css >= copy_suppression_threshold:
+            candidates["copy_suppression"] = css / copy_suppression_threshold
+        if snk >= sink_threshold:
+            candidates["sink"] = snk / sink_threshold
+        labels.append("uniform" if not candidates else max(candidates, key=candidates.__getitem__))
+    return labels
 
 
 def attention_pattern_entropy(

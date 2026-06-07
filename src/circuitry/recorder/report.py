@@ -247,6 +247,75 @@ def _render_section(
     return out
 
 
+def _build_head_specialization_section(
+    grouped: dict[str, list[tuple[int, float]]],
+) -> list[str]:
+    """Render a ## Head Specialization table from the last-step attention scores.
+
+    Reads ``activation/induction_score``, ``activation/copy_suppression_score``,
+    and ``activation/attention_sink_score`` tags; classifies each head; returns
+    markdown lines.  Returns ``[]`` when none of those tags are present.
+    """
+    from circuitry.core.attention import head_specialization as _hs
+
+    _PREFIXES = {
+        "activation/induction_score": "ind",
+        "activation/copy_suppression_score": "css",
+        "activation/attention_sink_score": "snk",
+    }
+
+    # module -> head_idx -> {key: last_value}
+    scores: dict[str, dict[int, dict[str, float]]] = {}
+    for tag, series in grouped.items():
+        for prefix, key in _PREFIXES.items():
+            if not tag.startswith(prefix + "/"):
+                continue
+            rest = tag[len(prefix) + 1:]
+            parts = rest.rsplit("/", 1)
+            if len(parts) != 2 or not parts[1].startswith("head_"):
+                continue
+            module = parts[0]
+            try:
+                head_idx = int(parts[1][5:])  # len("head_") == 5
+            except ValueError:
+                continue
+            last_val = max(series, key=lambda x: x[0])[1]
+            scores.setdefault(module, {}).setdefault(head_idx, {})[key] = last_val
+
+    if not scores:
+        return []
+
+    lines = ["## Head Specialization", ""]
+    lines.append("| module | head | type | induction | copy_suppression | sink |")
+    lines.append("| --- | --- | --- | ---: | ---: | ---: |")
+
+    for module in sorted(scores):
+        heads = scores[module]
+        n = max(heads) + 1
+        ind = [heads.get(i, {}).get("ind") for i in range(n)]
+        css = [heads.get(i, {}).get("css") for i in range(n)]
+        snk = [heads.get(i, {}).get("snk") for i in range(n)]
+
+        all_present = all(v is not None for v in ind + css + snk)
+        if all_present:
+            types = _hs(ind, css, snk)  # type: ignore[arg-type]
+        else:
+            types = ["—"] * n
+
+        for i in range(n):
+            t = types[i]
+            type_cell = f"**{t}**" if t not in ("uniform", "—") else t
+            ind_cell = f"{ind[i]:.3f}" if ind[i] is not None else "—"
+            css_cell = f"{css[i]:.3f}" if css[i] is not None else "—"
+            snk_cell = f"{snk[i]:.3f}" if snk[i] is not None else "—"
+            lines.append(
+                f"| `{module}` | head_{i} | {type_cell} "
+                f"| {ind_cell} | {css_cell} | {snk_cell} |"
+            )
+    lines.append("")
+    return lines
+
+
 def build_report(
     run_dir: str | pathlib.Path,
     out_path: str | pathlib.Path | None = None,
@@ -357,6 +426,10 @@ def build_report(
 
     for section in hero:
         lines.extend(_render_section(section, sections[section], grouped))
+
+    # v1.13 head-specialization table: synthesises induction / copy-suppression /
+    # sink scores into a per-head type label; only rendered when those tags exist.
+    lines.extend(_build_head_specialization_section(grouped))
 
     if advanced:
         lines.append("<details>")
