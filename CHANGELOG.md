@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] — 2026-06-07
+
+**Training-dynamics depth.** Two enhancements to the `## Training Dynamics` report section and
+a new flag rule for representational drift.
+
+### Added
+- **Direction labels in `### Phase Transitions`** — each row now has a `direction` column:
+  `weight/update_delta_rel` transitions are labelled `↑ norm growth` or `↓ norm collapse`;
+  all other metrics get `↑ growth` / `↓ collapse`.  `_transition_direction()` helper added.
+- **`### Representation Drift` sub-table** — any `activation/repr_drift/{module}` tags
+  produce a per-layer drift table (start drift, end drift, Δ, trend label: `↑ rising`,
+  `→ stable`, `↓ falling`, or `⚡ step N` when `phase_transition_steps` detects a sharp
+  jump).  Rows sorted by last-step drift descending.  `_drift_trend()` helper added.
+- **`repr_drift_high` flag rule** — fires when the last-step drift of any layer exceeds 0.5
+  (significant representational shift from reference snapshot).
+- **`activation/repr_drift` in `HERO_SECTIONS`** — the section is elevated to hero priority
+  in the main report body for quick scanning.
+- Tests: 8 new tests in `tests/recorder/test_training_dynamics_report.py`;
+  1 new flag test in `tests/recorder/test_report.py`.
+
+### Fixed
+- **`__version__`** bumped from the stale `1.12.0` to `1.16.0` (v1.13–v1.15 were released
+  but the version string was never updated).
+
+---
+
+## [1.15.0] — 2026-06-07
+
+**Polish sprint.** Adds `grokking_step`, per-hook-family tag counts in the report summary,
+Grokking Signals in Training Dynamics, and a tool-by-tool landscape comparison doc.
+
+### Added
+- **`core.dynamics.grokking_step(series, *, z_threshold=2.5) → int | None`** — thin wrapper
+  around `phase_transition_steps` returning the first detected transition step.  Default
+  threshold raised to 2.5 vs 2.0 to reduce false positives on noisy loss curves.
+- **Per-hook-family tag counts** in the `## Summary` block (e.g. `**weight**: 3 · **activation**: 2`).
+- **`### Grokking Signals` sub-table** in `## Training Dynamics` — auto-detected from
+  `loss`/`acc`/`accuracy`/`error`/`perplexity` tag names via `grokking_step`.
+- **`docs/positioning.md`** — tool-by-tool comparison: TransformerLens, nnsight, pyvene,
+  sae_lens.  Covers where circuitry is differentiated and where it defers.
+- Tests: 5 new `grokking_step` unit tests; 3 new report integration tests.
+
+### Fixed
+- **`gate_stats` return type** in `docs/design.md §4.1` corrected from `-> GateStats` to
+  `-> dict[str, float]` (the actual implementation type).
+
+---
+
 ## [1.14.0] — 2026-06-07
 
 **Training-dynamics diagnostics.** A new `core/dynamics` module adds two pure-Python primitives

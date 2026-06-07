@@ -1,18 +1,12 @@
 # circuitry — TODO / open items
 
-Open work and known debt as of **v1.14.0** (2026-06-07). Completed items live in `CHANGELOG.md`
+Open work and known debt as of **v1.16.0** (2026-06-07). Completed items live in `CHANGELOG.md`
 and git history. Design contract: `docs/design.md` — amend it before changing any
 CI-enforced invariant.
 
 **Effort:** [XS] < ½ day · [S] ½–1 day · [M] 1–3 days · [L] 1–2 weeks · [XL] 2+ weeks
 
 ---
-
-## Correctness & docs accuracy
-
-- [ ] **[XS][docs] `gate_stats` return type mismatch.** `design.md §4.1` documents the return
-  as `GateStats` (named dataclass); the implementation in `core/activation.py` returns a plain
-  `dict[str, float]`. Fix: update the spec signature to `-> dict[str, float]`.
 
 ---
 
@@ -35,29 +29,14 @@ CI-enforced invariant.
 
 ---
 
-## Core primitives
-
-- [ ] **[S][feat] `dynamics.grokking_step` — named helper for loss-curve segmentation.**
-  `phase_transition_steps` is general-purpose; add a thin named wrapper
-  `grokking_step(series, *, z_threshold=2.5) -> int | None` that returns the single largest
-  transition step in a loss/accuracy series (or `None` if none detected). Surface it in the
-  `## Training Dynamics` report section for loss-family tags.
-
 ---
 
 ## Recorder & report
 
-- [ ] **[M][feat] Training dynamics — representational drift trending.** Wire
-  `core.activation.repr_drift` into the `## Training Dynamics` section: accumulate a reference
-  snapshot at the first emit step, then show per-layer drift (CKA) at each subsequent step.
-  Currently `repr_drift` is emitted per-step as a raw scalar but never summarised as a
-  trajectory trend in the report.
-
-- [ ] **[S][feat] Per-hook-family module coverage in `build_report`.** Silent recipe
-  under-coverage is invisible — a recipe matching 0 modules emits no tags and no warning in
-  the report. Add a line per hook family to the `## Summary` block (e.g. "weight: 42 modules
-  matched"), drawn from `circuitry/matched_modules.txt`. Complements the existing attach-summary
-  table (which shows hook-point–level counts, not per-family).
+- [ ] **[S][feat] Per-hook-family module counts from `matched_modules.txt`.** The v1.15
+  summary tag-count line counts emitted tags per family; a complementary count from
+  `circuitry/matched_modules.txt` would show *matched* modules per family (detecting
+  recipes that matched 0 modules). Current tag-count is a good proxy but not identical.
 
 ---
 
@@ -90,17 +69,6 @@ CI-enforced invariant.
 
 ## Future research directions
 
-- [ ] **[M][feat] Training dynamics remaining Q5 items.** v1.14 shipped
-  `phase_transition_steps` / `head_formation_step` and the `## Training Dynamics` report
-  section. Still open: `grokking_step` (see Core primitives above), weight-norm inflection
-  curves (apply `phase_transition_steps` to `weight/update_delta_rel` time series and label
-  the inflection "norm growth" or "norm collapse"), and representational drift trending
-  (see Recorder section above).
-
-- [ ] **[S][feat] Tooling-landscape positioning doc (Q6).** Write `docs/positioning.md`
-  comparing circuitry's surface to TransformerLens, nnsight, pyvene, sae_lens — where
-  circuitry is differentiated (training-live, modality-agnostic, SAE-circuit patching),
-  where it defers. No code; outcome is a doc useful for README and contributor onboarding.
 
 ---
 

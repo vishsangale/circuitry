@@ -219,3 +219,15 @@ def test_grokking_signals_absent_for_monotone_loss(tmp_path):
     build_report(run_dir=tmp_path, out_path=out)
     md = out.read_text()
     assert "Grokking Signals" not in md
+
+
+def test_repr_drift_high_flag_fires(tmp_path):
+    """repr_drift last > 0.5 triggers 'repr_drift_high' flag."""
+    scalars = [
+        {"kind": "scalar", "tag": "activation/repr_drift/layers.0", "value": 0.1, "step": 0},
+        {"kind": "scalar", "tag": "activation/repr_drift/layers.0", "value": 0.9, "step": 1},
+    ]
+    p = tmp_path / "metrics.jsonl"
+    p.write_text("\n".join(json.dumps(s) for s in scalars))
+    report = build_report(tmp_path).read_text()
+    assert "repr_drift_high" in report

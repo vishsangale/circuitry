@@ -48,6 +48,8 @@ HERO_SECTIONS = frozenset({
     "weight/direction_cosine",
     # v1.10 scale-invariant update size:
     "weight/update_delta_rel",
+    # v1.16 representational drift:
+    "activation/repr_drift",
 })
 
 GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
@@ -111,6 +113,16 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         # attention sink heads (Xiao et al. 2023).
         lambda last, signed: last > 0.5,
         "attention_sink_score high — potential attention sink head (last={last:.3f})",
+    ),
+    (
+        "activation/repr_drift",
+        "repr_drift_high",
+        # Linear CKA drift > 0.5 from the reference snapshot means the layer's
+        # representational geometry has shifted substantially — worth investigating
+        # whether this is intentional (e.g. post-grokking alignment) or a sign of
+        # instability.
+        lambda last, signed: last > 0.5,
+        "repr_drift high — significant representational shift from reference (last={last:.3f})",
     ),
     (
         "activation/copy_suppression_score",
@@ -260,18 +272,49 @@ _TRANSITION_PREFIXES: frozenset[str] = frozenset({
 })
 
 
+def _transition_direction(section: str, before: float, after: float) -> str:
+    """Human-readable direction label for a phase transition."""
+    rising = after > before
+    if section == "weight/update_delta_rel":
+        return "↑ norm growth" if rising else "↓ norm collapse"
+    return "↑ growth" if rising else "↓ collapse"
+
+
+def _drift_trend(
+    vals: list[float],
+    series: list[tuple[int, float]],
+    pts_fn: object,
+) -> str:
+    """Trend label for a repr_drift series: phase-transition > rising > stable > falling."""
+    pts = pts_fn(series)  # type: ignore[operator]
+    if pts:
+        return f"⚡ step {pts[0]}"
+    mid = max(1, len(vals) // 2)
+    first_half = sum(vals[:mid]) / mid
+    second_half = sum(vals[mid:]) / max(1, len(vals) - mid)
+    if second_half > first_half + 0.05:
+        return "↑ rising"
+    if first_half > second_half + 0.05:
+        return "↓ falling"
+    return "→ stable"
+
+
 def _build_training_dynamics_section(
     grouped: dict[str, list[tuple[int, float]]],
     step_count: int,
 ) -> list[str]:
-    """Render a ## Training Dynamics section with three sub-tables.
+    """Render a ## Training Dynamics section with four sub-tables.
 
     - **Head Formation Events**: heads whose attention score crossed its threshold
       *during* the recording window (formation step > series' first recorded step).
     - **Phase Transitions**: sharp change-points in rank/health metrics
-      (``weight/effective_rank``, ``weight/rank_trajectory``, ``weight/update_delta_rel``).
+      (``weight/effective_rank``, ``weight/rank_trajectory``, ``weight/update_delta_rel``)
+      with a direction label (↑ growth / ↓ collapse; ↑ norm growth / ↓ norm collapse for
+      ``update_delta_rel``).
     - **Grokking Signals**: first sharp transition in loss / accuracy / error /
       perplexity series via :func:`~circuitry.core.dynamics.grokking_step`.
+    - **Representation Drift**: per-layer CKA drift from the reference snapshot, with a
+      trend label (↑ rising / → stable / ↓ falling / ⚡ step N for sharp transitions).
 
     Returns ``[]`` when ``step_count <= 1`` or when no events are detected.
     """
@@ -314,11 +357,11 @@ def _build_training_dynamics_section(
             formation_events.append((module, head_idx, score_type, step, last_score))
 
     # --- Phase transitions on rank/health metrics ---
-    # (row_id, pt_step, before_val, after_val)
-    transition_events: list[tuple[str, int, float, float]] = []
+    # (section, row_id, pt_step, before_val, after_val)
+    transition_events: list[tuple[str, str, int, float, float]] = []
 
     for tag, series in grouped.items():
-        section, _ = _section_and_row(tag)
+        section, row_id = _section_and_row(tag)
         if section not in _TRANSITION_PREFIXES:
             continue
         if len(series) < 4:
@@ -329,14 +372,13 @@ def _build_training_dynamics_section(
         sorted_s = sorted(series)
         step_vals = {s: v for s, v in sorted_s}
         all_steps = [s for s, _ in sorted_s]
-        _, row_id = _section_and_row(tag)
         for pt_step in pts:
             before_steps = [s for s in all_steps if s < pt_step]
             after_steps = [s for s in all_steps if s >= pt_step]
             if not before_steps or not after_steps:
                 continue
             transition_events.append(
-                (row_id, pt_step, step_vals[before_steps[-1]], step_vals[after_steps[0]])
+                (section, row_id, pt_step, step_vals[before_steps[-1]], step_vals[after_steps[0]])
             )
 
     # --- Grokking signals on loss / accuracy series ---
@@ -356,7 +398,21 @@ def _build_training_dynamics_section(
         if val_at is not None:
             grokking_events.append((row_id, gs, val_at))
 
-    if not formation_events and not transition_events and not grokking_events:
+    # --- Representation drift trending ---
+    # (row_id, first_drift, last_drift, trend_label)
+    drift_trends: list[tuple[str, float, float, str]] = []
+    for tag, series in grouped.items():
+        section, row_id = _section_and_row(tag)
+        if section != "activation/repr_drift":
+            continue
+        if len(series) < 2:
+            continue
+        sorted_s = sorted(series)
+        vals = [v for _, v in sorted_s]
+        drift_trends.append((row_id, vals[0], vals[-1], _drift_trend(vals, sorted_s, _pts)))
+    drift_trends.sort(key=lambda x: -x[2])  # most-drifted layers first
+
+    if not formation_events and not transition_events and not grokking_events and not drift_trends:
         return []
 
     lines: list[str] = ["## Training Dynamics", ""]
@@ -374,13 +430,16 @@ def _build_training_dynamics_section(
         lines.append("")
 
     if transition_events:
-        transition_events.sort(key=lambda e: (e[1], e[0]))
+        transition_events.sort(key=lambda e: (e[2], e[1]))  # sort by pt_step then row_id
         lines.append("### Phase Transitions")
         lines.append("")
-        lines.append("| metric | step | before | after |")
-        lines.append("| --- | ---: | ---: | ---: |")
-        for row_id, pt_step, before, after in transition_events:
-            lines.append(f"| `{row_id}` | {pt_step} | {before:.4g} | {after:.4g} |")
+        lines.append("| metric | step | before | after | direction |")
+        lines.append("| --- | ---: | ---: | ---: | --- |")
+        for section, row_id, pt_step, before, after in transition_events:
+            direction = _transition_direction(section, before, after)
+            lines.append(
+                f"| `{row_id}` | {pt_step} | {before:.4g} | {after:.4g} | {direction} |"
+            )
         lines.append("")
 
     if grokking_events:
@@ -391,6 +450,18 @@ def _build_training_dynamics_section(
         lines.append("| --- | ---: | ---: |")
         for row_id, step, val in grokking_events:
             lines.append(f"| `{row_id}` | {step} | {val:.4g} |")
+        lines.append("")
+
+    if drift_trends:
+        lines.append("### Representation Drift")
+        lines.append("")
+        lines.append("| module | start drift | end drift | Δ | trend |")
+        lines.append("| --- | ---: | ---: | ---: | --- |")
+        for row_id, first_d, last_d, trend in drift_trends:
+            delta = last_d - first_d
+            lines.append(
+                f"| `{row_id}` | {first_d:.3f} | {last_d:.3f} | {delta:+.3f} | {trend} |"
+            )
         lines.append("")
 
     return lines

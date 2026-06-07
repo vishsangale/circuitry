@@ -136,3 +136,98 @@ def test_section_absent_when_no_tracked_metrics(tmp_path):
     _write_metrics(tmp_path, scalars)
     report = build_report(tmp_path).read_text()
     assert "## Training Dynamics" not in report
+
+
+# ---------------------------------------------------------------------------
+# Phase Transitions — direction labels (v1.16)
+# ---------------------------------------------------------------------------
+
+def _udrel(module: str, value: float, step: int) -> dict:
+    return _scalar(f"weight/update_delta_rel/{module}", value, step)
+
+
+def test_phase_transition_norm_growth_label(tmp_path):
+    """update_delta_rel rising sharply → 'norm growth' direction label."""
+    scalars = (
+        [_udrel("fc", 0.001, step=s) for s in range(10)]
+        + [_udrel("fc", 0.1, step=s) for s in range(10, 20)]
+    )
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "Phase Transitions" in report
+    assert "norm growth" in report
+
+
+def test_phase_transition_norm_collapse_label(tmp_path):
+    """update_delta_rel dropping sharply → 'norm collapse' direction label."""
+    scalars = (
+        [_udrel("fc", 0.1, step=s) for s in range(10)]
+        + [_udrel("fc", 0.001, step=s) for s in range(10, 20)]
+    )
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "Phase Transitions" in report
+    assert "norm collapse" in report
+
+
+def test_phase_transition_rank_collapse_direction_label(tmp_path):
+    """effective_rank dropping sharply → '↓ collapse' direction label."""
+    scalars = (
+        [_rank("layer_0", 15.0, step=s) for s in range(10)]
+        + [_rank("layer_0", 3.0, step=s) for s in range(10, 20)]
+    )
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "↓ collapse" in report
+
+
+# ---------------------------------------------------------------------------
+# Representation Drift (v1.16)
+# ---------------------------------------------------------------------------
+
+def _drift(module: str, value: float, step: int) -> dict:
+    return _scalar(f"activation/repr_drift/{module}", value, step)
+
+
+def test_repr_drift_section_appears(tmp_path):
+    """repr_drift tags produce a 'Representation Drift' sub-section."""
+    scalars = [_drift("layer_0", 0.1 + 0.05 * s, step=s) for s in range(6)]
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "## Training Dynamics" in report
+    assert "Representation Drift" in report
+
+
+def test_repr_drift_rising_trend(tmp_path):
+    """Monotonically increasing drift → '↑ rising' trend label."""
+    scalars = [_drift("layer_0", 0.05 * s, step=s) for s in range(10)]
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "↑ rising" in report
+
+
+def test_repr_drift_stable_trend(tmp_path):
+    """Flat drift → '→ stable' trend label."""
+    scalars = [_drift("layer_0", 0.1, step=s) for s in range(10)]
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "→ stable" in report
+
+
+def test_repr_drift_section_absent_without_tags(tmp_path):
+    """No repr_drift tags → no Representation Drift sub-section."""
+    scalars = [_rank("layer_0", 10.0, step=s) for s in range(5)]
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert "Representation Drift" not in report
+
+
+def test_repr_drift_sorted_by_last_value_descending(tmp_path):
+    """Highest-drift layer appears before lowest-drift layer in the table."""
+    scalars = (
+        [_drift("high_drift_layer", 0.8, step=s) for s in range(4)]
+        + [_drift("low_drift_layer", 0.1, step=s) for s in range(4)]
+    )
+    _write_metrics(tmp_path, scalars)
+    report = build_report(tmp_path).read_text()
+    assert report.index("high_drift_layer") < report.index("low_drift_layer")
