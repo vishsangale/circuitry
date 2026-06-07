@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] — 2026-06-07
+
+**Training-dynamics diagnostics.** A new `core/dynamics` module adds two pure-Python primitives
+that operate on the `list[tuple[int, float]]` series format from `_metrics.group`, requiring no
+GPU. The report gains a `## Training Dynamics` section (suppressed in compact mode and on
+single-step runs) with two sub-tables: **Head Formation Events** (heads that crossed their
+specialisation threshold during the recording window; pre-formed heads excluded) and **Phase
+Transitions** (sharp change-points detected in `effective_rank`, `rank_trajectory`, and
+`update_delta_rel` time series).
+
+### Added
+- **`core.dynamics.phase_transition_steps(series, *, window=5, z_threshold=2.0, min_gap=5) → list[int]`.**
+  Bilateral-mean change detector: at each center position computes `|mean(right_half) − mean(left_half)|`
+  and flags positions where the bilateral change exceeds `mean + z_threshold × std` across all
+  centers. Collapses nearby detections within `min_gap` index positions (keeping the largest). A
+  monotone linear ramp produces identical bilateral changes everywhere (std = 0) and returns `[]`.
+  Tests: `tests/core/test_dynamics.py`.
+- **`core.dynamics.head_formation_step(series, *, threshold, n_sustain=2) → int | None`.**
+  Returns the first training step where a per-head attention score crosses `threshold` and remains
+  above it for `n_sustain` consecutive recorded points. End-of-series tolerance: if the series ends
+  before `n_sustain` confirmations, the available tail is checked. Returns `None` if the threshold
+  is never crossed. Tests: `tests/core/test_dynamics.py`.
+- **`## Training Dynamics` report section** in `build_report()`. Uses `head_formation_step` on
+  `induction_score` / `copy_suppression_score` / `attention_sink_score` series (thresholds 0.4 /
+  0.3 / 0.5) to list heads that specialised during the recording window, and `phase_transition_steps`
+  on `effective_rank` / `rank_trajectory` / `update_delta_rel` to flag sharp change-points.
+  Tests: `tests/recorder/test_training_dynamics_report.py`.
+
+---
+
+## [1.13.0] — 2026-06-07
+
+**Head specialization classification.** A new `head_specialization` primitive synthesises the three
+per-head behavioral scores (induction, copy-suppression, sink) into a single label per head. The
+report gains a `## Head Specialization` table rendered after the hero sections, showing each head's
+inferred behavioral type with specialist labels bolded. The section is suppressed in compact mode.
+
+### Added
+- **`core.attention.head_specialization(induction, copy_suppression, sink, *, thresholds) → list[str]`.**
+  Classifies each head as `"induction"` / `"copy_suppression"` / `"sink"` / `"uniform"`. When a head
+  exceeds multiple thresholds, the type with the highest score-to-threshold ratio wins (normalised
+  tie-break). Threshold defaults match the report `FLAG_RULES` (0.4 / 0.3 / 0.5). Tests:
+  `tests/core/test_attention.py`.
+- **`## Head Specialization` table** in `build_report()`. Parses the last-step values of all three
+  attention-score families, calls `head_specialization` per module, and renders a markdown table
+  with columns: module | head | type | induction | copy_suppression | sink. Specialist types are
+  bolded; `uniform` is plain. Section absent when no attention-score tags are present; suppressed in
+  compact mode. Tests: `tests/recorder/test_head_specialization.py`.
+
+---
+
 ## [1.12.0] — 2026-06-07
 
 **Attention sink head detection.** A new `attention_sink_score` primitive and live/scan
