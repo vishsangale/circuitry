@@ -36,7 +36,7 @@ class Recipe:
     # activation diagnostic; the recorder verifies its fingerprint against the
     # attached model at attach() and warns + skips on mismatch. Default None —
     # tuned_lens_kl is NOT in any stock recipe's default list (it needs a fit).
-    tuned_lens: "TunedLens | None" = None
+    tuned_lens: TunedLens | None = None
     # Explicit attention-head metadata for attention_head_rank, used when the
     # model exposes no resolvable ``config`` (custom non-HF models). Keys:
     # ``n_heads`` (required), ``n_kv_heads`` (optional, defaults to n_heads),

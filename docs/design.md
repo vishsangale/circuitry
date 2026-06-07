@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-05-30
+**Last updated:** 2026-06-07
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -16,7 +16,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 
 ### Naming clarity
 
-`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6), SAE-reconstruction metrics (`circuitry.sae`), node-level **SAE-feature attribution** (`SAEFeatureRunner`, v1.5), **feature→feature SAE circuits** (`SAEFeatureEdgeRunner` + `FeatureACDCRunner`, v1.6), and **generalized SAE circuits** over `mlp_out`/`attn_out` sites, TransformerLens backend, and integrated-gradients variant (`variant='ig'`, v1.7) have since shipped. Tuned lens remains future work. The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
+`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6), SAE-reconstruction metrics (`circuitry.sae`), node-level **SAE-feature attribution** (`SAEFeatureRunner`, v1.5), **feature→feature SAE circuits** (`SAEFeatureEdgeRunner` + `FeatureACDCRunner`, v1.6), and **generalized SAE circuits** over `mlp_out`/`attn_out` sites, TransformerLens backend, and integrated-gradients variant (`variant='ig'`, v1.7) have since shipped. The **tuned lens** (Belrose et al. 2023) shipped in v1.10 (`circuitry.tuned_lens` — post-hoc `fit_tuned_lens` + the opt-in `tuned_lens_kl` diagnostic; §4.1, §4.4). The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
 
 ### Non-goals
 
@@ -515,7 +515,7 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 - SAE training (interop with SAELens later if demand surfaces).
 - JAX / Flax support.
 - DDP / FSDP-aware reductions — current releases are single-process; non-zero ranks no-op. See §11 for the additive future-release path.
-- Logit lens / tuned lens beyond `core/lens.py`'s `logit_lens_kl`. **SAE-feature circuits shipped: node-level attribution in v1.5** (`SAEFeatureRunner`); **feature→feature edges + greedy `FeatureACDC` in v1.6** (`SAEFeatureEdgeRunner`, §4.6); **`mlp_out`/`attn_out` SAE sites, multi-site-per-layer composite keying, the TransformerLens backend, and the integrated-gradients variant (`variant='ig'`) all shipped in v1.7.** SAE *reconstruction* metrics shipped in v0.9 (`circuitry.sae`). Remaining deferred SAE-circuit follow-ons: transcoder / matching-pursuit / temporal SAEs, per-position edges, and intra-layer edges on parallel-attention architectures (GPT-J-style: attn and mlp both read `resid_pre`, so `attn_out@L → mlp_out@L` is causally undefined).
+- ~~Logit lens / tuned lens beyond `core/lens.py`'s `logit_lens_kl`.~~ **Tuned lens shipped in v1.10** (`core.lens.tuned_lens_kl` + `circuitry.tuned_lens.fit_tuned_lens` + the opt-in `tuned_lens_kl` Recorder/scan diagnostic; §4.1, §4.4). **SAE-feature circuits shipped: node-level attribution in v1.5** (`SAEFeatureRunner`); **feature→feature edges + greedy `FeatureACDC` in v1.6** (`SAEFeatureEdgeRunner`, §4.6); **`mlp_out`/`attn_out` SAE sites, multi-site-per-layer composite keying, the TransformerLens backend, and the integrated-gradients variant (`variant='ig'`) all shipped in v1.7.** SAE *reconstruction* metrics shipped in v0.9 (`circuitry.sae`). Remaining deferred SAE-circuit follow-ons: transcoder / matching-pursuit / temporal SAEs, per-position edges, and intra-layer edges on parallel-attention architectures (GPT-J-style: attn and mlp both read `resid_pre`, so `attn_out@L → mlp_out@L` is causally undefined).
 - **Note:** causal interventions / activation patching shipped as the `circuitry.patching` subsystem in v1.0 — see §4.6. It is no longer out of scope.
 - Web dashboard. TB + markdown report is the UI.
 - Differentiability guarantees through diagnostics. Primitives may use non-differentiable ops (`torch.linalg.svd`).

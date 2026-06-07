@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — 2026-06-07
+
+The **tuned lens** (Belrose et al. 2023) — the one lens the project had flagged as future work —
+ships as a post-hoc workflow plus an opt-in live/scan diagnostic, completing the lens story
+alongside the v0.9 logit lens. New public surface: `core.lens.tuned_lens_kl`, the
+`circuitry.tuned_lens` package (`TunedLens`, `fit_tuned_lens`, `model_fingerprint`),
+`Recipe.tuned_lens`, the `tuned_lens_kl` activation diagnostic, and the `circuitry fit-tuned-lens`
+CLI. This release also clears three deferred polish/correctness items.
+
+### Added
+- **Tuned lens (`core.lens.tuned_lens_kl`).** A pure primitive that applies a learned per-layer
+  affine translator `A·h + b` to the residual before the unembed projection, so per-layer KL is no
+  longer confounded by the early/mid-layer basis mismatch the parameter-free logit lens suffers.
+  With `A = I, b = 0` it reduces exactly to `logit_lens_kl` (asserted in tests). The shared lens
+  tail (orientation auto-detect + token-chunked KL) is factored into helpers so the two lenses
+  can't drift. Tests: `tests/core/test_lens.py`.
+- **`circuitry.tuned_lens` workflow package.** `TunedLens` — a serializable container of per-layer
+  translators with `save`/`load`, layer/`d_model` metadata, and a `model_fingerprint` guard.
+  `fit_tuned_lens(model, batches, ...)` — the post-hoc trainer (the only optimizer loop in the
+  library, kept strictly in the workflow layer). It freezes the model, captures per-block residuals
+  the same way the recorder does, reconstructs the target final distribution as
+  `softmax(LN_f(last_block) @ W_U)`, and AdamW-trains each layer's affine (init identity) to
+  minimize KL to that target; the final block is the target frame and is not fitted. Layering:
+  `tuned_lens/` may import `core/` only — enforced in `.importlinter` and `tests/test_layering.py`.
+  Tests: `tests/tuned_lens/test_fit.py`.
+- **`tuned_lens_kl` Recorder + scan diagnostic (opt-in).** Set `Recipe.tuned_lens` to a fitted
+  `TunedLens` and add `"tuned_lens_kl"` to `activation_diagnostics`; the recorder emits
+  `activation/tuned_lens_kl/<layer>` per fitted block, reusing the shared unembed/final-LN
+  resolution (no new hooks). At `attach()` it verifies the lens fingerprint against the attached
+  model and **warns + skips** on a missing lens or a mismatch — it never emits a wrong KL. NOT in
+  any stock recipe's default list. Tests: `tests/recorder/test_tuned_lens_diagnostic.py`.
+- **`circuitry fit-tuned-lens` CLI.** Resolves `--model` / `--batches` as `package.module:attr`
+  entry points (zero-arg factories), fits the translators, and writes a `TunedLens` to `--out`.
+  Tests: `tests/test_tuned_lens_cli.py`.
+- **Report integration.** `activation/tuned_lens_kl` is a hero section; a new
+  `tuned_lens_not_forming` flag fires when a tuned-lens KL stays high (prediction not forming /
+  stale lens). Tests: `tests/recorder/test_tuned_lens_report.py`.
+- **`core.weight.relative_update_delta`** — scale-invariant per-parameter update size
+  `||ΔW|| / ||W||`; the recorder now emits `weight/update_delta_rel/*` alongside `update_delta`.
+
+### Fixed
+- **`build_report` Δ column reported the unsigned range, not the signed trend.** Deferred since
+  v1.2: `_metrics.stats` returned `delta = vmax - vmin`, so a monotonically *decreasing* metric
+  (`effective_rank: 15 → 5`) rendered `Δ = +10`, reading like an increase. `delta` is now the
+  signed `last − first`; the table cell shows the sign and the summary's "moving" label is relabelled
+  "(changed)" (range-based). The `## Flags` block already used a signed trend, so this only aligns
+  the table. Tests: `tests/recorder/test_report.py`.
+- **`update_delta_vanishing` flag used a scale-dependent absolute L2 threshold** (v1.3 review). It
+  now keys on the new dimensionless `weight/update_delta_rel` companion (`||ΔW||/||W||`), so the
+  threshold means the same thing across parameter sizes — a large-matrix healthy step no longer
+  reads as vanishing. Tests: `tests/core/test_weight.py`, `tests/recorder/test_report_flags.py`.
+
+### Investigated / deferred
+- **Gram-matrix (`eigvalsh(WᵀW)`) SVD speedup.** A CPU benchmark confirms ~1.8× at a 2:1 aspect
+  ratio with negligible error on the aggregate rank metrics, but the recorder shares one SVD across
+  all SVD-derived diagnostics — including `sv_histogram`, whose spectral *tail* the Gram squaring
+  degrades — so lowering the default `use_gram='auto'` threshold would regress the v1.8
+  accurate-by-default principle. The gate is the §10 **GPU** wall-clock number; deferred until a GPU
+  benchmark justifies it. Rationale in `docs/superpowers/specs/2026-06-07-v1.10-tuned-lens-design.md` §9.
+
+### Notes
+- The §10 GPU wall-clock budget re-validation **with `tuned_lens_kl` enabled** is pending a GPU
+  run; the diagnostic adds one `(d_model × d_model)` matmul per layer per emit on top of the
+  existing logit-lens projection (no extra forward pass), so it is expected to stay within the
+  ≤10% budget. Tuned-lens *fitting* is post-hoc and outside the training-loop budget by design.
+
 ## [1.9.0] — 2026-06-03
 
 Real-model evaluation follow-ups: every finding from the two v1.8.0 field reports (67-LM
