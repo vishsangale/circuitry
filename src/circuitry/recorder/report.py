@@ -36,6 +36,8 @@ HERO_SECTIONS = frozenset({
     "activation/induction_score",
     "activation/attention_pattern_entropy",
     "activation/sae",
+    # v1.10 tuned lens:
+    "activation/tuned_lens_kl",
     # v1.3 training-dynamics:
     "weight/update_delta",
     "weight/rank_trajectory",
@@ -90,6 +92,16 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         "direction_reversal",
         lambda last, signed: last < -0.5,
         "direction_cosine strongly negative — update direction reversal (last={last:.3f})",
+    ),
+    (
+        "activation/tuned_lens_kl",
+        "tuned_lens_not_forming",
+        # A fitted tuned lens drives per-layer KL toward ~0; a tuned-lens KL
+        # that stays high (> 1 nat) means the prediction is not forming in the
+        # residual stream where the lens expects it (or the lens is stale for
+        # this checkpoint).
+        lambda last, signed: last > 1.0,
+        "tuned_lens_kl still high — prediction not forming / stale lens (last={last:.3f} nats)",
     ),
 ]
 

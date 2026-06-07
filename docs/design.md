@@ -80,7 +80,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   └── null.py
 │   └── cli/
 │       ├── __init__.py
-│       └── main.py         # circuitry scan / report / list-recipes
+│       └── main.py         # circuitry scan / report / compare / list-recipes / fit-tuned-lens
 ├── tests/
 │   ├── core/
 │   ├── recorder/
@@ -244,9 +244,10 @@ circuitry scan    --run runs/my_run --recipe llm
 circuitry report  --run runs/my_run [--compact]
 circuitry compare run_a run_b [--out path] [--compact]
 circuitry list-recipes
+circuitry fit-tuned-lens --model pkg.mod:make_model --batches pkg.mod:make_batches --out lens.pt [--layers 0 1 2] [--steps N] [--lr LR] [--weight-decay WD] [--device DEV]
 ```
 
-`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2).
+`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2). `fit-tuned-lens` (v1.10) resolves `--model` / `--batches` as `package.module:attr` entry points (zero-arg factories returning the model and an iterable of inputs), fits per-layer tuned-lens translators post-hoc, and writes a `TunedLens` to `--out`; load it into `recipe.tuned_lens` and add `"tuned_lens_kl"` to `activation_diagnostics` to emit the diagnostic.
 
 **Static vs trajectory diagnostics on a scan.** *Static* weight diagnostics (`effective_rank`, `stable_rank`, `condition_number`, `heavy_tail_alpha`, `sv_histogram`) work on a single checkpoint. *Trajectory* diagnostics (`update_delta`, `rank_trajectory`, `direction_cosine`) compare consecutive emitted snapshots and produce nothing until ≥2 (≥3 for `direction_cosine`) checkpoints are scanned. A single-snapshot `scan_run` emits only the static families and warns once when trajectory diagnostics are requested with fewer than two checkpoints.
 
