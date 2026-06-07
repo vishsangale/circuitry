@@ -60,17 +60,93 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    # scan_run needs a model_factory which the CLI cannot conjure without a
-    # user-supplied import path. Surface a clear error pointing to the
-    # programmatic API. The `--model-factory dotted.path:fn` flag is planned
-    # for a future release.
-    print(
-        "circuitry scan: requires a model factory not yet exposed via the CLI.\n"
-        "  Use circuitry.recorder.scan.scan_run(...) programmatically for now.\n"
-        f"  Discovered checkpoints: {args.run}/checkpoints",
-        file=sys.stderr,
+    import pathlib
+    from circuitry.recorder.scan import scan_run
+    factory = _load_entrypoint(args.model_factory)
+    out_dir = args.out or str(pathlib.Path(args.run) / "scan_report")
+    scan_run(
+        run_dir=args.run,
+        recipe=args.recipe,
+        out_dir=out_dir,
+        model_factory=factory,
     )
-    return 2
+    return 0
+
+
+def _circuit_edge_set(data: dict) -> frozenset:
+    """Extract a frozenset of (writer_str, slot, reader_str) tuples from circuit JSON."""
+    from circuitry.patching.graph import _node_from_dict, _node_str
+    kind = data.get("kind", "")
+    if kind == "acdc":
+        rows = data.get("kept_edges", [])
+    elif kind == "eap":
+        rows = data.get("scores", [])
+    else:
+        raise ValueError(
+            f"unsupported circuit kind {kind!r} — expected 'eap' or 'acdc'"
+        )
+    result = set()
+    for row in rows:
+        writer = _node_str(_node_from_dict(row["writer"]))
+        reader = _node_str(_node_from_dict(row["reader"]))
+        result.add((writer, row["slot"], reader))
+    return frozenset(result)
+
+
+def _cmd_circuit_compare(args: argparse.Namespace) -> int:
+    import json
+    import pathlib
+
+    a_data = json.loads(pathlib.Path(args.a).read_text())
+    b_data = json.loads(pathlib.Path(args.b).read_text())
+
+    edges_a = _circuit_edge_set(a_data)
+    edges_b = _circuit_edge_set(b_data)
+
+    only_a = sorted(edges_a - edges_b)
+    only_b = sorted(edges_b - edges_a)
+    n_both = len(edges_a & edges_b)
+
+    lines = [
+        "## Circuit Comparison",
+        "",
+        f"| | `{args.a}` | `{args.b}` |",
+        "| --- | ---: | ---: |",
+        f"| total edges | {len(edges_a)} | {len(edges_b)} |",
+        f"| edges in both | {n_both} | {n_both} |",
+        f"| unique to this file | {len(only_a)} | {len(only_b)} |",
+        "",
+    ]
+
+    def _edge_row(writer: str, slot: str, reader: str) -> str:
+        return f"| `{writer}` | {slot} | `{reader}` |"
+
+    if only_a:
+        lines.append(f"### Only in `{args.a}` ({len(only_a)} edges)")
+        lines.append("")
+        lines.append("| writer | slot | reader |")
+        lines.append("| --- | --- | --- |")
+        for writer, slot, reader in only_a:
+            lines.append(_edge_row(writer, slot, reader))
+        lines.append("")
+
+    if only_b:
+        lines.append(f"### Only in `{args.b}` ({len(only_b)} edges)")
+        lines.append("")
+        lines.append("| writer | slot | reader |")
+        lines.append("| --- | --- | --- |")
+        for writer, slot, reader in only_b:
+            lines.append(_edge_row(writer, slot, reader))
+        lines.append("")
+
+    output = "\n".join(lines)
+    if args.out:
+        out_path = pathlib.Path(args.out)
+        out_path.write_text(output)
+        print(f"wrote {out_path}")
+    else:
+        print(output)
+    return 0
 
 
 def _cmd_fit_tuned_lens(args: argparse.Namespace) -> int:
@@ -129,9 +205,26 @@ def main(argv: list[str] | None = None) -> int:
     p_compare.set_defaults(func=_cmd_compare)
 
     p_scan = sub.add_parser("scan", help="retrospective scan of checkpoints")
-    p_scan.add_argument("--run", required=True)
-    p_scan.add_argument("--recipe", required=True)
+    p_scan.add_argument("--run", required=True, help="run directory (must contain checkpoints/)")
+    p_scan.add_argument("--recipe", required=True, help="recipe name or dotted entry point")
+    p_scan.add_argument(
+        "--model-factory", required=True, dest="model_factory",
+        help="entry point 'pkg.module:factory' returning a fresh nn.Module",
+    )
+    p_scan.add_argument(
+        "--out", default=None,
+        help="output directory for the scan report (default: <run>/scan_report)",
+    )
     p_scan.set_defaults(func=_cmd_scan)
+
+    p_cc = sub.add_parser(
+        "circuit-compare",
+        help="diff two circuit JSON files (EAP or ACDC) by edge-set",
+    )
+    p_cc.add_argument("a", help="first circuit JSON file")
+    p_cc.add_argument("b", help="second circuit JSON file")
+    p_cc.add_argument("--out", default=None, help="write markdown diff to file (default: stdout)")
+    p_cc.set_defaults(func=_cmd_circuit_compare)
 
     p_fit = sub.add_parser(
         "fit-tuned-lens",

@@ -14,6 +14,10 @@ from circuitry.patching.graph import (
     Edge,
     EdgeGraph,
     Node,
+    _node_from_dict,
+    _node_str,
+    _node_to_dict,
+    build_graph,
     edge_sort_key,
     reverse_topo_readers,
 )
@@ -36,6 +40,68 @@ class ACDCResult:
         sub = [e for e in self.graph.edges if e in kept]
         return EdgeGraph(self.graph.n_layers, self.graph.n_heads,
                          self.graph.writers, self.graph.readers, sub)
+
+    def to_markdown(self, *, top_k: int | None = None) -> str:
+        """Render a markdown summary with the circuit edge table."""
+        n_total = len(self.kept_edges) + len(self.removed_edges)
+        lines = ["## ACDC Circuit", ""]
+        lines.append(f"- Kept edges: {self.n_kept()} / {n_total}")
+        lines.append(f"- Final KL: {self.final_kl:.4g}")
+        lines.append("")
+        edges = sorted(self.kept_edges, key=edge_sort_key)
+        show = edges[:top_k] if top_k is not None else edges
+        lines.append(f"### Circuit Edges ({self.n_kept()} kept)")
+        lines.append("")
+        lines.append("| writer | slot | reader |")
+        lines.append("| --- | --- | --- |")
+        for edge in show:
+            lines.append(
+                f"| `{_node_str(edge.writer)}` | {edge.slot} | `{_node_str(edge.reader)}` |"
+            )
+        if top_k is not None and len(edges) > top_k:
+            lines.append(f"| … | … | ({len(edges) - top_k} more) |")
+        return "\n".join(lines)
+
+    def to_json(self) -> str:
+        """Serialize to JSON (round-trips via from_json())."""
+        import json
+        def _edge_dict(e: Edge) -> dict:
+            return {
+                "writer": _node_to_dict(e.writer),
+                "reader": _node_to_dict(e.reader),
+                "slot": e.slot,
+            }
+        data = {
+            "kind": "acdc",
+            "n_layers": self.graph.n_layers,
+            "n_heads": self.graph.n_heads,
+            "final_kl": self.final_kl,
+            "kept_edges": [_edge_dict(e) for e in sorted(self.kept_edges, key=edge_sort_key)],
+            "n_total_edges": len(self.kept_edges) + len(self.removed_edges),
+        }
+        return json.dumps(data, indent=2)
+
+    @classmethod
+    def from_json(cls, text: str) -> "ACDCResult":
+        """Deserialize from JSON produced by to_json()."""
+        import json
+        data = json.loads(text)
+        graph = build_graph(data["n_layers"], data["n_heads"])
+        def _parse_edge(d: dict) -> Edge:
+            return Edge(
+                writer=_node_from_dict(d["writer"]),
+                reader=_node_from_dict(d["reader"]),
+                slot=d["slot"],
+            )
+        kept = [_parse_edge(d) for d in data.get("kept_edges", [])]
+        kept_set = set(kept)
+        removed = [e for e in graph.edges if e not in kept_set]
+        return cls(
+            kept_edges=kept,
+            removed_edges=removed,
+            final_kl=data["final_kl"],
+            graph=graph,
+        )
 
 
 def _logits_of(out: Any) -> Tensor:

@@ -96,6 +96,58 @@ def build_graph(n_layers: int, n_heads: int) -> EdgeGraph:
     return EdgeGraph(n_layers, n_heads, writers, readers, edges)
 
 
+def _node_str(node: Node) -> str:
+    """Human-readable label for a Node (used by to_markdown())."""
+    if node.kind == "embed":
+        return "embed"
+    if node.kind == "logits":
+        return "logits"
+    if node.kind == "attn_head" and node.layer is not None and node.head is not None:
+        return f"L{node.layer}H{node.head}"
+    if node.kind == "mlp" and node.layer is not None:
+        comp = f".{node.component}" if node.component else ""
+        return f"mlp.L{node.layer}{comp}"
+    if node.kind == "mlp_neuron" and node.layer is not None and node.neuron is not None:
+        return f"neuron.L{node.layer}.{node.neuron}"
+    if node.kind == "sae_feature" and node.layer is not None and node.neuron is not None:
+        comp = f"[{node.component}]" if node.component else ""
+        return f"sae.L{node.layer}.feat{node.neuron}{comp}"
+    if node.kind == "sae_error":
+        layer = f".L{node.layer}" if node.layer is not None else ""
+        return f"sae_err{layer}"
+    parts = [node.kind]
+    if node.layer is not None:
+        parts.append(f"L{node.layer}")
+    if node.head is not None:
+        parts.append(f"H{node.head}")
+    return ".".join(parts)
+
+
+def _node_to_dict(node: Node) -> dict:
+    """Serialize a Node to a plain dict for JSON output."""
+    d: dict = {"kind": node.kind}
+    if node.layer is not None:
+        d["layer"] = node.layer
+    if node.head is not None:
+        d["head"] = node.head
+    if node.neuron is not None:
+        d["neuron"] = node.neuron
+    if node.component is not None:
+        d["component"] = node.component
+    return d
+
+
+def _node_from_dict(d: dict) -> Node:
+    """Deserialize a Node from a plain dict (inverse of _node_to_dict)."""
+    return Node(
+        kind=d["kind"],
+        layer=d.get("layer"),
+        head=d.get("head"),
+        neuron=d.get("neuron"),
+        component=d.get("component"),
+    )
+
+
 def edge_sort_key(edge: Edge) -> tuple:
     """Deterministic total order on edges for reproducible ACDC traversal.
 

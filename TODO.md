@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Open work and known debt as of **v1.16.0** (2026-06-07). Completed items live in `CHANGELOG.md`
+Open work and known debt as of **v1.17.0** (2026-06-07). Completed items live in `CHANGELOG.md`
 and git history. Design contract: `docs/design.md` — amend it before changing any
 CI-enforced invariant.
 
@@ -42,11 +42,6 @@ CI-enforced invariant.
 
 ## Patching & attribution
 
-- [ ] **[M][feat] Circuit result rendering (`to_markdown` / compare).** `EAPResult`,
-  `AtPResult`, and `ACDCResult` have no human-readable output. Add a `.to_markdown()` method
-  to each (top-K edge table + circuit graph stats) and a `circuitry compare circuit_a.json
-  circuit_b.json` CLI subcommand for edge-set deltas between two circuits.
-
 - [ ] **[L][feat] SAE-feature circuits — remaining follow-ons.** Shipped in v1.5–1.7: node
   attribution, feature→feature edges (attrib + IG), FeatureACDC. Remaining items noted in
   the ACDC plan:
@@ -56,14 +51,6 @@ CI-enforced invariant.
     passes — different lifecycle than the current single-forward circuit).
 
 ---
-
-## CLI
-
-- [ ] **[M][feat] `circuitry scan --model-factory` completion.** The `scan` subcommand
-  currently exits `rc=2` with a "not yet exposed via CLI" message pointing to the programmatic
-  API. Implement `--model-factory dotted.path:callable` (e.g.
-  `my_project.models:build_model`) using the existing `_load_entrypoint` helper already used
-  by `fit-tuned-lens`, and wire it through to `scan_run`.
 
 ---
 

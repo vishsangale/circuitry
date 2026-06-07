@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] — 2026-06-07
+
+**Circuit rendering.** `EAPResult`, `AtPResult`, and `ACDCResult` gain human-readable output
+and JSON I/O. A new `circuit-compare` CLI subcommand diffs two circuit files by edge-set.
+`circuitry scan --model-factory` is now fully functional.
+
+### Added
+- **`_node_str(node)`**, **`_node_to_dict(node)`**, **`_node_from_dict(d)`** in
+  `circuitry.patching.graph` — human-readable node labels (`embed`, `L2H5`, `mlp.L3`, …)
+  and JSON serialization helpers.
+- **`EAPResult.to_markdown(*, top_k=20) → str`** — `## EAP Circuit` header, graph stats,
+  top-K edge table (`rank | writer | slot | reader | score`).
+- **`EAPResult.to_json() → str`** / **`EAPResult.from_json(text) → EAPResult`** —
+  JSON serialization with `"kind": "eap"`, `n_layers`, `n_heads`, and scored edge list.
+- **`AtPResult.to_markdown(*, top_k=20) → str`** — `## AtP Node Attribution` header,
+  node count, top-K table (`rank | node | slot | score`).
+- **`ACDCResult.to_markdown(*, top_k=None) → str`** — `## ACDC Circuit` header, kept/total
+  edges, final KL, edge table with optional top-K elision.
+- **`ACDCResult.to_json() → str`** / **`ACDCResult.from_json(text) → ACDCResult`** —
+  JSON serialization with `"kind": "acdc"`, kept edges list, final KL. Removed edges are
+  reconstructed from the full graph on deserialization.
+- **`circuitry circuit-compare A.json B.json [--out file]`** CLI subcommand — loads two
+  circuit JSON files (EAP or ACDC), computes symmetric edge-set diff, renders a markdown
+  summary table + per-side unique-edge listings.
+- **`circuitry scan --model-factory pkg.module:factory`** — the scan subcommand now fully
+  works; uses `_load_entrypoint` (same helper as `fit-tuned-lens`) to resolve the factory,
+  then calls `scan_run`. `--out` flag added for output directory override.
+- Tests: 32 new tests in `tests/patching/test_circuit_render.py`; 4 new CLI tests in
+  `tests/test_cli.py`.
+
+### Removed
+- The stub `rc=2` / "not yet exposed via CLI" error path in `_cmd_scan`.
+
+---
+
 ## [1.16.0] — 2026-06-07
 
 **Training-dynamics depth.** Two enhancements to the `## Training Dynamics` report section and

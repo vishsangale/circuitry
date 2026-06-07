@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from circuitry.patching.graph import Node
+from circuitry.patching.graph import Node, _node_str
 
 _ATTN_SLOTS = ("q", "k", "v")
 
@@ -51,6 +51,23 @@ class AtPResult:
 
     def threshold(self, tau: float) -> list[AtPNode]:
         return [n for n, s in self.scores.items() if abs(s) >= tau]
+
+    def to_markdown(self, *, top_k: int = 20) -> str:
+        """Render a markdown summary with a top-K node attribution table."""
+        lines = ["## AtP Node Attribution", ""]
+        lines.append(f"- Total nodes scored: {len(self.scores)}")
+        lines.append("")
+        ranked = self.top_k(top_k)
+        lines.append(f"### Top-{len(ranked)} Nodes by |score|")
+        lines.append("")
+        lines.append("| rank | node | slot | score |")
+        lines.append("| ---: | --- | --- | ---: |")
+        for i, (atp_node, score) in enumerate(ranked, 1):
+            slot_str = atp_node.slot if atp_node.slot else "—"
+            lines.append(
+                f"| {i} | `{_node_str(atp_node.node)}` | {slot_str} | {score:.4g} |"
+            )
+        return "\n".join(lines)
 
     def verify_top_k(
         self,
