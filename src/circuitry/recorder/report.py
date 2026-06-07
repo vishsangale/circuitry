@@ -247,6 +247,128 @@ def _render_section(
     return out
 
 
+_FORMATION_THRESHOLDS: dict[str, float] = {
+    "activation/induction_score": 0.4,
+    "activation/copy_suppression_score": 0.3,
+    "activation/attention_sink_score": 0.5,
+}
+
+_TRANSITION_PREFIXES: frozenset[str] = frozenset({
+    "weight/effective_rank",
+    "weight/rank_trajectory",
+    "weight/update_delta_rel",
+})
+
+
+def _build_training_dynamics_section(
+    grouped: dict[str, list[tuple[int, float]]],
+    step_count: int,
+) -> list[str]:
+    """Render a ## Training Dynamics section with head-formation events and phase transitions.
+
+    Head formation events: heads whose attention score crossed its threshold
+    *during* the recording window (i.e. the formation step > the series' first
+    recorded step).  Heads that were already specialised at step 0 are omitted.
+
+    Phase transitions: sharp change-points detected in rank/health metrics
+    (``weight/effective_rank``, ``weight/rank_trajectory``,
+    ``weight/update_delta_rel``) via :func:`~circuitry.core.dynamics.phase_transition_steps`.
+
+    Returns ``[]`` when ``step_count <= 1`` or when there are no events to show.
+    """
+    if step_count <= 1:
+        return []
+
+    from circuitry.core.dynamics import head_formation_step as _hfs
+    from circuitry.core.dynamics import phase_transition_steps as _pts
+
+    # --- Head formation events ---
+    # (module, head_idx, score_type, formation_step, last_score)
+    formation_events: list[tuple[str, int, str, int, float]] = []
+
+    for tag, series in grouped.items():
+        for prefix, thr in _FORMATION_THRESHOLDS.items():
+            if not tag.startswith(prefix + "/"):
+                continue
+            rest = tag[len(prefix) + 1:]
+            parts = rest.rsplit("/", 1)
+            if len(parts) != 2 or not parts[1].startswith("head_"):
+                continue
+            module = parts[0]
+            try:
+                head_idx = int(parts[1][5:])  # len("head_") == 5
+            except ValueError:
+                continue
+            if len(series) < 2:
+                continue  # need dynamics (multiple steps)
+
+            step = _hfs(series, threshold=thr)
+            if step is None:
+                continue
+            first_step = min(s for s, _ in series)
+            if step == first_step:
+                continue  # pre-formed before recording started
+
+            last_score = max(series, key=lambda x: x[0])[1]
+            score_type = prefix.split("/", 1)[1]  # e.g. "induction_score"
+            formation_events.append((module, head_idx, score_type, step, last_score))
+
+    # --- Phase transitions on rank/health metrics ---
+    # (row_id, pt_step, before_val, after_val)
+    transition_events: list[tuple[str, int, float, float]] = []
+
+    for tag, series in grouped.items():
+        section, _ = _section_and_row(tag)
+        if section not in _TRANSITION_PREFIXES:
+            continue
+        if len(series) < 4:
+            continue  # too few points for reliable smoothing
+        pts = _pts(series)
+        if not pts:
+            continue
+        sorted_s = sorted(series)
+        step_vals = {s: v for s, v in sorted_s}
+        all_steps = [s for s, _ in sorted_s]
+        _, row_id = _section_and_row(tag)
+        for pt_step in pts:
+            before_steps = [s for s in all_steps if s < pt_step]
+            after_steps = [s for s in all_steps if s >= pt_step]
+            if not before_steps or not after_steps:
+                continue
+            transition_events.append(
+                (row_id, pt_step, step_vals[before_steps[-1]], step_vals[after_steps[0]])
+            )
+
+    if not formation_events and not transition_events:
+        return []
+
+    lines: list[str] = ["## Training Dynamics", ""]
+
+    if formation_events:
+        formation_events.sort(key=lambda e: (e[0], e[1], e[3]))
+        lines.append("### Head Formation Events")
+        lines.append("")
+        lines.append("| module | head | score | formed at step | final score |")
+        lines.append("| --- | --- | --- | ---: | ---: |")
+        for module, head_idx, score_type, step, last_score in formation_events:
+            lines.append(
+                f"| `{module}` | head_{head_idx} | {score_type} | {step} | {last_score:.3f} |"
+            )
+        lines.append("")
+
+    if transition_events:
+        transition_events.sort(key=lambda e: (e[1], e[0]))
+        lines.append("### Phase Transitions")
+        lines.append("")
+        lines.append("| metric | step | before | after |")
+        lines.append("| --- | ---: | ---: | ---: |")
+        for row_id, pt_step, before, after in transition_events:
+            lines.append(f"| `{row_id}` | {pt_step} | {before:.4g} | {after:.4g} |")
+        lines.append("")
+
+    return lines
+
+
 def _build_head_specialization_section(
     grouped: dict[str, list[tuple[int, float]]],
 ) -> list[str]:
@@ -430,6 +552,9 @@ def build_report(
     # v1.13 head-specialization table: synthesises induction / copy-suppression /
     # sink scores into a per-head type label; only rendered when those tags exist.
     lines.extend(_build_head_specialization_section(grouped))
+
+    # v1.14 training-dynamics: head formation events + phase transitions.
+    lines.extend(_build_training_dynamics_section(grouped, step_count))
 
     if advanced:
         lines.append("<details>")

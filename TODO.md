@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through **v1.12.0** (2026-06-07);
+Tracking doc for open work and future improvements. Released through **v1.14.0** (2026-06-07);
 tags + GitHub Releases v0.1.0 → v1.8.0 are published. An Unreleased cycle on
 `feat/recsys-and-attach-fix` carries: version single-sourcing; a dense-model strict-attach fix
 (`HookPoint.optional`); the sequential-recsys recipe; and the real-model-eval follow-ups —
@@ -165,13 +165,10 @@ grouping is a proposal, not yet decided.
   a top-of-report summary/verdict (per-family final value + trend + flags), a compact mode, and a
   `circuitry compare run_a run_b` (per-family deltas, seed aggregation) — otherwise every comparison
   user re-writes a jsonl parser, as the reporter did. — Done (v1.2.0): `build_report` gains a `## Flags` verdict block (declarative rules, gated on >1 step) + `compact=True` / `--compact` mode; `circuitry compare run_a run_b` subcommand added (`recorder/compare.py`: `compare_runs` / `build_compare_report`), family/diagnostic-granular deltas + trend agreement.
-- [ ] **[bug] `build_report` per-tag `Δ` column shows the unsigned *range* (`vmax − vmin`), not the
-  signed `last − first`.** Surfaced during the v1.2.0 review: a monotonically *decreasing* metric
-  (e.g. `effective_rank: 15 → 5`) renders `Δ = 10` in the table, reading like an increase. Pre-existing
-  (`_stats` in `recorder/_metrics.py`); the new v1.2 `## Flags` block and `compare` correctly use a signed
-  `last − first`, so the table is now the only place with range semantics. Deferred: fixing it changes
-  existing report output and the `test_report` golden expectations — schedule as a v1.2.x point-fix with a
-  test update, not folded into the feature release.
+- [x] **[bug] `build_report` per-tag `Δ` column shows the unsigned *range* (`vmax − vmin`), not the
+  signed `last − first`.** Fixed in the v1.10 polish bucket: `_stats` now returns `vals[-1] - vals[0]`
+  (signed trend); the `## Flags` block and `compare` already used signed values, so all three now agree.
+  TODO checkbox was stale (code was already correct); closed 2026-06-07.
 
 **Trivial / docs (✅ SHIPPED in v0.9.2):**
 
@@ -269,8 +266,12 @@ Specs + plans live under `docs/superpowers/`.
 
 ## Future research / features (from `docs/v0.9-research` ledger)
 
-- [ ] **[feat] Training-dynamics diagnostics** (Q5): grokking signals, induction-head
-  formation curves, representational drift over a run.
+- [x] **[feat] Training-dynamics diagnostics** (Q5 — v1.14, partial): induction-head
+  formation curves + phase-transition detection shipped as `core/dynamics.py`
+  (`phase_transition_steps`, `head_formation_step`) + `## Training Dynamics` report section
+  (Head Formation Events + Phase Transitions tables; suppressed in compact mode).
+  Remaining: full grokking-signal suite (loss-curve segmentation, weight-norm inflection
+  detection), representational drift trending over a run.
 - [ ] **[feat] Tooling-landscape gap analysis** (Q6): position vs TransformerLens / nnsight /
   pyvene / sae_lens; identify the differentiated surface.
 - [ ] **[feat] Tuned lens** (extends Q3 logit lens). **Scoped for v1.10** — spec + staged
