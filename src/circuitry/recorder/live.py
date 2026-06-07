@@ -225,6 +225,9 @@ class Recorder:
         self._param_for_module: dict[str, str] = {}
         self._attn_meta: _AttnMeta | None = None
         self._lens_meta: _LensMeta | None = None
+        # v1.10 tuned lens: a fitted TunedLens whose fingerprint matches this
+        # model, or None (requested-but-unsupplied / mismatch — warned at attach).
+        self._tuned_lens: Any | None = None
         self._induction_probe: torch.Tensor | None = None
         self._main_pass_attn: dict[str, torch.Tensor] = {}
         self._warned_unnormalized_attn = False
@@ -357,7 +360,13 @@ class Recorder:
                     "'head_dim': ...} to enable it; emitting no head-rank tags."
                 )
 
-        if "logit_lens_kl" in self.recipe.activation_diagnostics:
+        # Both the logit lens and the v1.10 tuned lens share unembed + final-LN
+        # resolution, so resolve _lens_meta if either diagnostic is requested.
+        _lens_requested = (
+            "logit_lens_kl" in self.recipe.activation_diagnostics
+            or "tuned_lens_kl" in self.recipe.activation_diagnostics
+        )
+        if _lens_requested:
             try:
                 emb = self.model.get_output_embeddings()
             except (AttributeError, NotImplementedError):
@@ -374,10 +383,36 @@ class Recorder:
                                             layer_norm=ln)
             else:
                 logger.warning(
-                    "circuitry: logit_lens_kl requested but model has no "
-                    "resolvable output embedding (get_output_embeddings or "
-                    ".lm_head) — skipping"
+                    "circuitry: a lens diagnostic (logit_lens_kl / tuned_lens_kl) "
+                    "was requested but the model has no resolvable output "
+                    "embedding (get_output_embeddings or .lm_head) — skipping"
                 )
+
+        # v1.10 tuned lens: requires a fitted Recipe.tuned_lens whose
+        # fingerprint matches this model. Resolve once at attach() so the
+        # diagnostic loop only ever applies a validated, frozen lens.
+        if "tuned_lens_kl" in self.recipe.activation_diagnostics:
+            tl = getattr(self.recipe, "tuned_lens", None)
+            if tl is None:
+                logger.warning(
+                    "circuitry: tuned_lens_kl requested but no fitted "
+                    "Recipe.tuned_lens supplied — fit one with "
+                    "`circuitry fit-tuned-lens` (or circuitry.tuned_lens."
+                    "fit_tuned_lens) and set recipe.tuned_lens; skipping."
+                )
+            else:
+                from circuitry.tuned_lens import model_fingerprint as _fp
+                got = _fp(self.model)
+                if got != tl.model_fingerprint:
+                    logger.warning(
+                        "circuitry: tuned_lens_kl skipped — the supplied "
+                        "Recipe.tuned_lens was fitted on a different model "
+                        "(fingerprint %s) than the attached one (%s). Re-fit the "
+                        "lens for this model.",
+                        tl.model_fingerprint, got,
+                    )
+                else:
+                    self._tuned_lens = tl
 
         # SDPA / flash-attention silently drop per-head attention weights even
         # when output_attentions=True is injected, so induction_score and
@@ -801,6 +836,8 @@ class Recorder:
         self._prev_prev_weights.clear()
         # Release drift-probe reference activations (v1.4).
         self._ref_probe_activations = None
+        # Release the fitted tuned lens reference (v1.10).
+        self._tuned_lens = None
         self._restore_output_attentions()
         if self._writer is not None:
             self._writer.flush()
@@ -903,6 +940,69 @@ class Recorder:
 
     def _enabled(self, name: str) -> bool:
         return self.recipe.enabled.get(name, True)
+
+    @staticmethod
+    def _block_layer_idx(name: str) -> int | None:
+        """Layer index N from a residual-block module name ending in ``layers.N``."""
+        import re as _re
+        m = _re.search(r'(?:^|\.)layers\.(\d+)$', name)
+        return int(m.group(1)) if m else None
+
+    def _lens_block_outputs(
+        self, ctx: StepContext,
+    ) -> tuple[list[tuple[str, torch.Tensor]], torch.Tensor, int | None] | None:
+        """Shared setup for the logit / tuned lens diagnostics.
+
+        Returns ``(block_outputs, final_logits, max_tok)`` where ``block_outputs``
+        is the per-layer ``[(module_name, residual), ...]`` sorted by numeric
+        layer index, and ``final_logits`` is the model's final distribution
+        reconstructed as ``LN_f(last_block) @ W_U`` — the same reconstruction the
+        tuned lens was fitted against. Returns ``None`` (and disables further
+        lens emission this attach) when no residual-stream block outputs match.
+        """
+        if self._lens_meta is None:
+            return None
+        _W_raw = self._lens_meta.unembed
+        # HF convention is (vocab, d_model) so d_model is the smaller dim; for
+        # the unusual square case we fall back to dim 1.
+        d_model_unembed = (
+            _W_raw.shape[-1]
+            if _W_raw.shape[0] >= _W_raw.shape[-1]
+            else _W_raw.shape[0]
+        )
+        # Keep only residual-stream block outputs (module name ends in
+        # `.layers.N`); the d_model check is a secondary guard. Sort by numeric
+        # layer index so block_outputs[-1] is the true final layer regardless of
+        # digit count (layer 9 must not sort after layer 34).
+        block_outputs = sorted(
+            ((k, v) for k, v in ctx.activations.items()
+             if self._block_layer_idx(k) is not None
+             and v.shape[-1] == d_model_unembed),
+            key=lambda kv: self._block_layer_idx(kv[0]),
+        )
+        if not block_outputs:
+            logger.warning(
+                "circuitry: lens diagnostic found no activations with last-dim "
+                "matching unembed d_model=%d — skipping.",
+                d_model_unembed,
+            )
+            self._lens_meta = None
+            return None
+        _last_name, last_x = block_outputs[-1]
+        max_tok = self.recipe.lens_max_tokens
+        with torch.inference_mode():
+            last_f32 = last_x.detach().to(torch.float32)
+            if max_tok is not None:
+                last_f32 = last_f32[:, :max_tok, :]
+            ln = self._lens_meta.layer_norm
+            last_normed = ln(last_f32) if ln is not None else last_f32
+            W = _W_raw.to(torch.float32)
+            # unembed for HF is (vocab, d_model); transpose if needed.
+            if W.shape[-1] == last_normed.shape[-1]:
+                final_logits = last_normed @ W.t()
+            else:
+                final_logits = last_normed @ W
+        return block_outputs, final_logits, max_tok
 
     def _run_diagnostics(
         self,
@@ -1048,59 +1148,11 @@ class Recorder:
                         )
                 continue
             if name == "logit_lens_kl":
-                if self._lens_meta is None:
+                resolved = self._lens_block_outputs(ctx)
+                if resolved is None:
                     continue
+                block_outputs, final_logits, max_tok = resolved
                 from circuitry.core.lens import logit_lens_kl as _llk
-                # Derive d_model from the unembed weight. HF convention is
-                # (vocab, d_model) so d_model is the smaller dim; for the
-                # unusual square case we fall back to dim 1.
-                _W_raw = self._lens_meta.unembed
-                d_model_unembed = (
-                    _W_raw.shape[-1]
-                    if _W_raw.shape[0] >= _W_raw.shape[-1]
-                    else _W_raw.shape[0]
-                )
-                # Keep only residual-stream block outputs: activations whose
-                # module name ends in `.layers.N` (or is exactly `layers.N`).
-                # Sub-module outputs (self_attn / mlp / layernorm) and the
-                # down_proj INPUT capture are excluded even though several share
-                # d_model — otherwise the lens runs once per d_model-shaped
-                # activation (175 on Gemma 4) instead of once per layer (35).
-                # The d_model check is a secondary guard. Sort by numeric layer
-                # index so block_outputs[-1] is the true final layer regardless
-                # of digit count (layer 9 must not sort after layer 34).
-                import re as _re
-                def _block_layer_idx(_n: str) -> int | None:
-                    _m = _re.search(r'(?:^|\.)layers\.(\d+)$', _n)
-                    return int(_m.group(1)) if _m else None
-                block_outputs = sorted(
-                    ((k, v) for k, v in ctx.activations.items()
-                     if _block_layer_idx(k) is not None
-                     and v.shape[-1] == d_model_unembed),
-                    key=lambda kv: _block_layer_idx(kv[0]),
-                )
-                if not block_outputs:
-                    logger.warning(
-                        "circuitry: logit_lens_kl found no activations with "
-                        "last-dim matching unembed d_model=%d — skipping.",
-                        d_model_unembed,
-                    )
-                    self._lens_meta = None
-                    continue
-                _last_name, last_x = block_outputs[-1]
-                max_tok = self.recipe.lens_max_tokens
-                with torch.inference_mode():
-                    last_f32 = last_x.detach().to(torch.float32)
-                    if max_tok is not None:
-                        last_f32 = last_f32[:, :max_tok, :]
-                    ln = self._lens_meta.layer_norm
-                    last_normed = ln(last_f32) if ln is not None else last_f32
-                    W = _W_raw.to(torch.float32)
-                    # unembed for HF is (vocab, d_model); transpose if needed.
-                    if W.shape[-1] == last_normed.shape[-1]:
-                        final_logits = last_normed @ W.t()
-                    else:
-                        final_logits = last_normed @ W
                 for mod_name, x in block_outputs:
                     if max_tok is not None:
                         x = x[:, :max_tok, :]
@@ -1124,6 +1176,45 @@ class Recorder:
                         continue
                     self._writer.add_scalar(
                         f"activation/logit_lens_kl/{mod_name}", kl, ctx.step,
+                    )
+                continue
+            if name == "tuned_lens_kl":
+                # Opt-in (v1.10). Needs a fitted, fingerprint-matched lens,
+                # resolved at attach() into self._tuned_lens (else None).
+                if self._tuned_lens is None:
+                    continue
+                resolved = self._lens_block_outputs(ctx)
+                if resolved is None:
+                    continue
+                block_outputs, final_logits, max_tok = resolved
+                from circuitry.core.lens import tuned_lens_kl as _tlk
+                for mod_name, x in block_outputs:
+                    layer = self._block_layer_idx(mod_name)
+                    translator = self._tuned_lens.translator_for(layer)
+                    if translator is None:
+                        continue  # this block wasn't fitted (e.g. final frame)
+                    if max_tok is not None:
+                        x = x[:, :max_tok, :]
+                    try:
+                        kl = _tlk(
+                            x, translator, self._lens_meta.unembed, final_logits,
+                            layer_norm=self._lens_meta.layer_norm,
+                        )
+                    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                        if (not isinstance(e, torch.cuda.OutOfMemoryError)
+                                and "out of memory" not in str(e).lower()):
+                            raise
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        logger.warning(
+                            "circuitry: tuned_lens_kl ran out of memory on %s — "
+                            "skipping this layer's emission for this step. Set "
+                            "recipe.lens_max_tokens to cap the lens cost. (%s)",
+                            mod_name, e,
+                        )
+                        continue
+                    self._writer.add_scalar(
+                        f"activation/tuned_lens_kl/{mod_name}", kl, ctx.step,
                     )
                 continue
             if name == "induction_score":
