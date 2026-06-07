@@ -11,6 +11,8 @@ forbidden_modules =
     circuitry.recipes
     circuitry.writers
     circuitry.cli
+    circuitry.patching
+    circuitry.tuned_lens
 
 [importlinter:contract:recipes-not-cli]
 name = recipes/ must not import cli/
@@ -18,4 +20,14 @@ type = forbidden
 source_modules =
     circuitry.recipes
 forbidden_modules =
+    circuitry.cli
+
+[importlinter:contract:tuned-lens-layer]
+name = tuned_lens/ may import core/ only — not recorder/recipes/cli
+type = forbidden
+source_modules =
+    circuitry.tuned_lens
+forbidden_modules =
+    circuitry.recorder
+    circuitry.recipes
     circuitry.cli
