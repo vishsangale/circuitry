@@ -175,3 +175,47 @@ def test_delta_column_signed_positive_for_rising_metric(tmp_path):
     build_report(run_dir=tmp_path, out_path=out)
     md = out.read_text()
     assert "+0.2" in md
+
+
+def test_summary_shows_family_tag_counts(tmp_path):
+    """## Summary should include a per-top-level-family tag count line."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/0", "value": 5.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/stable_rank/0", "value": 3.0, "step": 0, "kind": "scalar"},
+        {"tag": "activation/dead_fraction/0", "value": 0.1, "step": 0, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Tags by family" in md
+    assert "**weight**: 2" in md
+    assert "**activation**: 1" in md
+
+
+def test_grokking_signals_appear_in_training_dynamics(tmp_path):
+    """A sharp loss drop should surface in the Grokking Signals sub-table."""
+    rows = (
+        [{"tag": "train/loss", "value": 2.0, "step": s, "kind": "scalar"}
+         for s in range(10)]
+        + [{"tag": "train/loss", "value": 0.3, "step": s, "kind": "scalar"}
+           for s in range(10, 20)]
+    )
+    _write_jsonl(tmp_path / "metrics.jsonl", rows)
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Grokking Signals" in md
+    assert "loss" in md
+
+
+def test_grokking_signals_absent_for_monotone_loss(tmp_path):
+    """A smoothly declining loss must not produce a Grokking Signals entry."""
+    rows = [
+        {"tag": "train/loss", "value": 2.0 - 0.05 * s, "step": s, "kind": "scalar"}
+        for s in range(30)
+    ]
+    _write_jsonl(tmp_path / "metrics.jsonl", rows)
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Grokking Signals" not in md

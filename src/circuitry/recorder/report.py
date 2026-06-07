@@ -264,21 +264,21 @@ def _build_training_dynamics_section(
     grouped: dict[str, list[tuple[int, float]]],
     step_count: int,
 ) -> list[str]:
-    """Render a ## Training Dynamics section with head-formation events and phase transitions.
+    """Render a ## Training Dynamics section with three sub-tables.
 
-    Head formation events: heads whose attention score crossed its threshold
-    *during* the recording window (i.e. the formation step > the series' first
-    recorded step).  Heads that were already specialised at step 0 are omitted.
+    - **Head Formation Events**: heads whose attention score crossed its threshold
+      *during* the recording window (formation step > series' first recorded step).
+    - **Phase Transitions**: sharp change-points in rank/health metrics
+      (``weight/effective_rank``, ``weight/rank_trajectory``, ``weight/update_delta_rel``).
+    - **Grokking Signals**: first sharp transition in loss / accuracy / error /
+      perplexity series via :func:`~circuitry.core.dynamics.grokking_step`.
 
-    Phase transitions: sharp change-points detected in rank/health metrics
-    (``weight/effective_rank``, ``weight/rank_trajectory``,
-    ``weight/update_delta_rel``) via :func:`~circuitry.core.dynamics.phase_transition_steps`.
-
-    Returns ``[]`` when ``step_count <= 1`` or when there are no events to show.
+    Returns ``[]`` when ``step_count <= 1`` or when no events are detected.
     """
     if step_count <= 1:
         return []
 
+    from circuitry.core.dynamics import grokking_step as _gs
     from circuitry.core.dynamics import head_formation_step as _hfs
     from circuitry.core.dynamics import phase_transition_steps as _pts
 
@@ -339,7 +339,24 @@ def _build_training_dynamics_section(
                 (row_id, pt_step, step_vals[before_steps[-1]], step_vals[after_steps[0]])
             )
 
-    if not formation_events and not transition_events:
+    # --- Grokking signals on loss / accuracy series ---
+    # (tag_row_id, grokking_step_val, value_at_step)
+    _GROKKING_KEYWORDS = ("loss", "acc", "accuracy", "error", "perplexity")
+    grokking_events: list[tuple[str, int, float]] = []
+    for tag, series in grouped.items():
+        if len(series) < 4:
+            continue
+        _, row_id = _section_and_row(tag)
+        if not any(kw in row_id.lower() for kw in _GROKKING_KEYWORDS):
+            continue
+        gs = _gs(series)
+        if gs is None:
+            continue
+        val_at = next((v for s, v in sorted(series) if s == gs), None)
+        if val_at is not None:
+            grokking_events.append((row_id, gs, val_at))
+
+    if not formation_events and not transition_events and not grokking_events:
         return []
 
     lines: list[str] = ["## Training Dynamics", ""]
@@ -364,6 +381,16 @@ def _build_training_dynamics_section(
         lines.append("| --- | ---: | ---: | ---: |")
         for row_id, pt_step, before, after in transition_events:
             lines.append(f"| `{row_id}` | {pt_step} | {before:.4g} | {after:.4g} |")
+        lines.append("")
+
+    if grokking_events:
+        grokking_events.sort(key=lambda e: e[1])
+        lines.append("### Grokking Signals")
+        lines.append("")
+        lines.append("| metric | step | value at transition |")
+        lines.append("| --- | ---: | ---: |")
+        for row_id, step, val in grokking_events:
+            lines.append(f"| `{row_id}` | {step} | {val:.4g} |")
         lines.append("")
 
     return lines
@@ -500,6 +527,16 @@ def build_report(
         f"(changed) · **{static}** static · **{step_count}** emit step(s) "
         f"observed."
     )
+    # Per-top-level-family tag counts (e.g. "weight: 24 · activation: 12").
+    family_counts: dict[str, int] = {}
+    for tag in grouped:
+        fam = tag.split("/")[0]
+        family_counts[fam] = family_counts.get(fam, 0) + 1
+    if family_counts:
+        fam_parts = " · ".join(
+            f"**{fam}**: {cnt}" for fam, cnt in sorted(family_counts.items())
+        )
+        lines.append(f"- Tags by family: {fam_parts}.")
     if step_count == 1:
         lines.append("")
         lines.append(

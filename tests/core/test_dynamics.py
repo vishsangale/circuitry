@@ -1,9 +1,9 @@
-"""Tests for circuitry.core.dynamics — phase_transition_steps and head_formation_step."""
+"""Tests for circuitry.core.dynamics — phase_transition_steps, head_formation_step, grokking_step."""
 from __future__ import annotations
 
 import pytest
 
-from circuitry.core.dynamics import head_formation_step, phase_transition_steps
+from circuitry.core.dynamics import grokking_step, head_formation_step, phase_transition_steps
 
 
 # ---------------------------------------------------------------------------
@@ -134,3 +134,41 @@ def test_already_above_at_step_zero():
     """Head above threshold from step 0 — returns step 0."""
     series = [(i, 0.9) for i in range(10)]
     assert head_formation_step(series, threshold=0.4) == 0
+
+
+# ---------------------------------------------------------------------------
+# grokking_step
+# ---------------------------------------------------------------------------
+
+def test_grokking_step_detects_loss_drop():
+    """Sharp loss drop midway returns the transition step."""
+    series = [(i, 2.0) for i in range(10)] + [(i, 0.3) for i in range(10, 20)]
+    step = grokking_step(series)
+    assert step is not None
+    assert 8 <= step <= 12
+
+
+def test_grokking_step_monotone_returns_none():
+    """A smooth monotone decline is not a grokking event."""
+    series = [(i, 2.0 - 0.05 * i) for i in range(30)]
+    assert grokking_step(series) is None
+
+
+def test_grokking_step_constant_returns_none():
+    series = [(i, 1.5) for i in range(20)]
+    assert grokking_step(series) is None
+
+
+def test_grokking_step_single_point_returns_none():
+    assert grokking_step([(0, 1.0)]) is None
+
+
+def test_grokking_step_returns_first_of_multiple():
+    """When there are two grokking events, the first (earliest) step is returned."""
+    flat1 = [(i, 2.0) for i in range(10)]
+    drop1 = [(i, 1.0) for i in range(10, 25)]
+    drop2 = [(i, 0.2) for i in range(25, 40)]
+    series = flat1 + drop1 + drop2
+    step = grokking_step(series)
+    assert step is not None
+    assert step < 25  # first event, not second

@@ -100,6 +100,32 @@ def phase_transition_steps(
     return sorted(steps[idx] for idx in kept_idxs)
 
 
+def grokking_step(
+    series: list[tuple[int, float]],
+    *,
+    z_threshold: float = 2.5,
+) -> int | None:
+    """Return the first sharp transition step in a loss or accuracy time series.
+
+    A convenience wrapper around :func:`phase_transition_steps` that returns
+    only the *first* detected transition — the earliest grokking event — rather
+    than all of them.  The default ``z_threshold`` is raised to 2.5 (vs 2.0 for
+    the general-purpose primitive) to reduce false positives on the noisier loss
+    and accuracy curves typically logged during training.
+
+    Returns ``None`` if the series has no statistically sharp change.
+
+    Args:
+        series: Sorted ``(step, value)`` pairs — same format as
+            :func:`phase_transition_steps`.
+        z_threshold: Bilateral-change cutoff in standard deviations above the
+            mean.  Default 2.5 is intentionally conservative for noisy loss
+            curves.
+    """
+    pts = phase_transition_steps(series, z_threshold=z_threshold)
+    return pts[0] if pts else None
+
+
 def head_formation_step(
     series: list[tuple[int, float]],
     *,
