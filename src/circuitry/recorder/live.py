@@ -260,6 +260,13 @@ class Recorder:
         # When True the induction_score and attention_pattern_entropy blocks
         # skip silently rather than raising.
         self._attn_diags_sdpa_skip = False
+        # Per-step cache for the induction probe forward pass.  Both
+        # induction_score and copy_suppression_score need the same captured
+        # attention patterns; this avoids running two probe passes when both
+        # are enabled.  Reset to empty dict at the start of each step's
+        # diagnostic loop; -1 sentinel means "not yet run this step".
+        self._probe_attn_cache: dict[str, torch.Tensor] = {}
+        self._probe_attn_step: int = -1
 
     # ---- internal helpers ------------------------------------------------
 
@@ -444,7 +451,11 @@ class Recorder:
                     " / ".join(_attn_diags), impl,
                 )
 
-        if "induction_score" in self.recipe.activation_diagnostics:
+        _needs_probe = (
+            "induction_score" in self.recipe.activation_diagnostics
+            or "copy_suppression_score" in self.recipe.activation_diagnostics
+        )
+        if _needs_probe:
             cfg = getattr(self.model, "config", None)
             text_cfg = getattr(cfg, "text_config", None)
             vocab = None
@@ -468,8 +479,8 @@ class Recorder:
                         break
             if vocab is None:
                 logger.warning(
-                    "circuitry: induction_score requested but cannot resolve "
-                    "vocab_size — skipping"
+                    "circuitry: induction_score / copy_suppression_score "
+                    "requested but cannot resolve vocab_size — skipping"
                 )
             else:
                 n = self.recipe.induction_probe_seq_len
@@ -776,6 +787,72 @@ class Recorder:
         except TypeError:
             return self.model(probe)
 
+    def _get_probe_attn(self, ctx: "StepContext") -> dict[str, "torch.Tensor"]:
+        """Return {module_name: attn_tensor} from the induction probe forward.
+
+        Lazily runs the probe pass once per step and caches the result so that
+        both ``induction_score`` and ``copy_suppression_score`` share a single
+        forward pass when both are enabled.  Returns an empty dict when the
+        probe is unavailable (SDPA backend, probe not built, etc.).
+        """
+        if self._probe_attn_step == ctx.step:
+            return self._probe_attn_cache
+
+        self._probe_attn_cache = {}
+        self._probe_attn_step = ctx.step
+
+        if self._induction_probe is None or self._attn_diags_sdpa_skip:
+            return self._probe_attn_cache
+
+        # Collect self_attn modules matched by OUTPUT hook points.
+        self_attn_modules: dict[str, nn.Module] = {}
+        name_to_mod = dict(self.model.named_modules())
+        for idx, hp in enumerate(self.recipe.hook_points):
+            if hp.source is not TensorSource.OUTPUT:
+                continue
+            for mn in self._matched[idx]:
+                mod = name_to_mod.get(mn)
+                if mod is None:
+                    continue
+                short = mn.rsplit(".", 1)[-1]
+                if short in ("self_attn", "attn", "attention"):
+                    self_attn_modules[mn] = mod
+        if not self_attn_modules:
+            return self._probe_attn_cache
+
+        captured: dict[str, torch.Tensor] = {}
+
+        def _mk_capture(mn: str, _cap: dict[str, torch.Tensor] = captured):
+            def _h(_mod, _inp, hook_out):
+                if (
+                    isinstance(hook_out, tuple)
+                    and len(hook_out) >= 2
+                    and isinstance(hook_out[1], torch.Tensor)
+                ):
+                    _cap[mn] = hook_out[1].detach()
+            return _h
+
+        handles = [
+            mod.register_forward_hook(_mk_capture(mn))
+            for mn, mod in self_attn_modules.items()
+        ]
+        # Snapshot training-forward attention so the permanent _main_pass_attn
+        # hook (which fires during the probe forward too) doesn't overwrite the
+        # training values needed by attention_pattern_entropy later this step.
+        _main_pass_attn_snapshot = dict(self._main_pass_attn)
+        try:
+            probe_dev = next(self.model.parameters()).device
+            probe = self._induction_probe.to(probe_dev)
+            with torch.inference_mode():
+                self._probe_forward(probe)
+        finally:
+            for h in handles:
+                h.remove()
+            self._main_pass_attn.update(_main_pass_attn_snapshot)
+
+        self._probe_attn_cache = captured
+        return self._probe_attn_cache
+
     def _set_output_attentions_true(self) -> None:
         """Enable per-head attention output via the HF config (not a forward
         kwarg, which breaks wrappers whose forward lacks **kwargs). Records the
@@ -838,6 +915,9 @@ class Recorder:
         self._ref_probe_activations = None
         # Release the fitted tuned lens reference (v1.10).
         self._tuned_lens = None
+        # Release per-step probe-attn cache (v1.11).
+        self._probe_attn_cache = {}
+        self._probe_attn_step = -1
         self._restore_output_attentions()
         if self._writer is not None:
             self._writer.flush()
@@ -1226,59 +1306,8 @@ class Recorder:
                     )
                 continue
             if name == "induction_score":
-                if self._induction_probe is None or self._attn_diags_sdpa_skip:
-                    continue
                 from circuitry.core.attention import induction_score as _is
-                # Find matched self_attn modules from the hook points.
-                self_attn_modules: dict[str, nn.Module] = {}
-                name_to_mod = dict(self.model.named_modules())
-                for idx, hp in enumerate(self.recipe.hook_points):
-                    if hp.source is not TensorSource.OUTPUT:
-                        continue
-                    for mn in self._matched[idx]:
-                        mod = name_to_mod.get(mn)
-                        if mod is None:
-                            continue
-                        short = mn.rsplit(".", 1)[-1]
-                        if short in ("self_attn", "attn", "attention"):
-                            self_attn_modules[mn] = mod
-                if not self_attn_modules:
-                    continue
-                # Capture attn_weights from each self_attn during probe pass.
-                captured: dict[str, torch.Tensor] = {}
-
-                def _mk_capture(mn: str, _cap: dict[str, torch.Tensor] = captured):
-                    def _h(_mod, _inp, hook_out):
-                        if (
-                            isinstance(hook_out, tuple)
-                            and len(hook_out) >= 2
-                            and isinstance(hook_out[1], torch.Tensor)
-                        ):
-                            _cap[mn] = hook_out[1].detach()
-                    return _h
-
-                handles = [
-                    mod.register_forward_hook(_mk_capture(mn))
-                    for mn, mod in self_attn_modules.items()
-                ]
-                # Snapshot the training-forward attention before the probe pass
-                # so that attention_pattern_entropy (processed later in the same
-                # step loop) reads the TRAINING attention, not the probe's.
-                # The permanent _main_pass_attn capture hook fires during the
-                # probe forward and would otherwise overwrite the training values.
-                _main_pass_attn_snapshot = dict(self._main_pass_attn)
-                try:
-                    probe_dev = next(self.model.parameters()).device
-                    probe = self._induction_probe.to(probe_dev)
-                    with torch.inference_mode():
-                        self._probe_forward(probe)
-                finally:
-                    for h in handles:
-                        h.remove()
-                    # Restore training-forward attention regardless of whether
-                    # the probe forward succeeded or raised.
-                    self._main_pass_attn.update(_main_pass_attn_snapshot)
-                for mn, attn in captured.items():
+                for mn, attn in self._get_probe_attn(ctx).items():
                     try:
                         scores = _is(
                             attn,
@@ -1292,6 +1321,25 @@ class Recorder:
                     for i, s in enumerate(scores):
                         self._writer.add_scalar(
                             f"activation/induction_score/{mn}/head_{i}",
+                            s, ctx.step,
+                        )
+            if name == "copy_suppression_score":
+                from circuitry.core.attention import copy_suppression_score as _css
+                for mn, attn in self._get_probe_attn(ctx).items():
+                    try:
+                        scores = _css(
+                            attn,
+                            seq_len_repeat=self.recipe.induction_probe_seq_len,
+                        )
+                    except ValueError as e:
+                        logger.warning(
+                            "circuitry: copy_suppression_score on %s failed: %s",
+                            mn, e,
+                        )
+                        continue
+                    for i, s in enumerate(scores):
+                        self._writer.add_scalar(
+                            f"activation/copy_suppression_score/{mn}/head_{i}",
                             s, ctx.step,
                         )
                 continue

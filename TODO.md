@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Tracking doc for open work and future improvements. Released through **v1.8.0** (2026-06-01);
+Tracking doc for open work and future improvements. Released through **v1.11.0** (2026-06-07);
 tags + GitHub Releases v0.1.0 → v1.8.0 are published. An Unreleased cycle on
 `feat/recsys-and-attach-fix` carries: version single-sourcing; a dense-model strict-attach fix
 (`HookPoint.optional`); the sequential-recsys recipe; and the real-model-eval follow-ups —
@@ -278,7 +278,7 @@ Specs + plans live under `docs/superpowers/`.
   (core `tuned_lens_kl` primitive + post-hoc `fit_tuned_lens` workflow + Recorder/scan/report/CLI
   wiring; bundles the deferred polish bucket — signed report Δ, scale-invariant
   `update_delta_vanishing`, Gram-matrix SVD speedup).
-- [ ] **[feat] Copy-suppression heads** (extends Q4).
+- [x] **[feat] Copy-suppression heads** (extends Q4). **Shipped v1.11** — `core.attention.copy_suppression_score` + `copy_suppression_score` Recorder/scan/report diagnostic in the `llm` recipe; shared probe-pass cache with `induction_score`. McDougall et al. 2023.
 
 ## Multi-process (design §11 — additive future-release path)
 

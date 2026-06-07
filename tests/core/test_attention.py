@@ -1,4 +1,4 @@
-"""Tests for induction_score and attention_pattern_entropy. Spec §4.2."""
+"""Tests for induction_score, copy_suppression_score, attention_pattern_entropy."""
 from __future__ import annotations
 
 import math
@@ -8,6 +8,7 @@ import torch
 
 from circuitry.core.attention import (
     attention_pattern_entropy,
+    copy_suppression_score,
     induction_score,
 )
 
@@ -58,6 +59,95 @@ def test_rejects_seq_too_short():
     with pytest.raises(ValueError, match="seq="):
         induction_score(attn, seq_len_repeat=n)
 
+
+# ---- copy_suppression_score --------------------------------------------------
+
+def test_perfect_copy_suppression_head_scores_one():
+    """A head that attends 1.0 to the same-token position T+i→i scores 1.0."""
+    n = 8
+    seq = 2 * n
+    n_heads = 1
+    attn = torch.zeros(1, n_heads, seq, seq)
+    for t in range(n):
+        attn[0, 0, t + n, t] = 1.0  # query T+t → key t (same token)
+    scores = copy_suppression_score(attn, seq_len_repeat=n)
+    assert scores == pytest.approx([1.0], abs=1e-6)
+
+
+def test_copy_suppression_uniform_scores_near_one_over_seq():
+    """Uniform attention should give ~1/seq, same as induction_score."""
+    n = 16
+    seq = 2 * n
+    n_heads = 4
+    attn = torch.full((1, n_heads, seq, seq), 1.0 / seq)
+    scores = copy_suppression_score(attn, seq_len_repeat=n)
+    expected = 1.0 / seq
+    for s in scores:
+        assert s == pytest.approx(expected, abs=1e-6)
+
+
+def test_copy_suppression_distinct_from_induction():
+    """A pure induction head (T+i → i+1) should score near 0 on
+    copy_suppression_score, and a pure copy-suppression head (T+i → i)
+    should score near 0 on induction_score."""
+    n = 8
+    seq = 2 * n
+    n_heads = 2
+
+    attn = torch.zeros(1, n_heads, seq, seq)
+    # Head 0: induction pattern (T+i → i+1)
+    for t in range(n - 1):
+        attn[0, 0, t + n, t + 1] = 1.0
+    # Head 1: copy-suppression pattern (T+i → i)
+    for t in range(n):
+        attn[0, 1, t + n, t] = 1.0
+
+    ind = induction_score(attn, seq_len_repeat=n)
+    css = copy_suppression_score(attn, seq_len_repeat=n)
+
+    assert ind[0] == pytest.approx(1.0, abs=1e-6)   # head 0 is induction
+    assert ind[1] == pytest.approx(0.0, abs=1e-6)   # head 1 is NOT induction
+    assert css[0] == pytest.approx(0.0, abs=1e-6)   # head 0 is NOT copy-suppression
+    assert css[1] == pytest.approx(1.0, abs=1e-6)   # head 1 is copy-suppression
+
+
+def test_copy_suppression_uses_all_t_positions():
+    """copy_suppression_score averages over all T positions (induction uses T-1)."""
+    n = 4
+    seq = 2 * n
+    n_heads = 1
+    attn = torch.zeros(1, n_heads, seq, seq)
+    # Set only the last copy-suppression position (T+n-1 → n-1).
+    attn[0, 0, seq - 1, n - 1] = 1.0
+    scores = copy_suppression_score(attn, seq_len_repeat=n)
+    # The 1.0 at position n-1 contributes 1/n to the mean.
+    assert scores[0] == pytest.approx(1.0 / n, abs=1e-6)
+
+
+def test_copy_suppression_rejects_too_short_seq():
+    n = 8
+    attn = torch.zeros(1, 1, n, n)  # seq = n, but we need 2 * n
+    with pytest.raises(ValueError, match="seq="):
+        copy_suppression_score(attn, seq_len_repeat=n)
+
+
+def test_copy_suppression_rejects_non_square():
+    with pytest.raises(ValueError, match="square"):
+        copy_suppression_score(torch.zeros(1, 1, 6, 4), seq_len_repeat=3)
+
+
+def test_copy_suppression_accepts_3d_input():
+    n = 4
+    seq = 2 * n
+    attn = torch.zeros(2, seq, seq)  # (n_heads, seq, seq)
+    for t in range(n):
+        attn[1, t + n, t] = 1.0  # head 1 is perfect copy-suppression
+    scores = copy_suppression_score(attn, seq_len_repeat=n)
+    assert len(scores) == 2
+    assert scores[1] == pytest.approx(1.0, abs=1e-6)
+
+
+# ---- attention_pattern_entropy -----------------------------------------------
 
 def test_entropy_of_uniform_attention_is_log_seq():
     """Uniform attention over `seq` keys has entropy ln(seq)."""

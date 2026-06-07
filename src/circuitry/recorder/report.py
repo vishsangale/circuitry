@@ -34,6 +34,8 @@ HERO_SECTIONS = frozenset({
     # v0.9 additions:
     "activation/logit_lens_kl",
     "activation/induction_score",
+    # v1.11 copy-suppression heads:
+    "activation/copy_suppression_score",
     "activation/attention_pattern_entropy",
     "activation/sae",
     # v1.10 tuned lens:
@@ -97,6 +99,17 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         "direction_reversal",
         lambda last, signed: last < -0.5,
         "direction_cosine strongly negative — update direction reversal (last={last:.3f})",
+    ),
+    (
+        "activation/copy_suppression_score",
+        "copy_suppression_detected",
+        # A per-head mean > 0.3 on the repeated-token probe indicates the head is
+        # consistently attending to same-token positions — the hallmark pattern of
+        # copy-suppression heads (McDougall et al. 2023).  Scores well above this
+        # threshold warrant closer inspection (the head may be suppressing token
+        # copying across the full training distribution).
+        lambda last, signed: last > 0.3,
+        "copy_suppression_score high — potential copy-suppression head (last={last:.3f})",
     ),
     (
         "activation/tuned_lens_kl",

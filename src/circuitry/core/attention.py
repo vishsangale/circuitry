@@ -3,6 +3,10 @@
 induction_score — Olsson et al. 2022 prefix-matching probability on a
 repeated-random-token probe (https://arxiv.org/abs/2209.11895).
 
+copy_suppression_score — McDougall et al. 2023 same-token attention on the
+same repeated-random-token probe: at position T+i, how much does each head
+attend back to position i (the prior occurrence of the same token)?
+
 attention_pattern_entropy — per-head Shannon entropy (nats) of the
 attention distribution over keys.
 """
@@ -50,6 +54,41 @@ def induction_score(attn_pattern: Any, *, seq_len_repeat: int) -> list[float]:
     query_idx = ts + seq_len_repeat
     key_idx = ts + 1
     selected = t[:, :, query_idx, key_idx]  # (batch, n_heads, len(ts))
+    return selected.mean(dim=(0, 2)).tolist()
+
+
+def copy_suppression_score(attn_pattern: Any, *, seq_len_repeat: int) -> list[float]:
+    """Per-head same-token attention on a repeated-random-token probe.
+
+    Uses the same probe structure as :func:`induction_score` — a sequence of
+    the form ``[t_0 … t_{T-1} | t_0 … t_{T-1}]`` — but selects the attention
+    weight at query position ``T+i`` to key position ``i`` (the *prior*
+    occurrence of the same token) rather than ``i+1`` (the induction offset).
+
+    High score → the head strongly attends to earlier positions carrying the
+    same token, the characteristic attention pattern of copy-suppression heads
+    (McDougall et al. 2023). The score is complementary to
+    :func:`induction_score`: induction heads peak on offset +1; copy-suppression
+    heads peak on offset 0.
+
+    Returns a ``list[float]`` of per-head means over the batch and sequence
+    axes, identical in shape to :func:`induction_score`.
+    """
+    t = _ensure_4d(_as_tensor(attn_pattern)).detach().to(torch.float32)
+    _batch, n_heads, seq, seq2 = t.shape
+    if seq != seq2:
+        raise ValueError(
+            f"copy_suppression_score: expected square attn pattern, got {seq}x{seq2}"
+        )
+    if seq < 2 * seq_len_repeat:
+        raise ValueError(
+            f"copy_suppression_score: seq={seq} must be >= 2 * seq_len_repeat="
+            f"{2 * seq_len_repeat}"
+        )
+    ts = torch.arange(seq_len_repeat, device=t.device)
+    query_idx = ts + seq_len_repeat  # second-half positions: T, T+1, ..., 2T-1
+    key_idx = ts                     # first-half positions:  0,   1, ...,  T-1
+    selected = t[:, :, query_idx, key_idx]  # (batch, n_heads, seq_len_repeat)
     return selected.mean(dim=(0, 2)).tolist()
 
 

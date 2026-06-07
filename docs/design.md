@@ -16,7 +16,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 
 ### Naming clarity
 
-`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6), SAE-reconstruction metrics (`circuitry.sae`), node-level **SAE-feature attribution** (`SAEFeatureRunner`, v1.5), **feature→feature SAE circuits** (`SAEFeatureEdgeRunner` + `FeatureACDCRunner`, v1.6), and **generalized SAE circuits** over `mlp_out`/`attn_out` sites, TransformerLens backend, and integrated-gradients variant (`variant='ig'`, v1.7) have since shipped. The **tuned lens** (Belrose et al. 2023) shipped in v1.10 (`circuitry.tuned_lens` — post-hoc `fit_tuned_lens` + the opt-in `tuned_lens_kl` diagnostic; §4.1, §4.4). The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
+`circuitry` is statistical diagnostics on weights / activations / gradients, usable live during training or post-hoc on saved checkpoints. The statistical core remains modality-agnostic; an opt-in interventional **activation-patching / attribution** pillar (EAP, AtP\*, ACDC — §4.6), SAE-reconstruction metrics (`circuitry.sae`), node-level **SAE-feature attribution** (`SAEFeatureRunner`, v1.5), **feature→feature SAE circuits** (`SAEFeatureEdgeRunner` + `FeatureACDCRunner`, v1.6), and **generalized SAE circuits** over `mlp_out`/`attn_out` sites, TransformerLens backend, and integrated-gradients variant (`variant='ig'`, v1.7) have since shipped. The **tuned lens** (Belrose et al. 2023) shipped in v1.10 (`circuitry.tuned_lens` — post-hoc `fit_tuned_lens` + the opt-in `tuned_lens_kl` diagnostic; §4.1, §4.4). **v1.11 adds `copy_suppression_score`** — the per-head same-token attention metric (McDougall et al. 2023) that identifies copy-suppression heads on the repeated-token probe (complement of `induction_score`; §4.1). The name is borrowed from electronics, not from interpretability research. The README MUST open with a one-line scope statement so users arriving from mechanistic-interpretability work understand what this is and where it's heading.
 
 ### Non-goals
 
@@ -55,7 +55,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── gradient.py
 │   │   ├── spectral.py
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl
-│   │   └── attention.py    # induction_score, attention_pattern_entropy
+│   │   └── attention.py    # induction_score, copy_suppression_score, attention_pattern_entropy
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae
 │   │   └── metrics.py      # sae_reconstruction_error
@@ -168,9 +168,10 @@ from circuitry.core import lens
 lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # chunk_size bounds the (tokens, vocab) transient (v0.9.2)
 lens.tuned_lens_kl(residual: Tensor, translator: tuple[Tensor, Tensor], unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # (v1.10) apply learned affine A·h+b before unembed; A=I,b=0 reduces to logit_lens_kl
 
-# attention screening (v0.9)
+# attention screening (v0.9 / v1.11)
 from circuitry.core import attention
 attention.induction_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]
+attention.copy_suppression_score(attn_pattern: Tensor, *, seq_len_repeat: int) -> list[float]  # (v1.11) per-head same-token attention on the repeated-token probe: at position T+i, how much does the head attend back to position i (prior occurrence of the same token)? Complement of induction_score (offset 0 vs +1). High score = copy-suppression head (McDougall et al. 2023). Emitted as activation/copy_suppression_score/<module>/head_N; flagged in the report when last > 0.3.
 attention.attention_pattern_entropy(attn_pattern: Tensor, *, valid_mask=None) -> list[float]  # normalizes each query row before entropy → comparable across attention variants (v0.9.2); per-head mean is NaN-aware (drops fully-(-inf)-masked PAD rows) and valid_mask (True=valid query row, broadcastable to (B,H,T)) restricts the average — left-padded recsys models no longer return NaN
 
 # SAE workflow (v0.9)
@@ -277,7 +278,7 @@ Use `Recipe.with_sae(mapping)` (v0.9) to attach SAE checkpoints: `mapping` is a 
 
 Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns a new `Recipe` with those names set to `False` in `enabled`. Use `Recipe.only(names)` to keep only the listed diagnostics and disable the rest. Both raise `ValueError` on any name not in `weight_diagnostics + activation_diagnostics + gradient_diagnostics`; custom `DiagnosticFn` callables are not name-addressable and are unaffected.
 
-`attn_head_meta` and `forward_fn` support non-HF / config-less models. `attention_head_rank` resolves head metadata in order: `attn_head_meta` (explicit `n_heads`/`n_kv_heads`/`head_dim`/`hidden_size`) → any submodule's `.config` (covers `model.config`, `text_config`, and HF-wrapped `model.model.config`) → `num_heads`/`head_dim` attributes on a `self_attn`/`attn`/`attention` submodule. The recorder's internal probe passes (`induction_score`, `drift_probe`) call `forward_fn(model, batch)` when set — the entry point for models whose `forward` isn't HF-style (e.g. SASRec's `predict_scores`) — otherwise `model(probe, output_attentions=True)` with a `TypeError` fallback. A non-HF model with no resolvable `config` warns once at `attach()` pointing at `forward_fn`.
+`attn_head_meta` and `forward_fn` support non-HF / config-less models. `attention_head_rank` resolves head metadata in order: `attn_head_meta` (explicit `n_heads`/`n_kv_heads`/`head_dim`/`hidden_size`) → any submodule's `.config` (covers `model.config`, `text_config`, and HF-wrapped `model.model.config`) → `num_heads`/`head_dim` attributes on a `self_attn`/`attn`/`attention` submodule. The recorder's internal probe passes (`induction_score`, `copy_suppression_score`, `drift_probe`) call `forward_fn(model, batch)` when set — the entry point for models whose `forward` isn't HF-style (e.g. SASRec's `predict_scores`) — otherwise `model(probe, output_attentions=True)` with a `TypeError` fallback. A non-HF model with no resolvable `config` warns once at `attach()` pointing at `forward_fn`.
 
 `tuned_lens` (v1.10) carries a fitted `TunedLens` (from `circuitry.tuned_lens.fit_tuned_lens` or the `circuitry fit-tuned-lens` CLI) for the **opt-in** `tuned_lens_kl` activation diagnostic — the tuned lens (Belrose et al. 2023) applies a learned per-layer affine `A·h + b` to each residual before the unembed, so per-layer KL is no longer confounded by the early/mid-layer basis mismatch. Fitting is **post-hoc only** (an optimizer loop, never in the training loop — see §10). The recorder resolves the unembed + final-LN exactly as for the logit lens (shared `_lens_meta`), verifies `TunedLens.model_fingerprint` against the attached model at `attach()`, and **warns + skips** when the lens is missing or fitted on a different model — it never emits a wrong KL. It emits `activation/tuned_lens_kl/<layer>` for each fitted block (the final block is the target frame and is not fitted). `tuned_lens_kl` is NOT in any stock recipe's default list; enable it by setting `recipe.tuned_lens` and adding the name to `activation_diagnostics`.
 

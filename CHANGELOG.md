@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — 2026-06-07
+
+**Copy-suppression head detection.** A new `copy_suppression_score` primitive and live/scan
+diagnostic completes the attention-circuit screening pair alongside `induction_score`. On the
+same repeated-token probe, `copy_suppression_score` measures how strongly each head attends
+back to the *same* token's prior position (offset 0), while `induction_score` measures offset +1.
+The two are mathematically complementary: a pure induction head scores ~0 on copy-suppression
+and vice versa. The recorder runs a single shared probe forward per step when both are enabled.
+
+### Added
+- **`core.attention.copy_suppression_score(attn_pattern, *, seq_len_repeat) → list[float]`.**
+  Per-head same-token-attention score on the repeated-token probe — the characteristic pattern of
+  copy-suppression heads (McDougall et al. 2023). Reuses the same `(B, H, T, T)` attention tensor
+  and probe structure as `induction_score`; complement at offset 0. Tests: `tests/core/test_attention.py`.
+- **`copy_suppression_score` activation diagnostic** (Recorder, scan, report). Added to the `llm`
+  recipe's `activation_diagnostics`. Emits `activation/copy_suppression_score/<module>/head_N` per
+  head per attention module per step. Shares the probe forward pass with `induction_score` via a
+  per-step lazy cache (`_get_probe_attn`) — no duplicate probe runs when both are enabled. Report
+  `HERO_SECTIONS` and `FLAG_RULES` updated (`copy_suppression_detected` fires when last > 0.3 nats).
+  Tests: `tests/recorder/test_copy_suppression_diagnostic.py`.
+
+### Changed
+- **Probe-pass deduplication.** The induction-probe forward pass is now extracted into a helper
+  method (`_get_probe_attn`) with a per-step lazy cache. Both `induction_score` and
+  `copy_suppression_score` call it; the probe runs at most once per emit step regardless of how
+  many probe-based diagnostics are enabled.
+
 ## [1.10.0] — 2026-06-07
 
 The **tuned lens** (Belrose et al. 2023) — the one lens the project had flagged as future work —

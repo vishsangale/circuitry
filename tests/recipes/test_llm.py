@@ -72,8 +72,10 @@ def test_llm_recipe_attaches_and_emits_scalars(tmp_path):
     test_recipe = dataclasses.replace(
         r,
         activation_diagnostics=[d for d in r.activation_diagnostics
-                                if d not in ("induction_score", "logit_lens_kl",
-                                            "attention_pattern_entropy")]
+                                if d not in ("induction_score",
+                                             "copy_suppression_score",
+                                             "logit_lens_kl",
+                                             "attention_pattern_entropy")]
     )
     rec = Recorder(model, run_dir=tmp_path, recipe=test_recipe,
                    writer=writer, every_n_steps=1, strict=False)
@@ -136,7 +138,7 @@ def test_llm_recipe_has_twelve_hook_points():
 
 def test_llm_recipe_includes_new_activation_diagnostics():
     r = get_recipe("llm")
-    for diag in ("logit_lens_kl", "induction_score",
+    for diag in ("logit_lens_kl", "induction_score", "copy_suppression_score",
                  "attention_pattern_entropy"):
         assert diag in r.activation_diagnostics
 
