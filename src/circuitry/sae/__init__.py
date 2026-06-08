@@ -10,7 +10,7 @@ from circuitry.sae.grad import (
     encode_features,
     sae_decompose,
 )
-from circuitry.sae.loader import load_sae
+from circuitry.sae.loader import load_gemma_scope, load_llama_scope, load_sae
 from circuitry.sae.metrics import sae_reconstruction_error
 
 __all__ = [
@@ -18,6 +18,8 @@ __all__ = [
     "assert_supported_sae",
     "decode_features",
     "encode_features",
+    "load_gemma_scope",
+    "load_llama_scope",
     "load_sae",
     "sae_decompose",
     "sae_reconstruction_error",

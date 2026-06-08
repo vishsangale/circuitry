@@ -31,6 +31,9 @@ _BLOCKED_ARCHITECTURES = frozenset({
     "jumprelu_transcoder",
     "matching_pursuit",
     "temporal",
+    # Raw crosscoder SAEs must be wrapped in CrosscoderWrapper before
+    # passing to gradient-based attribution helpers.
+    "crosscoder",
 })
 
 _SUPPORTED_NORM_MODES = frozenset({"none", "layer_norm", "constant_norm_rescale"})
