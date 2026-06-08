@@ -54,16 +54,26 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── activation.py
 │   │   ├── gradient.py
 │   │   ├── spectral.py
-│   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14)
-│   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl
+│   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); fourier_feature_alignment, information_bottleneck_score (v1.27)
+│   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl; logit_lens_distributions, future_lens_kl (v1.23–v1.24)
+│   │   ├── steer.py        # steer_vector — CAA mean-difference direction (v1.23)
+│   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24)
+│   │   ├── erase.py        # leace_erase / EraseProjection — orthogonal concept erasure (v1.24)
 │   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy, head_specialization
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
-│   │   ├── loader.py       # load_sae
+│   │   ├── loader.py       # load_sae; load_gemma_scope, load_llama_scope (v1.26)
 │   │   └── metrics.py      # sae_reconstruction_error
+│   ├── benchmarks/         # v1.27: synthetic MIB tasks + SAEBench metrics
+│   │   ├── __init__.py
+│   │   ├── mib.py          # MIBTask, load_ioi, load_greater_than (Mueller et al. ICML 2025)
+│   │   └── saebench.py     # SAEBenchResult, run_saebench (Karvonen et al. 2025)
 │   ├── patching/           # v1.0: activation patching (interventional)
 │   │   ├── sites.py        # Site dataclass + HF/TL resolution
 │   │   ├── intervene.py    # patch_site() context manager
-│   │   └── runner.py       # PatchRunner prompt-pair runner
+│   │   ├── runner.py       # PatchRunner prompt-pair runner
+│   │   ├── steer.py        # apply_steer context manager — adds coeff*vector at site (v1.23)
+│   │   ├── edge_pruning.py # EdgePruningRunner / EdgePruningResult — mask-logit L0 pruning (v1.25)
+│   │   └── hap.py          # HAPRunner — EAP pre-filter + EdgePruningRunner (v1.25)
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
 │   │   ├── scan.py         # scan_run
@@ -99,6 +109,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 - `core/` MUST NOT import from `recorder/`, `recipes/`, `writers/`, `cli/`, or `patching/`.
 - `recipes/` MUST NOT import from `cli/`.
 - `patching/` may import from `core/` and `recipes/`; MUST NOT import from `cli/`.
+- `benchmarks/` may import from `core/` and `sae/`; MUST NOT import from `patching/`, `recorder/`, `recipes/`, or `cli/`.
 - The package MUST NOT import from any downstream user codebase. `circuitry` is the consumed dependency, never the consumer.
 - `transformer_lens` and `transformers` are approved optional dependencies (lazy import only; `circuitry` must install and run without them). `transformers` is imported lazily by the AtP\* QK fix (HF Llama RoPE recomputation, eager-only); `transformer_lens` by the optional TL backends, including `patching/tl_bridge.py` (imported inside the function body; the `test_layering` allowlist is unchanged).
 
@@ -164,10 +175,12 @@ spectral.esd(W: Tensor, bins: int = 100) -> tuple[Tensor, Tensor]
 spectral.rank_trajectory(state_dicts: list[dict]) -> dict[str, list[float]]
 # Note: rank_trajectory is now wired live in the Recorder (v1.3) via the SVD cache.
 
-# lens (v0.9 logit lens; v1.10 tuned lens)
+# lens (v0.9 logit lens; v1.10 tuned lens; v1.23–v1.24 distributions + future lens)
 from circuitry.core import lens
 lens.logit_lens_kl(residual: Tensor, unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # chunk_size bounds the (tokens, vocab) transient (v0.9.2)
 lens.tuned_lens_kl(residual: Tensor, translator: tuple[Tensor, Tensor], unembed: Tensor, final_logits: Tensor, *, layer_norm=None, chunk_size: int = 256) -> float  # (v1.10) apply learned affine A·h+b before unembed; A=I,b=0 reduces to logit_lens_kl
+lens.logit_lens_distributions(residuals: dict[int, Tensor] | list[Tensor], unembed: Tensor, *, layer_norm=None, top_k: int = 5) -> list[LayerPrediction]  # (v1.23) per-layer top-k token predictions; LayerPrediction.layer_idx / .token_ids / .probs
+lens.future_lens_kl(residual: Tensor, unembed: Tensor, target_logits: Tensor, *, horizon: int = 1, layer_norm=None, chunk_size: int = 256) -> float  # (v1.24) compares residual@layer to target_logits[t+horizon]; returns 0.0 when horizon ≥ seq; reduces to logit_lens_kl at horizon=0
 
 # attention screening (v0.9 / v1.11)
 from circuitry.core import attention
@@ -183,6 +196,28 @@ dynamics.phase_transition_steps(series: list[tuple[int, float]], *, window: int 
 dynamics.head_formation_step(series: list[tuple[int, float]], *, threshold: float, n_sustain: int = 2) -> int | None  # first training step at which a per-head attention score crosses threshold and sustains for n_sustain consecutive recorded points. Returns None if the threshold is never crossed. Used in the report ## Training Dynamics / Head Formation Events table.
 dynamics.grokking_step(series: list[tuple[int, float]], *, z_threshold: float = 2.5) -> int | None  # (v1.15) thin wrapper around phase_transition_steps — returns the FIRST detected sharp-transition step (lowest z_threshold default for loss/accuracy series), or None if none detected. Used in the report ## Training Dynamics / Grokking Signals sub-table.
 
+# activation steering (v1.23 core direction; v1.23 patching context manager)
+from circuitry.core import steer
+steer.steer_vector(positive_acts: Tensor, negative_acts: Tensor, *, normalize: bool = True) -> Tensor  # Rimsky et al. 2024 CAA: mean(positive) − mean(negative), optionally unit-normalised; raises ValueError on near-zero norm
+
+from circuitry.patching import steer as patching_steer
+patching_steer.apply_steer(model, site: Site, vector: Tensor, *, coeff: float = 1.0, resolver=None)  # context manager; adds coeff*vector to site output; hook always removed on exit
+
+# linear probing (v1.24)
+from circuitry.core import probe
+probe.train_linear_probe(acts: Tensor, labels: Tensor, *, max_iter: int = 1000, C: float = 1.0, tol: float = 1e-4, device=None) -> LinearProbe
+# LinearProbe: .weight (Tensor), .bias (Tensor), .classes (list), .predict(acts) → Tensor,
+#   .predict_proba(acts) → Tensor, .accuracy(acts, labels) → float, .direction() → Tensor
+# direction() = unit concept vector: normalised weight[0] for binary, first left singular of
+#   between-class weight matrix for multiclass (pca_lowrank)
+
+# concept erasure / LEACE (v1.24)
+from circuitry.core import erase
+erase.leace_erase(acts: Tensor, labels: Tensor) -> EraseProjection  # Park et al. 2023 LEACE
+# binary: d = μ₁−μ₀ normalised, P = I − d_hat d_hat^T
+# multiclass: first right singular vector of between-class mean matrix
+# EraseProjection: .P (Tensor), .direction (Tensor), .apply(acts) → Tensor (broadcast to (..., d_model))
+
 # SAE workflow (v0.9)
 from circuitry import sae
 sae.load_sae(release: str, sae_id: str, device: str = "cpu")
@@ -194,13 +229,26 @@ sae.sae_reconstruction_error(x: Tensor, sae) -> dict[str, float]
 sae.encode_features(sae, x: Tensor) -> Tensor
 sae.decode_features(sae, f: Tensor) -> Tensor
 sae.sae_decompose(sae, x: Tensor) -> tuple[Tensor, Tensor, Tensor]   # (f, x_hat, eps=(x-x_hat).detach())
-sae.assert_supported_sae(sae) -> None                                # gate: standard/topk/jumprelu/gated
+sae.assert_supported_sae(sae) -> None                                # gate: standard/topk/jumprelu/gated/matryoshka/batch_topk (v1.26); raw crosscoder blocked — use CrosscoderWrapper
+sae.load_gemma_scope(model_size: str, layer: int, width: int, *, site: str = "res", average_l0=None, device: str = "cpu")  # (v1.26) convenience wrapper for Gemma Scope JumpReLU SAEs (Lieberum et al. arxiv:2408.05147)
+sae.load_llama_scope(layer: int, width: int, *, device: str = "cpu")  # (v1.26) convenience wrapper for Llama Scope JumpReLU SAEs
 
 # patching metrics (v1.0)
 from circuitry.core import patching
 patching.logit_diff(logits: Tensor, correct: int, incorrect: int) -> float
 patching.kl_divergence(p_logits: Tensor, q_logits: Tensor, *, chunk_size: int = 256) -> float
 patching.ce_loss(logits: Tensor, targets: Tensor) -> float
+
+# Benchmarks (v1.27)
+from circuitry import benchmarks
+benchmarks.load_ioi(n: int = 50, *, seed: int = 42, vocab_size: int = 1000, seq_len: int = 12) -> MIBTask  # Mueller et al. ICML 2025; synthetic IOI task
+benchmarks.load_greater_than(n: int = 50, *, seed: int = 42, vocab_size: int = 1000, seq_len: int = 8) -> MIBTask  # synthetic Greater-Than task
+# MIBTask: .clean_inputs, .corrupted_inputs, .metric_fn (differentiable logit-diff on last position)
+
+benchmarks.run_saebench(sae, acts: Tensor, *, tasks=None) -> SAEBenchResult  # Karvonen et al. 2025
+# SAEBenchResult: .l0, .explained_variance, .mse, .feature_density, .sparse_probing_r2, .ce_loss_score (None if no model)
+# Analytically-tractable subset: l0_sparsity, explained_variance, reconstruction_mse,
+#   feature_density, sparse_probing_r2 (all computed from activation tensors; no model/network needed)
 ```
 
 Invariants for everything in `core/`:
@@ -466,6 +514,14 @@ Attribution methods (EAP, AtP\*, ACDC — v1.0), node-level SAE-feature attribut
 **SAE-feature EDGES + circuit (sub-spec 6, v1.6; updated v1.17–v1.21).** `SAEFeatureEdgeRunner(model, sae_sites, resolver).run(clean, corrupted, metric, *, layer_pairs="adjacent", top_k_survivors=32, max_edges=None, include_error_node=False, variant="attrib", n_ig_steps=0, per_position=False, arch="sequential")` → `SAEFeatureCircuit` (`circuitry.patching.sae_edges`): the v1.5 node `AtPResult`, a `dict[SAEFeatureEdge, float]` of feature→feature edges, a `SAEFeatureEdgeGraph`, and optionally per-position scores (v1.19). **Two-stage** (the feature×feature space is intractable — ~6e8 edges for one adjacent pair at d_sae=24576): stage 1 reuses the shipped `SAEFeatureRunner` to score and keep the top-K **active** survivors per site; stage 2 enumerates edges only among survivors across ordered site-pairs (`adjacent` default, `all_forward` opt-in; `max_edges` cap). **Edge formula** `edge(U:i→D:j) = Σ_pos Δf_U[...,i] · (∂f_D[...,j]/∂f_U[...,i]) · gradf_D[...,j]` (the `mlp_neuron` formula lifted to a feature→feature path), `Δf_U = f_U_corrupt − f_U_clean`. **Mechanism:** ALL sites in the span are spliced **simultaneously** in ONE clean forward (the v1.5→v1.6 pivot — so the upstream feature's decode propagates through the real residual to the downstream encode); the upstream-most (writer) site uses the v1.5 detached-leaf seed, downstream (reader) sites use a LIVE non-detached encode, `eps` is detached/frozen at every site. The Jacobian factor is realized as a **per-downstream-survivor VJP** (`torch.autograd.grad(f_D, f_U_leaf, grad_outputs=…)`) — NEVER a dense `d_sae×d_sae` matrix; each VJP is freed immediately. This is the **full live-autograd Jacobian, NOT the Marks/Anthropic frozen-attention-pattern stop-gradient Jacobian** — on a linear-downstream model the analytic edge equals `bruteforce_feature_edge_scores` (independent forward-patch oracle) at 1e-4. `include_error_node=True` (opt-in, default off) additionally emits **error→feature** edges via an independent upstream `err_leaf`; **feature→error edges are structurally zero** and are not computed. **Per-position scores (v1.19):** `run(…, per_position=True)` additionally stores `SAEFeatureCircuit.position_scores: dict[SAEFeatureEdge, Tensor]` where each tensor has shape `(seq_len,)` and `position_scores[e].sum() == edges[e]` within float32 rounding — exposes which sequence positions drive each edge. Supported for both `variant='attrib'` and `variant='ig'`, including error→feature edges. Default `False` (zero overhead). `SAEFeatureCircuit.top_positions(edge, k=5)` returns top-k `(pos_idx, score)` pairs sorted by `|score|` descending; raises `ValueError` if `position_scores is None`. **Parallel-attention arch (v1.20):** `arch='parallel'` proactively skips same-layer `attn_out@L → mlp_out@L` edges (causally undefined in GPT-J-style models where attn and MLP both read `resid_pre`). `arch='sequential'` (default) preserves all edges. Unknown values raise `ValueError`. Helper `_is_parallel_intra_layer(writer_site, reader_site)` returns `True` for the forbidden pair. **TranscoderWrapper sites (v1.21):** any site's SAE may be wrapped in `TranscoderWrapper` to encode from `inp[0]` (module input) rather than `output`; the four writer/reader hooks in `_compute_pair_edges` branch on `getattr(sae, "hook_input", False)`.
 
 **Circuit extraction / pruning (v1.6; updated in v1.7–v1.21).** `SAEFeatureCircuit.ranked()/top_k(n)/threshold(tau)/top_positions(edge, k=5)` and `prune(method="threshold"|"acdc"|"both", tau, ablation_mode="corrupted"|"zero"|"mean")`. **Ablation is NODE-set, not edge-level** — downstream features at a given `(layer, component)` site share one activation tensor `a`, so an edge cannot be ablated independently; instead non-circuit feature entries are replaced (corrupted/zero/mean) before `decode` at each spliced site, propagated forward. `faithfulness(C) = (m(C) − m(∅)) / (m(M) − m(∅))` and `completeness` via the complement (Marks §3.2). `FeatureACDCRunner(model, sae_sites, resolver).run(…, tau, ablation_mode, eap_skip_threshold)` is **greedy reverse-topological NODE pruning** (`sweep(taus) → [(tau, n_kept, final_kl)]` Pareto). `graph.py` / `EdgeGraph` / `_order` / `build_graph` are **untouched** — the feature graph is a dedicated `SAEFeatureEdgeGraph`. **v1.7 edge IG:** `variant='ig'` wraps the loop over `N` interpolation steps; no dense Jacobian; peak memory = attrib. **Circuit rendering (v1.17):** `EAPResult`, `AtPResult`, and `ACDCResult` gain `.to_markdown(top_k)` (human-readable table), `.to_json()` / `.from_json(text)` (JSON serialization), and `.save(path)` / `.load(path)` file-I/O wrappers (v1.18). Helper functions `_node_str`, `_node_to_dict`, `_node_from_dict` in `patching/graph.py`. **v1.22 temporal runner:** `SAEFeatureTemporalRunner(model, sae_sites, resolver).run(steps, metric)` accepts a list of `(step_key, clean_inputs, corrupted_inputs)` triples and runs `SAEFeatureRunner` independently on each. Returns `TemporalAtPResult` with `.scores: dict[step_key, AtPResult]`, `.delta_scores: dict[step_key, AtPResult]` (attribution change between consecutive steps), `.stable_features(threshold)` (active at all steps), `.step_specific_features(step_key, threshold)` (active at one step only), and `.top_stable(k)` (top-k by minimum `|score|` across all steps). Note: each step is independent — true recurrent-SAE attribution (step k activations depend on step k−1 hidden state) remains a known limitation.
+
+**Activation steering (v1.23).** `steer_vector(positive_acts, negative_acts, *, normalize=True)` in `core/steer.py` computes the CAA direction (Rimsky et al. 2024). `apply_steer(model, site, vector, *, coeff=1.0, resolver=None)` in `patching/steer.py` is a context manager that registers a forward hook at `site` adding `coeff * vector` to the output (broadcast-safe for 1D/2D/3D outputs); the hook is removed in a `finally` block.
+
+**CrosscoderWrapper (v1.26).** `CrosscoderWrapper(crosscoder, *, primary_layer=0)` in `patching/sae_features.py` wraps a crosscoder SAE as a single-site attribution point (`hook_input=False`). Routes `encode`/`decode` through `encode_at_layer(x, primary_layer)` / `decode_at_layer(f, primary_layer)` when available, else plain `encode`/`decode`. `encode_all(acts: list[Tensor])` for full cross-layer mode. Raw crosscoder objects passed directly to `assert_supported_sae` are blocked via `_BLOCKED_ARCHITECTURES`; use `CrosscoderWrapper` to attribute through them.
+
+**Edge Pruning (v1.25).** `EdgePruningRunner(model, resolver).run(clean_inputs, corrupted_inputs, metric, *, lambda_l0, n_steps, lr, temperature_init, temperature_final, ig_steps, candidate_edges) → EdgePruningResult` (Bhaskar & Wettig NeurIPS 2024, arxiv:2406.16778). Phase 1: compute per-edge EAP scores. Phase 2: jointly optimise scalar mask logits z_e via Adam — loss is `−σ(z/T)·|score| + λ·Σσ(z/T)` with temperature T annealed from `temperature_init` to `temperature_final` over `n_steps`. Phase 3: threshold at 0.5 for hard binary circuit. `candidate_edges` restricts the search space (used by HAP). `EdgePruningResult` provides `.circuit`, `.removed_edges`, `.mask_logits`, `.eap_scores`, `.circuit_graph()`, `.ranked()`, `.to_json()`/`.from_json()`/`.save()`/`.load()`.
+
+**HAP (v1.25).** `HAPRunner(model, resolver).run(clean, corrupted, metric, *, top_p=0.5, **pruning_kwargs) → EdgePruningResult` (Hu et al. 2025, arxiv:2510.03282). Phase 1: EAP, keep top `top_p` fraction of edges by |score|. Phase 2: `EdgePruningRunner(candidate_edges=top_edges, **pruning_kwargs)`. Achieves similar faithfulness to full edge pruning at a fraction of the candidate set size.
 
 **Backend scope (v1.1):** the HF-eager patching backend (EAP / AtP* / ACDC)
 targets Llama-family layouts (`model.model.layers` + `self_attn.{q,k,v,o}_proj`)

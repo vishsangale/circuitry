@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] — 2026-06-08
+
+**Evaluation & benchmarks — MIB task loaders, SAEBench metrics, Fourier alignment, information bottleneck.**
+
+### Added
+- **`benchmarks/mib.py`** — `load_ioi(n, *, seed, vocab_size, seq_len)` and
+  `load_greater_than(n, *, seed, vocab_size, seq_len)` return `MIBTask` dataclasses
+  containing `clean_inputs`, `corrupted_inputs`, and a differentiable `metric_fn`
+  (logit-diff on the last position). Fully synthetic — no downloads. Compatible with
+  every `*Runner.run()` signature (Mueller et al. ICML 2025, arxiv:2504.13151).
+  Exported at `circuitry.benchmarks.*`.
+- **`benchmarks/saebench.py`** — `run_saebench(sae, acts, *, tasks=None) → SAEBenchResult`.
+  Analytically-tractable SAE evaluation suite: `l0_sparsity`, `explained_variance`,
+  `reconstruction_mse`, `feature_density`, `sparse_probing_r2` (1-NN linear probe
+  on top-1 active features). `SAEBenchResult` dataclass carries all five metrics + an
+  optional `ce_loss_score` field (populated when a model is provided). Operates on raw
+  activation tensors — no network access. Implements the 5 CPU-tractable metrics from
+  Karvonen et al. 2025 (arxiv:2503.09532). Exported at `circuitry.benchmarks.*`.
+- **`core/dynamics.py`** — `fourier_feature_alignment(W, task_freqs, *, n_freqs=None) → float`.
+  Computes the fraction of weight-matrix spectral power aligned with task-relevant
+  Fourier modes: `rfft` along the input dimension, sum power across output rows, return
+  `Σ_{k ∈ task_freqs} power[k] / Σ_k power[k]`. Returns 0.0 on empty `task_freqs` or
+  `d_in < 2`. Nanda et al. ICLR 2024.
+- **`core/dynamics.py`** — `information_bottleneck_score(acts_train, acts_val, labels_train, labels_val, *, n_bins, eps) → float`.
+  Mutual-information proxy I(T;Y)/H(Y) for measuring grokking progress: projects
+  activations onto the first PC (via `pca_lowrank`), bins into `n_bins` equal-width
+  buckets, estimates MI from the joint histogram. Clipped to `[0, 1]`. Leavitt &
+  Morcos 2024.
+- Both dynamics helpers exported at top-level `circuitry.*` and via `circuitry.core.dynamics`.
+- Tests: 8 `test_dynamics.py` additions (`fourier_feature_alignment` × 4 + `information_bottleneck_score` × 3 + range check).
+
+---
+
 ## [1.26.0] — 2026-06-08
 
 **SAE ecosystem expansion — CrosscoderWrapper, Gemma/Llama Scope loaders, Matryoshka + BatchTopK.**
