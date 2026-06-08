@@ -15,6 +15,8 @@ from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_dist
 from circuitry.core.probe import LinearProbe, train_linear_probe
 from circuitry.core.steer import steer_vector
 from circuitry.core.weight import direction_cosine, update_delta
+from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
+from circuitry.patching.hap import HAPRunner
 from circuitry.patching.steer import apply_steer
 from circuitry.recipes import Recipe, register_recipe
 from circuitry.recipes._discovery import discover
@@ -39,6 +41,9 @@ __all__ = [
     "StepContext",
     "TensorSource",
     "__version__",
+    "EdgePruningResult",
+    "EdgePruningRunner",
+    "HAPRunner",
     "apply_steer",
     "build_report",
     "direction_cosine",

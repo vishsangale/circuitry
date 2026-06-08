@@ -14,7 +14,9 @@ from __future__ import annotations
 from circuitry.patching.acdc import ACDCResult, ACDCRunner
 from circuitry.patching.atp import AtPNode, AtPResult, AtPRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
+from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.graph import Edge, Node
+from circuitry.patching.hap import HAPRunner
 from circuitry.patching.intervene import PatchHandle, patch_site
 from circuitry.patching.runner import PatchResult, PatchRunner
 from circuitry.patching.sites import Site
@@ -30,7 +32,10 @@ __all__ = [
     "EAPResult",
     "EAPRunner",
     "Edge",
+    "EdgePruningResult",
+    "EdgePruningRunner",
     "FeatureACDCRunner",
+    "HAPRunner",
     "Node",
     "PatchHandle",
     "PatchResult",
