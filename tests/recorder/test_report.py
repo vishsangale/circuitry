@@ -231,3 +231,67 @@ def test_repr_drift_high_flag_fires(tmp_path):
     p.write_text("\n".join(json.dumps(s) for s in scalars))
     report = build_report(tmp_path).read_text()
     assert "repr_drift_high" in report
+
+
+def test_matched_modules_count_in_summary(tmp_path):
+    """matched_modules.txt module counts appear in ## Summary."""
+    scalars = [{"kind": "scalar", "tag": "weight/effective_rank/fc", "value": 8.0, "step": 0}]
+    p = tmp_path / "metrics.jsonl"
+    p.write_text("\n".join(json.dumps(s) for s in scalars))
+
+    circ = tmp_path / "circuitry"
+    circ.mkdir()
+    (circ / "matched_modules.txt").write_text(
+        "# hook_point[0] source=weight target=mlp\n"
+        "layer_a → weight [64, 64]\n"
+        "layer_b → weight [64, 64]\n"
+        "\n"
+        "# hook_point[1] source=output target=attn\n"
+        "layer_c\n"
+    )
+    report = build_report(tmp_path).read_text()
+    assert "Modules matched" in report
+    assert "**weight**: 2" in report
+    assert "**activation**: 1" in report
+
+
+def test_matched_modules_deduplicates_across_hookpoints(tmp_path):
+    """Same module under two same-source hook-points is counted once."""
+    scalars = [{"kind": "scalar", "tag": "train/loss", "value": 1.0, "step": 0}]
+    (tmp_path / "metrics.jsonl").write_text("\n".join(json.dumps(s) for s in scalars))
+
+    circ = tmp_path / "circuitry"
+    circ.mkdir()
+    (circ / "matched_modules.txt").write_text(
+        "# hook_point[0] source=weight target=mlp.up\n"
+        "fc → weight [64, 64]\n"
+        "\n"
+        "# hook_point[1] source=weight target=mlp.down\n"
+        "fc → weight [64, 64]\n"  # same module name again
+    )
+    report = build_report(tmp_path).read_text()
+    # "fc" appears under both weight hook-points → deduplicated to 1
+    assert "**weight**: 1" in report
+
+
+def test_matched_modules_absent_in_compact_mode(tmp_path):
+    """Modules matched line does not appear in compact mode."""
+    scalars = [{"kind": "scalar", "tag": "train/loss", "value": 1.0, "step": 0}]
+    (tmp_path / "metrics.jsonl").write_text("\n".join(json.dumps(s) for s in scalars))
+
+    circ = tmp_path / "circuitry"
+    circ.mkdir()
+    (circ / "matched_modules.txt").write_text(
+        "# hook_point[0] source=weight target=fc\n"
+        "layer_a → weight [64, 64]\n"
+    )
+    report = build_report(tmp_path, compact=True).read_text()
+    assert "Modules matched" not in report
+
+
+def test_matched_modules_absent_when_file_missing(tmp_path):
+    """No matched_modules.txt → no 'Modules matched' line."""
+    scalars = [{"kind": "scalar", "tag": "train/loss", "value": 1.0, "step": 0}]
+    (tmp_path / "metrics.jsonl").write_text("\n".join(json.dumps(s) for s in scalars))
+    report = build_report(tmp_path).read_text()
+    assert "Modules matched" not in report

@@ -255,3 +255,47 @@ def test_acdc_json_removed_edges_reconstructed():
     total_orig = len(acdc.kept_edges) + len(acdc.removed_edges)
     total_rt = len(acdc2.kept_edges) + len(acdc2.removed_edges)
     assert total_orig == total_rt
+
+
+# ---------------------------------------------------------------------------
+# EAPResult.save / load
+# ---------------------------------------------------------------------------
+
+def test_eap_save_and_load_roundtrip(tmp_path):
+    eap = _make_eap(n_layers=2, n_heads=2)
+    path = tmp_path / "circuit.json"
+    eap.save(path)
+    assert path.exists()
+    eap2 = EAPResult.load(path)
+    assert len(eap2.scores) == len(eap.scores)
+
+
+def test_eap_save_produces_valid_json(tmp_path):
+    eap = _make_eap()
+    path = tmp_path / "circuit.json"
+    eap.save(path)
+    data = json.loads(path.read_text())
+    assert data["kind"] == "eap"
+
+
+# ---------------------------------------------------------------------------
+# ACDCResult.save / load
+# ---------------------------------------------------------------------------
+
+def test_acdc_save_and_load_roundtrip(tmp_path):
+    acdc = _make_acdc(n_layers=2, n_heads=2, keep_n=3)
+    path = tmp_path / "acdc.json"
+    acdc.save(path)
+    assert path.exists()
+    acdc2 = ACDCResult.load(path)
+    assert acdc2.n_kept() == acdc.n_kept()
+    assert abs(acdc2.final_kl - acdc.final_kl) < 1e-9
+
+
+def test_acdc_save_produces_valid_json(tmp_path):
+    acdc = _make_acdc()
+    path = tmp_path / "acdc.json"
+    acdc.save(path)
+    data = json.loads(path.read_text())
+    assert data["kind"] == "acdc"
+    assert "kept_edges" in data

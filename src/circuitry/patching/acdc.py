@@ -103,6 +103,17 @@ class ACDCResult:
             graph=graph,
         )
 
+    def save(self, path: "str | pathlib.Path") -> None:
+        """Write to_json() output to a file."""
+        import pathlib
+        pathlib.Path(path).write_text(self.to_json())
+
+    @classmethod
+    def load(cls, path: "str | pathlib.Path") -> "ACDCResult":
+        """Load from a file written by save()."""
+        import pathlib
+        return cls.from_json(pathlib.Path(path).read_text())
+
 
 def _logits_of(out: Any) -> Tensor:
     return out.logits if hasattr(out, "logits") else out

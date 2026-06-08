@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] — 2026-06-08
+
+**Report polish + circuit I/O convenience.**
+
+### Added
+- **`_parse_matched_module_counts(text)`** in `recorder/report.py` — parses
+  `circuitry/matched_modules.txt` and returns matched-module counts per report family
+  (`"weight"`, `"activation"`, `"grad"`). The same module appearing under multiple
+  hook-points with the same source is deduplicated. `named_param` and `weight` sources
+  both map to the `"weight"` family; `output` and `input` map to `"activation"`.
+- **"Modules matched" line in `## Summary`** — when `matched_modules.txt` is present and
+  the report is not compact, a new bullet shows per-family module counts (e.g.
+  `**weight**: 42 · **activation**: 16`), complementing the existing tag-count line and
+  making recipe under-coverage immediately visible.
+- **`EAPResult.save(path)` / `EAPResult.load(path)`** — thin file-I/O wrappers around
+  `to_json()` / `from_json()` for convenience.
+- **`ACDCResult.save(path)` / `ACDCResult.load(path)`** — same pattern for ACDC circuits.
+- Tests: 4 new matched-module tests in `tests/recorder/test_report.py`; 4 new save/load
+  tests in `tests/patching/test_circuit_render.py` (53 pass total across those files).
+
+---
+
 ## [1.17.0] — 2026-06-07
 
 **Circuit rendering.** `EAPResult`, `AtPResult`, and `ACDCResult` gain human-readable output

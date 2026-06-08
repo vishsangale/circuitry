@@ -1,12 +1,10 @@
 # circuitry — TODO / open items
 
-Open work and known debt as of **v1.17.0** (2026-06-07). Completed items live in `CHANGELOG.md`
+Open work and known debt as of **v1.18.0** (2026-06-08). Completed items live in `CHANGELOG.md`
 and git history. Design contract: `docs/design.md` — amend it before changing any
 CI-enforced invariant.
 
 **Effort:** [XS] < ½ day · [S] ½–1 day · [M] 1–3 days · [L] 1–2 weeks · [XL] 2+ weeks
-
----
 
 ---
 
@@ -29,17 +27,6 @@ CI-enforced invariant.
 
 ---
 
----
-
-## Recorder & report
-
-- [ ] **[S][feat] Per-hook-family module counts from `matched_modules.txt`.** The v1.15
-  summary tag-count line counts emitted tags per family; a complementary count from
-  `circuitry/matched_modules.txt` would show *matched* modules per family (detecting
-  recipes that matched 0 modules). Current tag-count is a good proxy but not identical.
-
----
-
 ## Patching & attribution
 
 - [ ] **[L][feat] SAE-feature circuits — remaining follow-ons.** Shipped in v1.5–1.7: node
@@ -49,13 +36,6 @@ CI-enforced invariant.
   - Per-position feature edges (current implementation is circuit-level, not position-level).
   - Temporal / recurrent SAEs (require storing per-step feature activations across forward
     passes — different lifecycle than the current single-forward circuit).
-
----
-
----
-
-## Future research directions
-
 
 ---
 

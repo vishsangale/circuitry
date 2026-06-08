@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from collections import defaultdict
 from collections.abc import Callable
 
@@ -270,6 +271,40 @@ _TRANSITION_PREFIXES: frozenset[str] = frozenset({
     "weight/rank_trajectory",
     "weight/update_delta_rel",
 })
+
+
+_SOURCE_TO_REPORT_FAMILY: dict[str, str] = {
+    "weight": "weight",
+    "named_param": "weight",
+    "output": "activation",
+    "input": "activation",
+    "grad": "grad",
+}
+
+
+def _parse_matched_module_counts(text: str) -> dict[str, int]:
+    """Parse matched_modules.txt; return matched-module count per report family.
+
+    Lines beginning with ``# hook_point[N] source=X`` start a new block.
+    Non-empty, non-comment lines within a block are module/parameter names;
+    they are deduplicated per family before counting (the same module may appear
+    under multiple hook-points with the same source).
+    """
+    family_modules: dict[str, set[str]] = {}
+    current_family: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# hook_point"):
+            m = re.search(r"source=(\w+)", stripped)
+            current_family = (
+                _SOURCE_TO_REPORT_FAMILY.get(m.group(1).lower(), m.group(1).lower())
+                if m else None
+            )
+        elif stripped and not stripped.startswith("#") and current_family is not None:
+            module_name = stripped.split(" →")[0].strip() if " →" in stripped else stripped
+            if module_name:
+                family_modules.setdefault(current_family, set()).add(module_name)
+    return {fam: len(mods) for fam, mods in sorted(family_modules.items())}
 
 
 def _transition_direction(section: str, before: float, after: float) -> str:
@@ -608,6 +643,14 @@ def build_report(
             f"**{fam}**: {cnt}" for fam, cnt in sorted(family_counts.items())
         )
         lines.append(f"- Tags by family: {fam_parts}.")
+    # Per-hook-family matched-module counts from matched_modules.txt (recipe coverage).
+    if not compact and matched_path.exists():
+        module_counts = _parse_matched_module_counts(matched_path.read_text())
+        if module_counts:
+            mod_parts = " · ".join(
+                f"**{fam}**: {cnt}" for fam, cnt in module_counts.items()
+            )
+            lines.append(f"- Modules matched: {mod_parts}.")
     if step_count == 1:
         lines.append("")
         lines.append(
