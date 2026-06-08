@@ -73,6 +73,20 @@ def _is_always_connected(writer_site: Any, reader_site: Any) -> bool:
     return writer_site.component == "resid_post" and reader_site.component == "resid_post"
 
 
+def _is_parallel_intra_layer(writer_site: Any, reader_site: Any) -> bool:
+    """Return True for same-layer attn_out → mlp_out — causally undefined in parallel-attention arches.
+
+    In sequential (Llama-style) models attention runs before MLP, so this edge is valid.
+    In parallel (GPT-J-style) models both read resid_pre simultaneously, so there is no
+    causal path; the edge should be skipped when arch='parallel'.
+    """
+    return (
+        writer_site.layer == reader_site.layer
+        and writer_site.component == "attn_out"
+        and reader_site.component == "mlp_out"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stage B helpers: feature-acts capture + node-set ablation forward
 # ---------------------------------------------------------------------------
@@ -1089,6 +1103,7 @@ class SAEFeatureEdgeRunner:
         variant: str = "attrib",
         n_ig_steps: int = 0,
         per_position: bool = False,
+        arch: str = "sequential",
     ) -> SAEFeatureCircuit:
         """Compute feature→feature SAE edge scores.
 
@@ -1111,6 +1126,10 @@ class SAEFeatureEdgeRunner:
                 them in SAEFeatureCircuit.position_scores as dict[SAEFeatureEdge, Tensor]
                 where each Tensor has shape (seq_len,).  position_scores[e].sum() == edges[e]
                 within float32 rounding.  Default False (no overhead).
+            arch: 'sequential' (default, Llama-style — attention runs before MLP within a layer)
+                or 'parallel' (GPT-J-style — attention and MLP both read resid_pre; same-layer
+                attn_out→mlp_out edges are causally undefined and are proactively skipped).
+                'sequential' is also correct for any model where only resid_post sites are used.
 
         Returns:
             SAEFeatureCircuit with .nodes (v1.5 scores), .edges, .graph,
@@ -1124,6 +1143,10 @@ class SAEFeatureEdgeRunner:
         if layer_pairs not in ("adjacent", "all_forward"):
             raise ValueError(
                 f"layer_pairs must be 'adjacent' or 'all_forward', got {layer_pairs!r}"
+            )
+        if arch not in ("sequential", "parallel"):
+            raise ValueError(
+                f"arch must be 'sequential' or 'parallel', got {arch!r}"
             )
 
         was_training, orig_rg = self._stage1_runner._atp._freeze_eval()
@@ -1141,6 +1164,7 @@ class SAEFeatureEdgeRunner:
                 variant=variant,
                 n_ig_steps=n_ig_steps,
                 per_position=per_position,
+                arch=arch,
             )
         finally:
             self._stage1_runner._atp._restore(was_training, orig_rg)
@@ -1160,6 +1184,7 @@ class SAEFeatureEdgeRunner:
         variant: str = "attrib",
         n_ig_steps: int = 0,
         per_position: bool = False,
+        arch: str = "sequential",
     ) -> SAEFeatureCircuit:
         """Inner run (freeze/restore already applied by caller)."""
         sorted_sites = self._sorted_sites()  # forward order
@@ -1209,6 +1234,9 @@ class SAEFeatureEdgeRunner:
                     continue
                 # 'adjacent' mode: j must immediately follow i in rank order
                 if layer_pairs == "adjacent" and j != i + 1:
+                    continue
+                # Parallel-attention: skip same-layer attn_out → mlp_out (causally undefined)
+                if arch == "parallel" and _is_parallel_intra_layer(writer_site, reader_site):
                     continue
 
                 writer_survivors = site_survivors.get(_site_key(writer_site), [])
