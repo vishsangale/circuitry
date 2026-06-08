@@ -3,8 +3,8 @@
 Multi-site error-term splice + per-downstream VJP edge scoring.
 Composes (does NOT subclass) SAEFeatureRunner for Stage 1.
 
-Only the HF-eager path is supported (TLSiteResolver → NotImplementedError).
-Only resid_post sites are supported (others → NotImplementedError).
+Both HF-eager (HFSiteResolver) and TransformerLens (TLSiteResolver) are supported (v1.7 P3).
+Supported components: resid_post, mlp_out, attn_out (others → NotImplementedError).
 
 Stage B additions:
   - compute_f_per_site: capture feature acts per site (no_grad)
