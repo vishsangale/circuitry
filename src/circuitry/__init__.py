@@ -9,6 +9,7 @@ integrated-gradients variant; ``resid_post`` + HF results are byte-for-byte iden
 """
 
 from circuitry.core.activation import repr_drift, token_similarity
+from circuitry.core.dynamics import fourier_feature_alignment, information_bottleneck_score
 from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
@@ -50,7 +51,9 @@ __all__ = [
     "build_report",
     "direction_cosine",
     "discover",
+    "fourier_feature_alignment",
     "future_lens_kl",
+    "information_bottleneck_score",
     "leace_erase",
     "logit_lens_distributions",
     "register_recipe",
