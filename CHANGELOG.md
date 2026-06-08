@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] — 2026-06-08
+
+**Representational analysis primitives: linear probing, concept erasure, future lens.**
+
+### Added
+- **`core/probe.py`** — `train_linear_probe(acts, labels, *, max_iter, C, tol) → LinearProbe`.
+  Pure-PyTorch Adam training loop with L2 regularisation and early stopping. `LinearProbe`
+  provides `.predict()`, `.predict_proba()`, `.accuracy()`, and `.direction()` (unit concept
+  vector; binary: normalised `weight[0]`; multi-class: first left singular vector via
+  `pca_lowrank`). Both exported at top-level `circuitry.*` and `circuitry.core.*`.
+- **`core/erase.py`** — `leace_erase(acts, labels) → EraseProjection`. Mean-direction
+  orthogonal projection onto the concept complement (Park et al. 2023 LEACE). Binary: concept
+  direction = `μ₁ − μ₀` normalised; multi-class: first right singular vector of the
+  between-class mean matrix. `EraseProjection.apply(acts)` broadcasts to `(..., d_model)`.
+- **`core/lens.py`** — `future_lens_kl(residual, unembed, target_logits, *, horizon, layer_norm, chunk_size) → float`.
+  Extends logit lens to compare residual at position `t` against `target_logits[t + horizon]`,
+  measuring how much information about future tokens is already encoded at this layer.
+  Returns `0.0` when `horizon ≥ seq`. Reduces to `logit_lens_kl` at `horizon=0`.
+- Tests: 8 + 5 + 5 = 18 new tests across `test_probe.py`, `test_erase.py`, `test_future_lens.py`.
+
+---
+
+## [1.23.0] — 2026-06-08
+
+**Logit lens distribution primitive + activation steering + design doc backfill.**
+
+### Added
+- **`core/lens.py`** — `logit_lens_distributions(residuals, unembed, *, layer_norm, top_k) → list[LayerPrediction]`.
+  Complements the existing `logit_lens_kl` scalar: projects intermediate residual states
+  through the unembedding and returns per-layer top-k token predictions with probabilities.
+  Accepts `dict[int, Tensor]` or `list[Tensor]` residuals; collapses leading dims via
+  mean-reduce. `LayerPrediction` dataclass: `layer_idx`, `token_ids`, `probs`.
+- **`core/steer.py`** — `steer_vector(positive_acts, negative_acts, *, normalize=True) → Tensor`.
+  Contrastive Activation Addition (Rimsky et al. 2024 CAA): mean-difference direction between
+  class polarities, optionally unit-normalised. Raises `ValueError` on near-zero difference.
+- **`patching/steer.py`** — `apply_steer(model, site, vector, *, coeff=1.0, resolver=None)` context
+  manager. Registers a forward hook at `site` that adds `coeff * vector` (broadcast-safe for
+  1D/2D/3D outputs); hook is always removed on exit, even on exception.
+- Tests: 7 + 9 = 16 new tests across `test_logit_lens_dist.py`, `test_steer.py`.
+
+### Fixed
+- `patching/sae_edges.py` module docstring corrected: the TLSiteResolver path was already
+  implemented in v1.7 P3 but the docstring still read "TLSiteResolver → NotImplementedError".
+
+### Docs
+- `docs/design.md` §3: added `core/dynamics.py` to the repo structure file listing;
+  updated `core/attention.py` comment to include `head_specialization`.
+- `docs/design.md` §4.4: added `probe_batch`, `drift_method`, `drift_max_tokens` to the
+  `Recipe` dataclass code example (they were documented in a blockquote below but absent
+  from the code block).
+
+---
+
 ## [1.22.0] — 2026-06-08
 
 **SAEFeatureTemporalRunner — multi-step SAE feature attribution.** Runs
