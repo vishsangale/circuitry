@@ -1,9 +1,18 @@
 """Tests for circuitry.core.dynamics — phase_transition_steps, head_formation_step, grokking_step."""
 from __future__ import annotations
 
-import pytest
+import math
 
-from circuitry.core.dynamics import grokking_step, head_formation_step, phase_transition_steps
+import pytest
+import torch
+
+from circuitry.core.dynamics import (
+    fourier_feature_alignment,
+    grokking_step,
+    head_formation_step,
+    information_bottleneck_score,
+    phase_transition_steps,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -172,3 +181,88 @@ def test_grokking_step_returns_first_of_multiple():
     step = grokking_step(series)
     assert step is not None
     assert step < 25  # first event, not second
+
+
+# ---------------------------------------------------------------------------
+# fourier_feature_alignment
+# ---------------------------------------------------------------------------
+
+def test_fourier_feature_alignment_task_freq_1():
+    """W is a pure cosine at frequency k: alignment at that freq should be ≈1.0."""
+    d_out, d_in = 8, 64
+    k = 7  # arbitrary non-zero frequency
+    i_idx = torch.arange(d_in, dtype=torch.float32)
+    # All rows are the same cosine; rfft will have all power at bin k
+    row = torch.cos(2 * math.pi * k * i_idx / d_in)
+    W = row.unsqueeze(0).expand(d_out, -1).clone()
+    alignment = fourier_feature_alignment(W, task_freqs=[k])
+    assert alignment == pytest.approx(1.0, abs=1e-4)
+
+
+def test_fourier_feature_alignment_empty_freqs_returns_zero():
+    """Empty task_freqs must return 0.0 immediately."""
+    W = torch.randn(4, 32)
+    assert fourier_feature_alignment(W, task_freqs=[]) == 0.0
+
+
+def test_fourier_feature_alignment_range():
+    """Random W with a few task_freqs — result must be in [0, 1]."""
+    W = torch.randn(16, 64)
+    result = fourier_feature_alignment(W, task_freqs=[0, 1, 2])
+    assert 0.0 <= result <= 1.0
+
+
+def test_fourier_feature_alignment_all_freqs_returns_one():
+    """Passing all frequency bins as task_freqs must give ≈1.0 (all power accounted for)."""
+    d_in = 32
+    W = torch.randn(8, d_in)
+    all_freqs = list(range(d_in // 2 + 1))
+    alignment = fourier_feature_alignment(W, task_freqs=all_freqs)
+    assert alignment == pytest.approx(1.0, abs=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# information_bottleneck_score
+# ---------------------------------------------------------------------------
+
+def test_information_bottleneck_score_range():
+    """Score is a float in [0, 1]."""
+    torch.manual_seed(0)
+    acts_train = torch.randn(50, 8)
+    acts_val = torch.randn(20, 8)
+    labels_train = torch.randint(0, 3, (50,))
+    labels_val = torch.randint(0, 3, (20,))
+    score = information_bottleneck_score(acts_train, acts_val, labels_train, labels_val)
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+
+
+def test_information_bottleneck_high_when_predictive():
+    """Activations that perfectly separate labels should yield a high score (> 0.5)."""
+    torch.manual_seed(1)
+    n_per_class = 40
+    # 3 classes, activations = class_id * 10 + tiny noise → highly predictable
+    acts = torch.cat([
+        torch.full((n_per_class, 4), float(c)) + torch.randn(n_per_class, 4) * 0.01
+        for c in range(3)
+    ])
+    labels = torch.cat([torch.full((n_per_class,), c, dtype=torch.long) for c in range(3)])
+    # Split 50/50 train/val
+    acts_train, acts_val = acts[:60], acts[60:]
+    labels_train, labels_val = labels[:60], labels[60:]
+    score = information_bottleneck_score(acts_train, acts_val, labels_train, labels_val)
+    assert score > 0.5
+
+
+def test_information_bottleneck_low_when_random():
+    """Average over seeds: random acts vs structured labels → mean score < 0.6."""
+    scores = []
+    for seed in range(5):
+        torch.manual_seed(seed)
+        acts_train = torch.randn(60, 8)
+        acts_val = torch.randn(30, 8)
+        labels_train = torch.arange(60) % 3
+        labels_val = torch.arange(30) % 3
+        scores.append(information_bottleneck_score(acts_train, acts_val, labels_train, labels_val))
+    # Random activations should not reliably predict labels; mean score well below 1
+    assert sum(scores) / len(scores) < 0.65
