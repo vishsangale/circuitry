@@ -20,12 +20,22 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 from torch import Tensor
 
 logger = logging.getLogger("circuitry.core.lens")
+
+
+@dataclass
+class LayerPrediction:
+    """Top-k token predictions from the logit lens at a single layer."""
+
+    layer_idx: int          # which layer (0-based)
+    token_ids: torch.Tensor  # shape (top_k,) — top-k token indices
+    probs: torch.Tensor      # shape (top_k,) — corresponding softmax probabilities
 
 
 def _as_tensor(x: Any) -> Tensor:
@@ -116,6 +126,70 @@ def logit_lens_kl(
     W_f32 = proj_W.detach().to(torch.float32)
     fl_f32 = fl.detach().to(torch.float32)
     return _lens_kl_from_residual(res_f32, W_f32, fl_f32, chunk_size)
+
+
+def logit_lens_distributions(
+    residuals: dict[int, torch.Tensor] | list[torch.Tensor],
+    unembed: Any,
+    *,
+    layer_norm: torch.nn.LayerNorm | None = None,
+    top_k: int = 5,
+) -> list[LayerPrediction]:
+    """Project residual-stream hidden states through the unembedding and return
+    top-k token predictions for each layer.
+
+    Args:
+        residuals: Either a ``{layer_idx: tensor}`` dict or a list of tensors
+            (list index = layer index).  Each tensor may be ``(d_model,)``,
+            ``(seq, d_model)``, or ``(batch, seq, d_model)``.  The function
+            collapses all leading dimensions to a single ``(d_model,)`` vector
+            via ``reshape(-1, d_model).mean(0)``.
+        unembed: The unembedding weight matrix; orientation auto-detected
+            (same rules as ``logit_lens_kl``).
+        layer_norm: Optional ``nn.LayerNorm`` applied to the collapsed residual
+            before projection.
+        top_k: Number of top tokens to return per layer.
+
+    Returns:
+        List of :class:`LayerPrediction`, one per layer, sorted by
+        ``layer_idx`` ascending.
+    """
+    if isinstance(residuals, list):
+        items: list[tuple[int, torch.Tensor]] = list(enumerate(residuals))
+    else:
+        items = list(residuals.items())
+
+    if not items:
+        return []
+
+    # Determine d_model from first tensor
+    first_tensor = _as_tensor(items[0][1])
+    d_model = int(first_tensor.shape[-1])
+
+    W = _as_tensor(unembed)
+    proj_W = _resolve_unembed(W, d_model, who="logit_lens_distributions")
+    W_f32 = proj_W.detach().to(torch.float32)
+
+    results: list[LayerPrediction] = []
+    for layer_idx, res in items:
+        res_t = _as_tensor(res).detach().to(torch.float32)
+        # Collapse all leading dims to a single (d_model,) vector
+        vec = res_t.reshape(-1, d_model).mean(0)  # (d_model,)
+        if layer_norm is not None:
+            # LayerNorm expects at least 1-D input matching normalized_shape
+            vec = layer_norm(vec)
+        logits = vec @ W_f32  # (vocab,)
+        probs_full = torch.softmax(logits, dim=-1)
+        actual_k = min(top_k, probs_full.shape[-1])
+        top_probs, top_ids = torch.topk(probs_full, actual_k)
+        results.append(LayerPrediction(
+            layer_idx=int(layer_idx),
+            token_ids=top_ids,
+            probs=top_probs,
+        ))
+
+    results.sort(key=lambda lp: lp.layer_idx)
+    return results
 
 
 def tuned_lens_kl(

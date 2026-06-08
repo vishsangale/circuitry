@@ -18,6 +18,7 @@ from circuitry.patching.graph import Edge, Node
 from circuitry.patching.intervene import PatchHandle, patch_site
 from circuitry.patching.runner import PatchResult, PatchRunner
 from circuitry.patching.sites import Site
+from circuitry.patching.steer import apply_steer, steer_vector
 from circuitry.patching.tl_bridge import to_hooked_transformer
 
 __all__ = [
@@ -43,7 +44,9 @@ __all__ = [
     "Site",
     "TemporalAtPResult",
     "TranscoderWrapper",
+    "apply_steer",
     "patch_site",
+    "steer_vector",
     "to_hooked_transformer",
 ]
 

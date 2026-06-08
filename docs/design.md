@@ -54,8 +54,9 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── activation.py
 │   │   ├── gradient.py
 │   │   ├── spectral.py
+│   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14)
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl
-│   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy
+│   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy, head_specialization
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae
 │   │   └── metrics.py      # sae_reconstruction_error
@@ -279,6 +280,10 @@ class Recipe:
     attn_head_meta: dict[str, int] | None = None  # explicit n_heads/n_kv_heads/head_dim for attention_head_rank on config-less models
     forward_fn: Callable[..., object] | None = None  # custom (model, batch) -> output for the recorder's probe passes (non-HF models)
     tuned_lens: TunedLens | None = None  # (v1.10) fitted tuned lens for the opt-in tuned_lens_kl diagnostic
+    # drift probe fields (v1.4)
+    probe_batch: torch.Tensor | None = None      # if set, enables the drift probe (second forward pass per emit step)
+    drift_method: str = "linear_cka"             # repr_drift method: "linear_cka" | "cosine" | "rbf_cka"
+    drift_max_tokens: int | None = None          # row cap for the drift probe; None = all tokens
 ```
 
 Use `Recipe.with_prefix(prefix)` to scope a recipe to a sub-tree of the model (e.g. `get_recipe("llm").with_prefix("model.language_model")` for multimodal HF models). Returns a new `Recipe` via `dataclasses.replace`; the original is not mutated. Latest-wins: calling `.with_prefix("a").with_prefix("b")` yields `module_prefix="b"`. If `expected_min_matches` is set, lower the thresholds after scoping — whole-model counts don't hold after a prefix filter.

@@ -10,7 +10,10 @@ integrated-gradients variant; ``resid_post`` + HF results are byte-for-byte iden
 
 from circuitry.core.activation import repr_drift, token_similarity
 from circuitry.core.inventory import ModelInventory, ParameterRecord
+from circuitry.core.lens import LayerPrediction, logit_lens_distributions
+from circuitry.core.steer import steer_vector
 from circuitry.core.weight import direction_cosine, update_delta
+from circuitry.patching.steer import apply_steer
 from circuitry.recipes import Recipe, register_recipe
 from circuitry.recipes._discovery import discover
 from circuitry.recorder.hooks import HookPoint, StepContext, TensorSource
@@ -23,6 +26,7 @@ __version__ = "1.22.0"
 
 __all__ = [
     "HookPoint",
+    "LayerPrediction",
     "MetricWriter",
     "ModelInventory",
     "ParameterRecord",
@@ -31,12 +35,15 @@ __all__ = [
     "StepContext",
     "TensorSource",
     "__version__",
+    "apply_steer",
     "build_report",
     "direction_cosine",
     "discover",
+    "logit_lens_distributions",
     "register_recipe",
     "repr_drift",
     "scan_run",
+    "steer_vector",
     "token_similarity",
     "update_delta",
 ]
