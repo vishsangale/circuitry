@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] — 2026-06-08
+
+**Causal alignment — DAS and Causal Scrubbing.**
+
+### Added
+- **`patching/das.py`** — `DASRunner` and `DASResult`. Learns an orthogonal
+  rotation R such that the first `subspace_dim` columns of R·h align with a
+  specified causal variable via interchange-intervention training
+  (Geiger et al. NeurIPS 2023, arxiv:2303.02536).
+  `DASRunner(model).run(base_inputs, source_inputs, labels, *, module,
+  subspace_dim, n_steps, lr, loss_fn)` runs Adam on R with Stiefel-manifold
+  SVD retraction after each step. The interchange mixes the R-rotated
+  subspaces of base and source activations, injects the result at the target
+  module via a forward hook, and minimises CE loss against the target labels.
+  `DASResult.rotation` — (d, d) orthogonal matrix; `DASResult.iia_score` —
+  interchange-intervention accuracy; `DASResult.subspace_directions()` —
+  first `subspace_dim` rows of R (the causal directions).
+- **`patching/scrubbing.py`** — `CausalScrubRunner`, `CircuitHypothesis`, and
+  `CausalScrubResult` (Conmy et al. / Redwood Research 2022).
+  `CausalScrubRunner(model).run(clean_inputs, corrupted_inputs, metric,
+  hypothesis, *, compute_per_module)` measures faithfulness of a circuit
+  hypothesis: circuit modules keep clean activations; non-circuit modules are
+  replaced with pre-captured corrupted activations. Faithfulness =
+  (metric(scrubbed) − metric(corrupted)) / (metric(clean) − metric(corrupted)).
+  `CircuitHypothesis(circuit_modules, node_labels)` specifies which modules
+  implement the behaviour. `per_module_delta` (opt-in, one extra forward pass
+  per module) shows each module's individual contribution.
+- Both classes exported at `circuitry.patching.*` and top-level `circuitry.*`.
+- Tests: 9 DAS + 11 Causal Scrubbing = 20 new tests; all layering tests pass.
+
+---
+
 ## [1.27.0] — 2026-06-08
 
 **Evaluation & benchmarks — MIB task loaders, SAEBench metrics, Fourier alignment, information bottleneck.**
