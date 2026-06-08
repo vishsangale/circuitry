@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] — 2026-06-08
+
+**Edge Pruning (NeurIPS 2024) + HAP — SOTA joint circuit discovery.**
+
+### Added
+- **`patching/edge_pruning.py`** — `EdgePruningRunner` learns binary edge masks jointly via
+  Adam + temperature-annealed sigmoid + L0 regularisation (Bhaskar & Wettig NeurIPS 2024,
+  arxiv:2406.16778). Uses `EAPRunner` to compute initial per-edge gradient signals, then
+  optimises scalar mask logits `z_e` to minimise `−(σ(z/T)·|score|) + λ·Σσ(z/T)` with
+  temperature annealing `T: temperature_init → temperature_final` over `n_steps`.
+  Supports `candidate_edges` to restrict the search space.
+  `EdgePruningResult` provides `circuit`, `removed_edges`, `mask_logits`, `eap_scores`,
+  `circuit_graph()`, `ranked()`, `to_json()`/`from_json()`/`save()`/`load()`.
+- **`patching/hap.py`** — `HAPRunner` implements Hybrid Attribution + Pruning (Hu et al.
+  2025, arxiv:2510.03282): Phase 1 pre-filters edges via EAP (keeps top `top_p` fraction
+  by |score|); Phase 2 runs `EdgePruningRunner` on the reduced subgraph. Achieves similar
+  faithfulness to full edge pruning at a fraction of the candidate set size.
+- Both classes exported at `circuitry.patching.*` and top-level `circuitry.*`.
+- Tests: 10 edge-pruning + 5 HAP = 15 new tests; 296 existing tests unaffected.
+
+---
+
 ## [1.24.0] — 2026-06-08
 
 **Representational analysis primitives: linear probing, concept erasure, future lens.**
