@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] — 2026-06-08
+
+**SAE ecosystem expansion — CrosscoderWrapper, Gemma/Llama Scope loaders, Matryoshka + BatchTopK.**
+
+### Added
+- **`patching/sae_features.py`** — `CrosscoderWrapper` (Anthropic Oct 2024). Wraps a
+  crosscoder SAE as a single-site intervention point (`hook_input=False`). Routes
+  `encode`/`decode` through `encode_at_layer`/`decode_at_layer` when available (with
+  `primary_layer` argument), falls back to plain `encode`/`decode`. `encode_all(acts)`
+  for full cross-layer mode. Exported lazily via `circuitry.patching` and eagerly at
+  top-level `circuitry`.
+- **`sae/loader.py`** — `load_gemma_scope(model_size, layer, width, *, site, average_l0, device)`
+  and `load_llama_scope(layer, width, *, device)`. Convenience wrappers over `load_sae()`
+  for pre-trained JumpReLU SAE suites (Lieberum et al. 2024, arxiv:2408.05147). Lazy import —
+  no crash at import time without `sae_lens`. Exported at `circuitry.sae.*`.
+- **`sae/grad.py`** — Added `"matryoshka"` (Bussmann et al. 2025, arxiv:2503.17547) and
+  `"batch_topk"` to `SUPPORTED_SAE_ARCHITECTURES`. Both use the existing `sae_decompose`
+  gradient path unchanged. Added `"crosscoder"` to `_BLOCKED_ARCHITECTURES` (raw crosscoder
+  objects must be wrapped in `CrosscoderWrapper` for attribution).
+- Tests: 13 CrosscoderWrapper + 5 architecture + 6 scope-loader = 24 new tests.
+
+---
+
 ## [1.25.0] — 2026-06-08
 
 **Edge Pruning (NeurIPS 2024) + HAP — SOTA joint circuit discovery.**
