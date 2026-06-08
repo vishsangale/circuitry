@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] — 2026-06-08
+
+**SAEFeatureTemporalRunner — multi-step SAE feature attribution.** Runs
+`SAEFeatureRunner` independently on each `(step_key, clean_inputs, corrupted_inputs)`
+triple and aggregates results into a `TemporalAtPResult` with per-step scores,
+attribution deltas between consecutive steps, and helpers for identifying stable
+vs step-specific features.
+
+### Added
+- **`SAEFeatureTemporalRunner(model, sae_sites, resolver)`** in
+  `circuitry.patching.sae_temporal` (re-exported from `circuitry.patching`).
+  `.run(steps, metric, **runner_kwargs) → TemporalAtPResult` accepts a list of
+  `(step_key, clean_inputs, corrupted_inputs)` triples and runs attribution
+  independently for each step. Step keys must be unique and non-empty.
+- **`TemporalAtPResult`** — result container with:
+  - `.scores: dict[step_key, AtPResult]` — per-step feature attribution.
+  - `.step_keys: list` — ordered step keys.
+  - `.delta_scores: dict[step_key, AtPResult]` — attribution change between
+    consecutive steps (`delta[k] = scores[k] − scores[k−1]`; first step has no entry).
+  - `.stable_features(threshold) → list[AtPNode]` — nodes with `|score| ≥ threshold`
+    at ALL steps, sorted by layer/neuron.
+  - `.step_specific_features(step_key, threshold) → list[AtPNode]` — nodes active
+    above threshold at `step_key` but not at any other step.
+  - `.top_stable(k=10) → list[(AtPNode, float)]` — top-k features by minimum
+    `|score|` across all steps (most reliably active), sorted descending.
+- Tests: 13 new tests in `tests/patching/test_sae_temporal.py`.
+
+Note: each step is evaluated independently. True recurrent-SAE attribution
+(where step k's activations depend on step k−1's hidden state) requires a
+different architecture and remains a known limitation.
+
+---
+
 ## [1.21.0] — 2026-06-08
 
 **TranscoderWrapper — transcoder SAEs as intervention sites.** `TranscoderWrapper` wraps

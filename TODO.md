@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Open work and known debt as of **v1.21.0** (2026-06-08). Completed items live in `CHANGELOG.md`
+Open work and known debt as of **v1.22.0** (2026-06-08). Completed items live in `CHANGELOG.md`
 and git history. Design contract: `docs/design.md` — amend it before changing any
 CI-enforced invariant.
 
@@ -29,11 +29,7 @@ CI-enforced invariant.
 
 ## Patching & attribution
 
-- [ ] **[M][feat] SAE-feature circuits — remaining follow-on.** Shipped in v1.5–1.21: node
-  attribution, feature→feature edges (attrib + IG), FeatureACDC, per-position scores,
-  `arch='parallel'` flag (v1.20), `TranscoderWrapper` (v1.21). One item remains:
-  - Temporal / recurrent SAEs (require storing per-step feature activations across forward
-    passes — different lifecycle than the current single-forward circuit).
+- [x] **SAE-feature circuits — all follow-ons shipped (v1.5–1.22).** Node attribution, feature→feature edges (attrib + IG), FeatureACDC, per-position scores, `arch='parallel'` flag (v1.20), `TranscoderWrapper` (v1.21), `SAEFeatureTemporalRunner` (v1.22). True recurrent-SAE attribution (activations that depend on prior-step hidden state) remains a known limitation documented in the v1.22 CHANGELOG.
 
 ---
 

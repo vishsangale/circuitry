@@ -39,7 +39,9 @@ __all__ = [
     "SAEFeatureEdgeGraph",
     "SAEFeatureEdgeRunner",
     "SAEFeatureRunner",
+    "SAEFeatureTemporalRunner",
     "Site",
+    "TemporalAtPResult",
     "TranscoderWrapper",
     "patch_site",
     "to_hooked_transformer",
@@ -53,6 +55,8 @@ _LAZY = {
     "SAEFeatureCircuit": "circuitry.patching.sae_edges",
     "SAEFeatureEdgeRunner": "circuitry.patching.sae_edges",
     "FeatureACDCRunner": "circuitry.patching.sae_edges",
+    "SAEFeatureTemporalRunner": "circuitry.patching.sae_temporal",
+    "TemporalAtPResult": "circuitry.patching.sae_temporal",
 }
 
 
