@@ -69,17 +69,17 @@ circuitry compare runs/run_a runs/run_b
 
 ## Performance
 
-Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a ~50M-param decoder transformer. **At a realistic training step the budget holds — +5.3% on GPU** (RTX 5080, 88M-param decoder, batch 16 × seq 512, full `llm` recipe).
+Default settings target ≤10% wall-clock overhead at `every_n_steps=200` on a ~50M-param decoder transformer. **At a realistic training step the budget holds — +7.4% on GPU** (RTX 5080, 88M-param decoder, batch 16 × seq 512, full `llm` recipe, v1.8+ full-SVD default).
 
 Measured overhead (88M decoder, `every_n_steps=200`):
 
 | device | training step | overhead |
 | --- | --- | -------: |
-| RTX 5080 | batch 16 × seq 512 (8192 tok) | **+5.3%** |
+| RTX 5080 (v1.8+ full-SVD default) | batch 16 × seq 512 (8192 tok) | **+7.4%** |
 | RTX 5080 | batch 4 × seq 64 (256 tok) | +45.3% |
 | CPU 16-core (v0.2.0a0) | batch 4 × seq 64 | +14.9% |
 
-The overhead is dominated by the roughly *fixed* per-emit diagnostic cost (the SVD set + logit-lens + induction-score), so the **ratio** is very sensitive to how heavy the baseline step is: a tiny 256-token step on GPU (~12 ms) inflates it to +45%, while a realistic 8192-token step amortises it to +5.3%. On small/fast steps, raise `every_n_steps` or trim diagnostics with `Recipe.disable` / `Recipe.only`. The v1.4 Gram fast path (`use_gram='auto'`) helps narrowly-rectangular matrices; the drift probe is off by default (zero overhead at default settings).
+The overhead is dominated by the roughly *fixed* per-emit diagnostic cost (the SVD set + logit-lens + induction-score), so the **ratio** is very sensitive to how heavy the baseline step is: a tiny 256-token step on GPU (~12 ms) inflates it to +45%, while a realistic 8192-token step amortises it to +7.4%. On small/fast steps, raise `every_n_steps` or trim diagnostics with `Recipe.disable` / `Recipe.only`. The v1.4 Gram fast path (`use_gram='auto'`) helps narrowly-rectangular matrices; the drift probe is off by default (zero overhead at default settings). v1.8 switched to full deterministic SVD (`max_dim=None`) — pass an explicit `max_dim` to trade accuracy for speed on very wide weight matrices.
 
 Run the harness yourself (defaults to the tiny batch; pass a realistic one for the budget scenario):
 

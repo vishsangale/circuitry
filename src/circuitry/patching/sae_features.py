@@ -1,11 +1,10 @@
-"""SAE feature attribution runner. v1.5.0.
+"""SAE feature attribution runner.
 
-Node-level AtP*-style attribution for SAE features at residual-stream sites.
-Mechanism: error-term substitution (Marks "Sparse Feature Circuits").
-Only the HF-eager path is supported (TLSiteResolver → NotImplementedError).
-Only resid_post sites are supported in v1.5.0 (others → NotImplementedError).
-
-See docs/superpowers/specs/2026-05-30-v15-sae-feature-circuits-design.md.
+Node-level AtP*-style attribution for SAE features. Mechanism: error-term
+substitution (Marks "Sparse Feature Circuits"). Supported sites (v1.7+):
+resid_post, mlp_out, attn_out. Supported backends: HFSiteResolver (eager) and
+TLSiteResolver (TransformerLens). Supported variants: 'attrib' (AtP*) and 'ig'
+(integrated gradients, v1.7+). Optional error-node scoring via include_error_node.
 """
 from __future__ import annotations
 
