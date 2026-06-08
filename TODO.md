@@ -29,13 +29,15 @@ CI-enforced invariant.
 
 ## Patching & attribution
 
-- [ ] **[L][feat] SAE-feature circuits — remaining follow-ons.** Shipped in v1.5–1.7: node
-  attribution, feature→feature edges (attrib + IG), FeatureACDC. Remaining items noted in
-  the ACDC plan:
+- [ ] **[L][feat] SAE-feature circuits — remaining follow-ons.** Shipped in v1.5–1.9: node
+  attribution, feature→feature edges (attrib + IG), FeatureACDC, per-position scores. Remaining
+  items from the ACDC plan:
   - Transcoder / matching-pursuit SAEs as intervention sites.
-  - ~~Per-position feature edges~~ — shipped in v1.19 (`per_position=True` flag + `position_scores`).
   - Temporal / recurrent SAEs (require storing per-step feature activations across forward
     passes — different lifecycle than the current single-forward circuit).
+  - Intra-layer edges on parallel-attention architectures (GPT-J-style: attn and mlp both
+    read `resid_pre`, so `attn_out@L → mlp_out@L` is causally undefined; needs a different
+    causal model).
 
 ---
 
