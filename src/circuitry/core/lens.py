@@ -192,6 +192,74 @@ def logit_lens_distributions(
     return results
 
 
+def future_lens_kl(
+    residual: Any,
+    unembed: Any,
+    target_logits: Any,
+    *,
+    horizon: int = 1,
+    layer_norm: torch.nn.LayerNorm | None = None,
+    chunk_size: int = 256,
+) -> float:
+    """KL divergence between residual's logit-lens projection and future-token targets.
+
+    Extends logit_lens_kl to look ahead by ``horizon`` positions: the residual at
+    position t is projected through the unembed and compared against
+    target_logits[t + horizon].  Measures how much information about future tokens
+    is already encoded at this layer.
+
+    At horizon=0 this reduces to logit_lens_kl (same-position comparison).
+
+    Args:
+        residual:      (seq, d_model) or (batch, seq, d_model) hidden state.
+        unembed:       (d_model, vocab) or (vocab, d_model) unembedding matrix.
+        target_logits: (seq, vocab) or (batch, seq, vocab) — the reference logit
+                       distribution.  Typically the model's final-layer logits.
+                       Positions 0..horizon-1 of target_logits are NOT used as targets
+                       (they have no residual to predict them from).
+        horizon:       how many positions ahead to look (default 1).
+        layer_norm:    optional LayerNorm applied before projecting.
+        chunk_size:    token-chunking bound for (tokens, vocab) transient.
+
+    Returns:
+        Mean KL divergence (float) over the valid (seq - horizon) positions.
+        Returns 0.0 if horizon >= seq (no valid positions).
+    """
+    res = _as_tensor(residual)
+    W = _as_tensor(unembed)
+    tgt = _as_tensor(target_logits)
+
+    # --- normalise to (seq, d_model) / (seq, vocab) by mean-reducing batch ---
+    if res.ndim == 3:
+        res = res.float().mean(0)    # (seq, d_model)
+    if tgt.ndim == 3:
+        tgt = tgt.float().mean(0)    # (seq, vocab)
+
+    seq = int(res.shape[0])
+    if horizon >= seq:
+        return 0.0
+
+    d_model = int(res.shape[-1])
+    proj_W = _resolve_unembed(W, d_model, who="future_lens_kl")
+
+    res_f32 = res.detach().to(torch.float32)
+    W_f32 = proj_W.detach().to(torch.float32)
+    tgt_f32 = tgt.detach().to(torch.float32)
+
+    # Slice: source positions 0..seq-horizon-1, targets horizon..seq-1
+    if horizon == 0:
+        res_src = res_f32          # (seq, d_model)
+        tgt_slice = tgt_f32        # (seq, vocab)
+    else:
+        res_src = res_f32[:-horizon]       # (seq-horizon, d_model)
+        tgt_slice = tgt_f32[horizon:]      # (seq-horizon, vocab)
+
+    if layer_norm is not None:
+        res_src = layer_norm(res_src)
+
+    return _lens_kl_from_residual(res_src, W_f32, tgt_slice, chunk_size)
+
+
 def tuned_lens_kl(
     residual: Any,
     translator: tuple[Any, Any],

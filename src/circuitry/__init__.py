@@ -9,8 +9,10 @@ integrated-gradients variant; ``resid_post`` + HF results are byte-for-byte iden
 """
 
 from circuitry.core.activation import repr_drift, token_similarity
+from circuitry.core.erase import EraseProjection, leace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
-from circuitry.core.lens import LayerPrediction, logit_lens_distributions
+from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
+from circuitry.core.probe import LinearProbe, train_linear_probe
 from circuitry.core.steer import steer_vector
 from circuitry.core.weight import direction_cosine, update_delta
 from circuitry.patching.steer import apply_steer
@@ -25,8 +27,10 @@ from circuitry.writers.base import MetricWriter
 __version__ = "1.22.0"
 
 __all__ = [
+    "EraseProjection",
     "HookPoint",
     "LayerPrediction",
+    "LinearProbe",
     "MetricWriter",
     "ModelInventory",
     "ParameterRecord",
@@ -39,11 +43,14 @@ __all__ = [
     "build_report",
     "direction_cosine",
     "discover",
+    "future_lens_kl",
+    "leace_erase",
     "logit_lens_distributions",
     "register_recipe",
     "repr_drift",
     "scan_run",
     "steer_vector",
     "token_similarity",
+    "train_linear_probe",
     "update_delta",
 ]
