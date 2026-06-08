@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Open work and known debt as of **v1.18.0** (2026-06-08). Completed items live in `CHANGELOG.md`
+Open work and known debt as of **v1.19.0** (2026-06-08). Completed items live in `CHANGELOG.md`
 and git history. Design contract: `docs/design.md` — amend it before changing any
 CI-enforced invariant.
 
@@ -33,7 +33,7 @@ CI-enforced invariant.
   attribution, feature→feature edges (attrib + IG), FeatureACDC. Remaining items noted in
   the ACDC plan:
   - Transcoder / matching-pursuit SAEs as intervention sites.
-  - Per-position feature edges (current implementation is circuit-level, not position-level).
+  - ~~Per-position feature edges~~ — shipped in v1.19 (`per_position=True` flag + `position_scores`).
   - Temporal / recurrent SAEs (require storing per-step feature activations across forward
     passes — different lifecycle than the current single-forward circuit).
 

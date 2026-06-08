@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] — 2026-06-08
+
+**Per-position SAE feature edge scores.** `SAEFeatureEdgeRunner.run()` gains a `per_position=False`
+flag. When enabled, the runner computes per-sequence-position attribution scores alongside the
+existing scalar scores.
+
+### Added
+- **`per_position: bool = False`** keyword argument on `SAEFeatureEdgeRunner.run()` — when `True`,
+  also computes position-level scores for each edge and stores them in
+  `SAEFeatureCircuit.position_scores` (a `dict[SAEFeatureEdge, Tensor]` where every value has
+  shape `(seq_len,)`). `position_scores[e].sum() == edges[e]` within float32 rounding.
+  Supported for both `variant='attrib'` and `variant='ig'` (including error→feature edges when
+  `include_error_node=True`). Default `False` — zero overhead at default settings.
+- **`SAEFeatureCircuit.position_scores`** — new field (`None` unless `per_position=True`).
+  Exposes which sequence positions drive each feature→feature edge, enabling positional
+  analysis of circuit attribution.
+- **`SAEFeatureCircuit.top_positions(edge, k=5)`** — convenience helper that returns the top-k
+  sequence positions by absolute per-position score as a list of `(position_index, score)` pairs
+  sorted by `|score|` descending. Raises `ValueError` when `position_scores is None`.
+- Tests: 11 new tests in `tests/patching/test_sae_edges_per_position.py`.
+
+---
+
 ## [1.18.0] — 2026-06-08
 
 **Report polish + circuit I/O convenience.**
