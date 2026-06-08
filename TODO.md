@@ -1,6 +1,6 @@
 # circuitry — TODO / open items
 
-Open work and known debt as of **v1.19.0** (2026-06-08). Completed items live in `CHANGELOG.md`
+Open work and known debt as of **v1.21.0** (2026-06-08). Completed items live in `CHANGELOG.md`
 and git history. Design contract: `docs/design.md` — amend it before changing any
 CI-enforced invariant.
 
@@ -29,15 +29,11 @@ CI-enforced invariant.
 
 ## Patching & attribution
 
-- [ ] **[L][feat] SAE-feature circuits — remaining follow-ons.** Shipped in v1.5–1.9: node
-  attribution, feature→feature edges (attrib + IG), FeatureACDC, per-position scores. Remaining
-  items from the ACDC plan:
-  - Transcoder / matching-pursuit SAEs as intervention sites.
+- [ ] **[M][feat] SAE-feature circuits — remaining follow-on.** Shipped in v1.5–1.21: node
+  attribution, feature→feature edges (attrib + IG), FeatureACDC, per-position scores,
+  `arch='parallel'` flag (v1.20), `TranscoderWrapper` (v1.21). One item remains:
   - Temporal / recurrent SAEs (require storing per-step feature activations across forward
     passes — different lifecycle than the current single-forward circuit).
-  - Intra-layer edges on parallel-attention architectures (GPT-J-style: attn and mlp both
-    read `resid_pre`, so `attn_out@L → mlp_out@L` is causally undefined; needs a different
-    causal model).
 
 ---
 

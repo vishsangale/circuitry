@@ -99,6 +99,48 @@ def _routed_inject(resolved: Any, output: Any, new_sub: Tensor) -> Any:
     return _inject_tensor(output, resolved.inject(full, new_sub))
 
 
+class TranscoderWrapper:
+    """Wrap a transcoder (module-input → module-output feature decomposition) as an
+    SAE-compatible object for SAEFeatureRunner and SAEFeatureEdgeRunner.
+
+    A transcoder encodes from the MODULE INPUT (``inp[0]`` in the forward hook) and
+    produces a reconstruction ``x_hat`` in the MODULE OUTPUT space.  The error term
+    is ``eps = output − x_hat`` (in output space).  The splice is always lossless:
+    ``x_hat + eps = output``.
+
+    ``hook_input = True`` signals the attribution hooks to route encoding through
+    ``inp[0]`` instead of ``output``.
+
+    Usage::
+
+        tc = TranscoderWrapper(my_transcoder)  # wraps any obj with encode/decode
+        runner = SAEFeatureRunner(model, {Site("mlp_out", layer=0): tc}, resolver)
+
+    The wrapped transcoder must implement ``encode(x_in: Tensor) -> Tensor`` (where
+    ``x_in`` is the module input) and ``decode(f: Tensor) -> Tensor`` (where the
+    output is in module output space).
+    """
+
+    hook_input: bool = True
+
+    def __init__(self, transcoder: Any) -> None:
+        self._tc = transcoder
+
+    def encode(self, x: Tensor) -> Tensor:
+        return self._tc.encode(x)
+
+    def decode(self, f: Tensor) -> Tensor:
+        return self._tc.decode(f)
+
+    @property
+    def device(self) -> Any:
+        return getattr(self._tc, "device", torch.device("cpu"))
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return getattr(self._tc, "dtype", torch.float32)
+
+
 class SAEFeatureRunner:
     """Node-level SAE feature attribution via AtP*-style gradient estimation.
 
@@ -312,13 +354,24 @@ class SAEFeatureRunner:
             _inc_err: bool = include_error_node,
             _resolved: Any = resolved,
         ) -> None:
-            a = _routed_extract(_resolved, output).detach()
             with torch.no_grad():
-                a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-                f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
+                if getattr(_sae, "hook_input", False):
+                    # Transcoder: encode from module input, eps in output space
+                    a_in = inp[0].detach().to(
+                        getattr(_sae, "device", inp[0].device),
+                        getattr(_sae, "dtype", inp[0].dtype),
+                    )
+                    a_out = _extract_tensor(output).detach().to(a_in.device, a_in.dtype)
+                    f_c = _sae.encode(a_in)
+                    x_hat_c = _sae.decode(f_c)
+                    eps_c = (a_out - x_hat_c).detach()
+                else:
+                    a = _routed_extract(_resolved, output).detach()
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                    f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
                 _store["f"] = f_c.detach()
                 if _inc_err:
-                    _eps_store["eps"] = eps_c  # already detached by sae_decompose
+                    _eps_store["eps"] = eps_c  # already detached
 
         corr_hook = layer_mod.register_forward_hook(_corr_output_hook)
         try:
@@ -351,19 +404,30 @@ class SAEFeatureRunner:
             _mdev: Any = model_device,
             _resolved: Any = resolved,
         ) -> Any:
-            # Extract sub-activation via resolver (identity for resid_post + position=None)
-            a = _routed_extract(_resolved, output)
-            # Device/dtype align to SAE (mirrors metrics.py:26-28)
-            a_in = a.detach().to(
-                getattr(_sae, "device", a.device),
-                getattr(_sae, "dtype", a.dtype),
-            )
-
-            # §2.1: seed grad AT the feature tensor
-            f = _sae.encode(a_in).detach().requires_grad_(True)
-            f.retain_grad()
-            x_hat = _sae.decode(f)
-            eps = (a_in - x_hat).detach()  # frozen clean reconstruction error
+            if getattr(_sae, "hook_input", False):
+                # Transcoder: encode from module input; eps = output − x_hat (output space)
+                a_in = inp[0].detach().to(
+                    getattr(_sae, "device", inp[0].device),
+                    getattr(_sae, "dtype", inp[0].dtype),
+                )
+                a_out = _routed_extract(_resolved, output)  # live output for inject + eps
+                # §2.1: seed grad AT the feature tensor (from module input)
+                f = _sae.encode(a_in).detach().requires_grad_(True)
+                f.retain_grad()
+                x_hat = _sae.decode(f)
+                eps = (a_out.detach() - x_hat.detach()).detach()  # frozen transcoder error
+            else:
+                # Standard SAE: encode from module output
+                a = _routed_extract(_resolved, output)
+                a_in = a.detach().to(
+                    getattr(_sae, "device", a.device),
+                    getattr(_sae, "dtype", a.dtype),
+                )
+                # §2.1: seed grad AT the feature tensor
+                f = _sae.encode(a_in).detach().requires_grad_(True)
+                f.retain_grad()
+                x_hat = _sae.decode(f)
+                eps = (a_in - x_hat).detach()  # frozen clean reconstruction error
 
             _f_store["f"] = f
             _eps_clean_s["eps"] = eps

@@ -40,12 +40,14 @@ __all__ = [
     "SAEFeatureEdgeRunner",
     "SAEFeatureRunner",
     "Site",
+    "TranscoderWrapper",
     "patch_site",
     "to_hooked_transformer",
 ]
 
 _LAZY = {
     "SAEFeatureRunner": "circuitry.patching.sae_features",
+    "TranscoderWrapper": "circuitry.patching.sae_features",
     "SAEFeatureEdge": "circuitry.patching.sae_edges",
     "SAEFeatureEdgeGraph": "circuitry.patching.sae_edges",
     "SAEFeatureCircuit": "circuitry.patching.sae_edges",

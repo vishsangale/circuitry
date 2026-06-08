@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] — 2026-06-08
+
+**TranscoderWrapper — transcoder SAEs as intervention sites.** `TranscoderWrapper` wraps
+any transcoder (module-input → module-output feature decomposition) so it can be used as
+an SAE site in `SAEFeatureRunner` and `SAEFeatureEdgeRunner`. The wrapper sets
+`hook_input=True`, signalling the attribution hooks to encode from `inp[0]` (the module
+input) rather than from `output`. The SAE splice remains lossless: `x_hat + eps = output`
+where `eps = output − x_hat` (in output space).
+
+### Added
+- **`TranscoderWrapper`** in `circuitry.patching.sae_features` (and re-exported from
+  `circuitry.patching`). Wraps any object with `encode(x_in) → f` and `decode(f) → x_hat`
+  where `x_in` is the module input and `x_hat` is in the module output space. Setting
+  `hook_input = True` on the wrapper routes the attribution hooks through `inp[0]`.
+- Attribution hooks in `SAEFeatureRunner._run_site` now branch on `getattr(sae, "hook_input", False)`:
+  when `True`, the corrupted hook encodes from `inp[0]` and computes `eps = output − x_hat`;
+  the clean hook seeds the gradient leaf from `encode(inp[0])` with the same lossless splice.
+  The IG path is unchanged (uses pre-computed interpolated `f_k`, no re-encoding needed).
+- Same transcoder-aware branching added to the four writer/reader hooks in
+  `SAEFeatureEdgeRunner._compute_pair_edges` (`_writer_corr_hook`, `_writer_clean_hook`,
+  `_reader_corr_hook`, `_reader_clean_hook`).
+- Tests: 9 new tests in `tests/patching/test_sae_transcoder.py`.
+
+---
+
+## [1.20.0] — 2026-06-08
+
+**Parallel-attention arch flag for SAEFeatureEdgeRunner.** `arch='parallel'` on
+`SAEFeatureEdgeRunner.run()` proactively skips same-layer `attn_out → mlp_out` edges that
+are causally undefined in GPT-J-style models (both heads read `resid_pre` simultaneously).
+
+### Added
+- **`arch: str = 'sequential'`** keyword argument on `SAEFeatureEdgeRunner.run()`.
+  `'sequential'` (default, Llama-style — attention before MLP) preserves all existing edges.
+  `'parallel'` (GPT-J-style) skips `attn_out@L → mlp_out@L` pairs via the new
+  `_is_parallel_intra_layer()` helper. Unknown values raise `ValueError`.
+- **`_is_parallel_intra_layer(writer_site, reader_site) → bool`** — public helper returning
+  `True` when the pair is same-layer `attn_out → mlp_out`.
+- Tests: 10 new tests in `tests/patching/test_sae_parallel_arch.py`.
+
+---
+
 ## [1.19.0] — 2026-06-08
 
 **Per-position SAE feature edge scores.** `SAEFeatureEdgeRunner.run()` gains a `per_position=False`

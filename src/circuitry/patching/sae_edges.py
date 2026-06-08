@@ -29,6 +29,8 @@ from circuitry.patching.atp import AtPNode, AtPResult
 from circuitry.patching.graph import Node
 from circuitry.patching.sae_features import (
     SAEFeatureRunner,
+    TranscoderWrapper,
+    _extract_tensor,
     _freeze_sae,
     _restore_sae,
     _routed_extract,
@@ -1344,10 +1346,21 @@ class SAEFeatureEdgeRunner:
             _st: dict = writer_corrupt_store,
             _resolved: Any = writer_resolved,
         ) -> None:
-            a = _routed_extract(_resolved, output).detach()
-            a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             with torch.no_grad():
-                f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
+                if getattr(_sae, "hook_input", False):
+                    # Transcoder: encode from module input, eps in output space
+                    a_in = inp[0].detach().to(
+                        getattr(_sae, "device", inp[0].device),
+                        getattr(_sae, "dtype", inp[0].dtype),
+                    )
+                    a_out = _extract_tensor(output).detach().to(a_in.device, a_in.dtype)
+                    f_c = _sae.encode(a_in)
+                    x_hat_c = _sae.decode(f_c)
+                    eps_c = (a_out - x_hat_c).detach()
+                else:
+                    a = _routed_extract(_resolved, output).detach()
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                    f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
                 _st["f"] = f_c.detach()
                 _st["eps"] = eps_c.detach()  # captured for error→feature scoring
 
@@ -1357,9 +1370,15 @@ class SAEFeatureEdgeRunner:
             _st: dict = reader_corrupt_store,
             _resolved: Any = reader_resolved,
         ) -> None:
-            a = _routed_extract(_resolved, output).detach()
-            a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             with torch.no_grad():
+                if getattr(_sae, "hook_input", False):
+                    a_in = inp[0].detach().to(
+                        getattr(_sae, "device", inp[0].device),
+                        getattr(_sae, "dtype", inp[0].dtype),
+                    )
+                else:
+                    a = _routed_extract(_resolved, output).detach()
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 f_c = _sae.encode(a_in)
                 _st["f"] = f_c.detach()
 
@@ -1405,13 +1424,25 @@ class SAEFeatureEdgeRunner:
             instead of decode(f_U) + eps (frozen scalar), giving the error term
             a live gradient path to f_D for the VJP.
             """
-            a = _routed_extract(_resolved, output)
-            a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-            # Detached-leaf seed (§2.1 WRITER construction)
-            f_U = _sae.encode(a_in).detach().requires_grad_(True)
-            f_U.retain_grad()
-            x_hat = _sae.decode(f_U)
-            eps = (a_in - x_hat).detach()  # frozen clean eps
+            if getattr(_sae, "hook_input", False):
+                # Transcoder: encode from module input, eps = output − x_hat (output space)
+                a_in = inp[0].detach().to(
+                    getattr(_sae, "device", inp[0].device),
+                    getattr(_sae, "dtype", inp[0].dtype),
+                )
+                a_out = _routed_extract(_resolved, output)  # live output for eps + inject
+                f_U = _sae.encode(a_in).detach().requires_grad_(True)
+                f_U.retain_grad()
+                x_hat = _sae.decode(f_U)
+                eps = (a_out.detach() - x_hat.detach()).detach()  # frozen transcoder error
+            else:
+                a = _routed_extract(_resolved, output)
+                a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                # Detached-leaf seed (§2.1 WRITER construction)
+                f_U = _sae.encode(a_in).detach().requires_grad_(True)
+                f_U.retain_grad()
+                x_hat = _sae.decode(f_U)
+                eps = (a_in - x_hat).detach()  # frozen clean eps
 
             if _include_err:
                 # Independent leaf for the error term — receives VJP from f_D
@@ -1436,11 +1467,23 @@ class SAEFeatureEdgeRunner:
             _resolved: Any = reader_resolved,
         ) -> Any:
             """READER site: LIVE non-detached encode so grad flows from metric to f_D."""
-            a = _routed_extract(_resolved, output)
-            a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-            # NOTE: a_in is NOT detached — live activation flows into encode
-            f_D, x_hat, eps = sae_decompose(_sae, a_in)
-            # eps is already detached by sae_decompose (frozen at clean)
+            if getattr(_sae, "hook_input", False):
+                # Transcoder: encode from module input (live, for grad flow from writer)
+                a_in = inp[0].to(
+                    getattr(_sae, "device", inp[0].device),
+                    getattr(_sae, "dtype", inp[0].dtype),
+                )
+                # NOTE: a_in is NOT detached — live activation flows from writer's splice
+                f_D = _sae.encode(a_in)
+                x_hat = _sae.decode(f_D)
+                a_out = _routed_extract(_resolved, output)  # live output for eps
+                eps = (a_out.detach() - x_hat.detach()).detach()  # frozen transcoder error
+            else:
+                a = _routed_extract(_resolved, output)
+                a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                # NOTE: a_in is NOT detached — live activation flows into encode
+                f_D, x_hat, eps = sae_decompose(_sae, a_in)
+                # eps is already detached by sae_decompose (frozen at clean)
             # Guard: only retain_grad if requires_grad is True; on parallel-attention
             # models the reader tensor may not depend on the writer (no causal path) and
             # retain_grad on a leaf-or-no-grad tensor raises RuntimeError.
