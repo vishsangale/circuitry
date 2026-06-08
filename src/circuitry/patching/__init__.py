@@ -29,6 +29,7 @@ __all__ = [
     "AtPNode",
     "AtPResult",
     "AtPRunner",
+    "CrosscoderWrapper",
     "EAPResult",
     "EAPRunner",
     "Edge",
@@ -56,6 +57,7 @@ __all__ = [
 ]
 
 _LAZY = {
+    "CrosscoderWrapper": "circuitry.patching.sae_features",
     "SAEFeatureRunner": "circuitry.patching.sae_features",
     "TranscoderWrapper": "circuitry.patching.sae_features",
     "SAEFeatureEdge": "circuitry.patching.sae_edges",

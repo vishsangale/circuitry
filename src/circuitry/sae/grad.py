@@ -14,9 +14,16 @@ import torch
 from torch import Tensor
 
 # Architectures that are supported for gradient-based attribution.
-# BatchTopK and Matryoshka load as "jumprelu" in sae_lens 6.x, so they
-# are covered by that entry.
-SUPPORTED_SAE_ARCHITECTURES = frozenset({"standard", "topk", "jumprelu", "gated"})
+# BatchTopK and Matryoshka may load as "jumprelu" in some sae_lens versions,
+# but are also registered under their own names in newer releases.
+SUPPORTED_SAE_ARCHITECTURES = frozenset({
+    "standard",
+    "topk",
+    "jumprelu",
+    "gated",
+    "matryoshka",   # Bussmann et al. 2025, arxiv:2503.17547
+    "batch_topk",   # batch-level TopK; gradient path identical to topk
+})
 
 _BLOCKED_ARCHITECTURES = frozenset({
     "transcoder",

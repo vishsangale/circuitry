@@ -9,6 +9,7 @@ integrated-gradients variant; ``resid_post`` + HF results are byte-for-byte iden
 """
 
 from circuitry.core.activation import repr_drift, token_similarity
+from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
@@ -29,6 +30,7 @@ from circuitry.writers.base import MetricWriter
 __version__ = "1.22.0"
 
 __all__ = [
+    "CrosscoderWrapper",
     "EraseProjection",
     "HookPoint",
     "LayerPrediction",

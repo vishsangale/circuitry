@@ -141,6 +141,54 @@ class TranscoderWrapper:
         return getattr(self._tc, "dtype", torch.float32)
 
 
+class CrosscoderWrapper:
+    """Wraps a crosscoder SAE as a single-site intervention point.
+
+    A crosscoder reads activations from N layers simultaneously and produces
+    a shared feature vector.  This wrapper exposes it as a standard SAE
+    (encode / decode) by fixing a *primary layer* for single-site attribution.
+
+    hook_input is False (residual-stream output hook, same as standard SAEs).
+    Cross-layer analysis (all layers simultaneously) is available via
+    encode_all() for users who need it.
+
+    The wrapped crosscoder object must implement one of:
+      • crosscoder.encode(x)                   — single-tensor input
+      • crosscoder.encode_at_layer(x, layer)   — explicit layer routing
+    and one of:
+      • crosscoder.decode(f)                   — single output
+      • crosscoder.decode_at_layer(f, layer)   — layer-specific decode
+    """
+
+    hook_input: bool = False
+
+    def __init__(self, crosscoder: Any, *, primary_layer: int = 0) -> None:
+        self._cc = crosscoder
+        self.primary_layer = primary_layer
+
+    def encode(self, x: Tensor) -> Tensor:
+        if hasattr(self._cc, "encode_at_layer"):
+            return self._cc.encode_at_layer(x, self.primary_layer)
+        return self._cc.encode(x)
+
+    def decode(self, f: Tensor) -> Tensor:
+        if hasattr(self._cc, "decode_at_layer"):
+            return self._cc.decode_at_layer(f, self.primary_layer)
+        return self._cc.decode(f)
+
+    def encode_all(self, acts: list[Tensor]) -> Tensor:
+        """Encode from all layers simultaneously (full cross-layer mode)."""
+        return self._cc.encode(acts)
+
+    @property
+    def device(self) -> Any:
+        return getattr(self._cc, "device", torch.device("cpu"))
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return getattr(self._cc, "dtype", torch.float32)
+
+
 class SAEFeatureRunner:
     """Node-level SAE feature attribution via AtP*-style gradient estimation.
 
