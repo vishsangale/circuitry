@@ -19,11 +19,18 @@ CI-enforced invariant.
 
 ## Performance
 
-- [ ] **[M][perf] Further SVD cost reduction.** After the v0.9 sharing fix the irreducible cost
-  is one full SVD per matrix (~1 s for 58 matrices on GPU). Two options investigated:
-  (a) lower the `max_dim` default (accuracy trade-off), (b) eigvalsh on the Gram matrix W^T W
-  (1.8× speedup in v1.10 prototype but degrades the spectral tail — deferred). Only needed if
-  the ≤10% §10 budget must hold at aggressive cadences on fast GPUs.
+- [x] **[M][perf] SVD cost reduction — resolved by existing `use_gram='auto'`.** Benchmarked
+  2026-06-08 on CPU (LLM-representative matrix shapes). Findings:
+  - Square matrices (4k×4k, dominant in LLMs): eigvalsh is **26% slower** than svdvals on CPU.
+    No gain to be had for square weight matrices.
+  - Rectangular matrices (4:1 aspect): eigvalsh is **1.3–5× faster** (speedup grows with
+    aspect ratio). `use_gram='auto'` already engages the Gram path at ≥3:1 — this is correct.
+  - Accuracy: `rel_tail_err ≈ 1e-5`, `Δheavy_tail_alpha ≈ 0.0001` across all shapes at
+    float64 promotion. The "degrades spectral tail" concern from the v1.10 prototype was
+    pre-float64-promotion (v1.8 added float64 internally); no longer applies.
+  - **Decision: no further action needed.** The current `use_gram='auto'` threshold (≥3:1)
+    is already optimal. Lowering `max_dim` remains an opt-in hatch if GPU SVD cost ever
+    becomes the budget bottleneck at aggressive cadences.
 
 ---
 
@@ -44,6 +51,5 @@ CI-enforced invariant.
 
 ## Repo hygiene
 
-- [ ] **[XS][hygiene] Decide fate of `latent-superpowers-inspect` archival branch.** Lives
-  on `feat/inspect-checkpoint-skill`; `pre-circuitry-extraction` tag preserves rollback.
-  Decision deferred 2026-05-23 — revisit when there's a concrete reason to act.
+- [x] **[XS][hygiene] `latent-superpowers-inspect` archival branch** — branch
+  `feat/inspect-checkpoint-skill` no longer exists on the remote (already cleaned up).

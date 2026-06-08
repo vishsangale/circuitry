@@ -562,7 +562,12 @@ The most likely 6-month failure mode is "this is cool, but it doubled my trainin
   `every_n_steps=200`, batch 16 × seq 512): +7.4%** — the full SVD eroded the margin (was +5.3% with
   the old `max_dim=512` subsampling) but the ≤10% budget still holds at default settings. If
   wide-matrix SVD becomes the live bottleneck, pass an explicit `max_dim` per recipe (accepting the
-  bias) or raise `every_n_steps`. **MoE expert weights** are
+  bias) or raise `every_n_steps`. **`use_gram='auto'` threshold is optimal (benchmarked 2026-06-08):**
+  for square matrices (4k×4k, dominant in LLMs) eigvalsh is ~26% *slower* than svdvals on CPU, so
+  extending the Gram path to square matrices would regress performance. For ≥3:1 rectangular matrices
+  eigvalsh wins by 1.3–5× (speedup grows with aspect ratio) — the existing threshold already captures
+  all wins. Accuracy at float64 promotion: `rel_tail_err ≤ 1.4e-5`, `Δheavy_tail_alpha ≤ 1e-4` across
+  all tested shapes — the pre-v1.8 "degrades spectral tail" concern no longer applies. **MoE expert weights** are
   batched 3-D tensors (`[n_experts, d_in, d_out]`); the scalar rank primitives reject >2-D (see §4.1) and
   the recorder iterates the expert axis, emitting **per-expert** diagnostics rather than a single
   semantically-wrong flattened rank.
