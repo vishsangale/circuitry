@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] — 2026-06-09
+
+**CLT Attribution Graphs.**
+
+### Added
+- **`patching/clt.py`** (new module) — `CLTNode`, `CLTEdge`, `CLTGraphResult`,
+  `CLTGraphRunner(model, layer_transcoders)`: builds a feature-level attribution
+  graph using cross-layer transcoders. For each consecutive layer pair `(l, l+1)`,
+  scores every feature-to-feature edge using the EAP approximation
+  `score(fi→fj) = Σ delta_fi · grad_fj`. Clean forward pass splices each
+  transcoder losslessly (`decode(encode(x)) + sg(output − decode(encode(x)))`) so
+  PyTorch autograd gives `f.grad = ∂metric/∂f` after `backward()`.
+  `CLTGraphResult` exposes `.top_k()`, `.threshold()`, `.to_markdown()`,
+  `.node_scores` (per-feature importance), `.layer_order` (arXiv:2603.21014).
+- 12 new tests in `tests/patching/test_clt.py`.
+
 ## [1.33.0] — 2026-06-09
 
 **Inference-Time Diagnostics & Deeper Attribution.**

@@ -88,6 +88,11 @@ def test_public_surface():
         "cd_token_contributions",
         "critical_sharpness",
         "gradient_subspace_saturation",
+        # CLT attribution graphs (v1.34)
+        "CLTNode",
+        "CLTEdge",
+        "CLTGraphResult",
+        "CLTGraphRunner",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

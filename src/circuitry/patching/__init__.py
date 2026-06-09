@@ -15,6 +15,7 @@ from circuitry.patching.acdc import ACDCResult, ACDCRunner
 from circuitry.patching.atp import AtPNode, AtPResult, AtPRunner
 from circuitry.patching.cd import CDResult, cd_token_contributions
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
+from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
 from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
@@ -36,6 +37,10 @@ __all__ = [
     "AtPResult",
     "AtPRunner",
     "CDResult",
+    "CLTEdge",
+    "CLTGraphResult",
+    "CLTGraphRunner",
+    "CLTNode",
     "CausalScrubResult",
     "ITIConfig",
     "CausalScrubRunner",

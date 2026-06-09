@@ -65,6 +65,7 @@ from circuitry.core.weight import (
     update_weight_ratio,
 )
 from circuitry.patching.cd import CDResult, cd_token_contributions
+from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
 from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.das import DASResult, DASRunner
@@ -84,10 +85,14 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.33.0"
+__version__ = "1.34.0"
 
 __all__ = [
     "CDResult",
+    "CLTEdge",
+    "CLTGraphResult",
+    "CLTGraphRunner",
+    "CLTNode",
     "CausalScrubResult",
     "CausalScrubRunner",
     "CertifiedCircuitResult",

@@ -4,7 +4,7 @@
 
 Mechanistic-interpretability diagnostics for PyTorch — works across LLMs, vision (CNNs / ViTs), and recsys models with a single API, live during training or post-hoc on a checkpoint.
 
-**Status:** v1.33.0 (beta). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md).
+**Status:** v1.34.0 (beta). Research code; no support promise. Design contract: [`docs/design.md`](docs/design.md).
 
 ## Install
 

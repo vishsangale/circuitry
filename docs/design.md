@@ -337,6 +337,19 @@ weight.critical_sharpness(model, loss_fn, *, n_iters=20, tol=1e-4) -> float
 weight.gradient_subspace_saturation(grad_history, *, k=10) -> float
 # Fraction of current gradient in top-k historical gradient subspace;
 # high = plasticity loss, low = still exploring; arXiv:2508.07370
+
+# CLT Attribution Graphs (v1.34)
+from circuitry.patching import clt
+clt.CLTNode(layer, feature)  # frozen dataclass node
+clt.CLTEdge(src: CLTNode, dst: CLTNode)  # frozen dataclass directed edge
+clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
+# .run(clean, corrupted, metric, *, score_threshold=0.0) -> CLTGraphResult
+# Two-pass EAP at the feature level: lossless transcoder splice in clean pass
+# gives f.grad = ∂metric/∂f; delta_f from corrupted pass gives edge scores
+# CLTGraphResult: .scores {CLTEdge: float}, .node_scores {CLTNode: float},
+#   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
+# Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
+# arXiv:2603.21014 (Anthropic attribution graphs)
 ```
 
 Invariants for everything in `core/`:
