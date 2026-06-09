@@ -148,3 +148,150 @@ def test_build_report_summary_block_counts_moving_and_static(tmp_path):
     assert "**1** moving" in md
     assert "**1** static" in md
     assert "**2** emit step" in md
+
+
+def test_delta_column_is_signed_not_unsigned_range(tmp_path):
+    """v1.10 polish: a monotonically *decreasing* metric must render a negative
+    Δ in the table, not the positive unsigned range (vmax - vmin) it showed
+    through v1.9 (which read like an increase)."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/0", "value": 15.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/effective_rank/0", "value": 5.0, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    # The row's Δ cell is last - first = 5 - 15 = -10, NOT the +10 range.
+    assert "-10" in md
+    assert "| +10 |" not in md and "| 10 |" not in md
+
+
+def test_delta_column_signed_positive_for_rising_metric(tmp_path):
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "activation/dead_fraction/0", "value": 0.1, "step": 0, "kind": "scalar"},
+        {"tag": "activation/dead_fraction/0", "value": 0.3, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "+0.2" in md
+
+
+def test_summary_shows_family_tag_counts(tmp_path):
+    """## Summary should include a per-top-level-family tag count line."""
+    _write_jsonl(tmp_path / "metrics.jsonl", [
+        {"tag": "weight/effective_rank/0", "value": 5.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/stable_rank/0", "value": 3.0, "step": 0, "kind": "scalar"},
+        {"tag": "activation/dead_fraction/0", "value": 0.1, "step": 0, "kind": "scalar"},
+    ])
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Tags by family" in md
+    assert "**weight**: 2" in md
+    assert "**activation**: 1" in md
+
+
+def test_grokking_signals_appear_in_training_dynamics(tmp_path):
+    """A sharp loss drop should surface in the Grokking Signals sub-table."""
+    rows = (
+        [{"tag": "train/loss", "value": 2.0, "step": s, "kind": "scalar"}
+         for s in range(10)]
+        + [{"tag": "train/loss", "value": 0.3, "step": s, "kind": "scalar"}
+           for s in range(10, 20)]
+    )
+    _write_jsonl(tmp_path / "metrics.jsonl", rows)
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Grokking Signals" in md
+    assert "loss" in md
+
+
+def test_grokking_signals_absent_for_monotone_loss(tmp_path):
+    """A smoothly declining loss must not produce a Grokking Signals entry."""
+    rows = [
+        {"tag": "train/loss", "value": 2.0 - 0.05 * s, "step": s, "kind": "scalar"}
+        for s in range(30)
+    ]
+    _write_jsonl(tmp_path / "metrics.jsonl", rows)
+    out = tmp_path / "inspect" / "report.md"
+    build_report(run_dir=tmp_path, out_path=out)
+    md = out.read_text()
+    assert "Grokking Signals" not in md
+
+
+def test_repr_drift_high_flag_fires(tmp_path):
+    """repr_drift last > 0.5 triggers 'repr_drift_high' flag."""
+    scalars = [
+        {"kind": "scalar", "tag": "activation/repr_drift/layers.0", "value": 0.1, "step": 0},
+        {"kind": "scalar", "tag": "activation/repr_drift/layers.0", "value": 0.9, "step": 1},
+    ]
+    p = tmp_path / "metrics.jsonl"
+    p.write_text("\n".join(json.dumps(s) for s in scalars))
+    report = build_report(tmp_path).read_text()
+    assert "repr_drift_high" in report
+
+
+def test_matched_modules_count_in_summary(tmp_path):
+    """matched_modules.txt module counts appear in ## Summary."""
+    scalars = [{"kind": "scalar", "tag": "weight/effective_rank/fc", "value": 8.0, "step": 0}]
+    p = tmp_path / "metrics.jsonl"
+    p.write_text("\n".join(json.dumps(s) for s in scalars))
+
+    circ = tmp_path / "circuitry"
+    circ.mkdir()
+    (circ / "matched_modules.txt").write_text(
+        "# hook_point[0] source=weight target=mlp\n"
+        "layer_a → weight [64, 64]\n"
+        "layer_b → weight [64, 64]\n"
+        "\n"
+        "# hook_point[1] source=output target=attn\n"
+        "layer_c\n"
+    )
+    report = build_report(tmp_path).read_text()
+    assert "Modules matched" in report
+    assert "**weight**: 2" in report
+    assert "**activation**: 1" in report
+
+
+def test_matched_modules_deduplicates_across_hookpoints(tmp_path):
+    """Same module under two same-source hook-points is counted once."""
+    scalars = [{"kind": "scalar", "tag": "train/loss", "value": 1.0, "step": 0}]
+    (tmp_path / "metrics.jsonl").write_text("\n".join(json.dumps(s) for s in scalars))
+
+    circ = tmp_path / "circuitry"
+    circ.mkdir()
+    (circ / "matched_modules.txt").write_text(
+        "# hook_point[0] source=weight target=mlp.up\n"
+        "fc → weight [64, 64]\n"
+        "\n"
+        "# hook_point[1] source=weight target=mlp.down\n"
+        "fc → weight [64, 64]\n"  # same module name again
+    )
+    report = build_report(tmp_path).read_text()
+    # "fc" appears under both weight hook-points → deduplicated to 1
+    assert "**weight**: 1" in report
+
+
+def test_matched_modules_absent_in_compact_mode(tmp_path):
+    """Modules matched line does not appear in compact mode."""
+    scalars = [{"kind": "scalar", "tag": "train/loss", "value": 1.0, "step": 0}]
+    (tmp_path / "metrics.jsonl").write_text("\n".join(json.dumps(s) for s in scalars))
+
+    circ = tmp_path / "circuitry"
+    circ.mkdir()
+    (circ / "matched_modules.txt").write_text(
+        "# hook_point[0] source=weight target=fc\n"
+        "layer_a → weight [64, 64]\n"
+    )
+    report = build_report(tmp_path, compact=True).read_text()
+    assert "Modules matched" not in report
+
+
+def test_matched_modules_absent_when_file_missing(tmp_path):
+    """No matched_modules.txt → no 'Modules matched' line."""
+    scalars = [{"kind": "scalar", "tag": "train/loss", "value": 1.0, "step": 0}]
+    (tmp_path / "metrics.jsonl").write_text("\n".join(json.dumps(s) for s in scalars))
+    report = build_report(tmp_path).read_text()
+    assert "Modules matched" not in report

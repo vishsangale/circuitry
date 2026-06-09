@@ -123,6 +123,27 @@ def test_update_delta_l2_when_shifted():
     assert abs(out["w"] - (2.0 ** 0.5)) < 1e-6
 
 
+def test_relative_update_delta_is_scale_invariant():
+    """||ΔW||/||W|| is identical for two matrices that differ only by an overall
+    scale — unlike the absolute update_delta."""
+    base_now = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    base_prev = torch.tensor([[0.9, 0.0], [0.0, 0.9]])
+    small = weight.relative_update_delta({"w": base_now}, {"w": base_prev})
+    big = weight.relative_update_delta({"w": base_now * 1000},
+                                       {"w": base_prev * 1000})
+    assert abs(small["w"] - big["w"]) < 1e-6
+    # And the absolute deltas differ by ~1000x, confirming the scale problem.
+    abs_small = weight.update_delta({"w": base_now}, {"w": base_prev})["w"]
+    abs_big = weight.update_delta({"w": base_now * 1000},
+                                  {"w": base_prev * 1000})["w"]
+    assert abs(abs_big / abs_small - 1000.0) < 1e-3
+
+
+def test_relative_update_delta_zero_when_unchanged():
+    sd = {"w": torch.ones(3, 3)}
+    assert weight.relative_update_delta(sd, sd)["w"] == 0.0
+
+
 def test_direction_cosine_collinear_updates():
     # prev_prev -> prev: +I; prev -> now: +2I (same direction)
     sd_pp = {"w": torch.zeros(2, 2)}
@@ -366,3 +387,88 @@ def test_weight_diagnostics_run_on_mps():
     # strongly-rectangular -> Gram float64 path on CPU
     Wr = torch.randn(256, 16, device="mps")
     assert math.isfinite(weight.effective_rank(Wr))
+
+
+# ---------------------------------------------------------------------------
+# update_weight_ratio tests (v1.30)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.weight import FinetuningDeltaResult, finetuning_delta_svd, update_weight_ratio
+
+
+def test_update_weight_ratio_small_update():
+    """A small update relative to the base should give a small ratio."""
+    torch.manual_seed(0)
+    W = torch.randn(16, 16)
+    dW = 0.01 * torch.randn(16, 16)
+    r = update_weight_ratio(W, W + dW)
+    assert isinstance(r, float)
+    assert r < 0.1
+
+
+def test_update_weight_ratio_identity_is_zero():
+    """Identical matrices → ratio = 0."""
+    W = torch.randn(8, 8)
+    assert update_weight_ratio(W, W) == pytest.approx(0.0, abs=1e-8)
+
+
+def test_update_weight_ratio_scale_invariant():
+    """Scaling both W_prev and the update by the same factor leaves ratio unchanged."""
+    torch.manual_seed(1)
+    W = torch.randn(8, 8)
+    dW = 0.1 * torch.randn(8, 8)
+    r1 = update_weight_ratio(W, W + dW)
+    r2 = update_weight_ratio(5.0 * W, 5.0 * (W + dW))
+    assert r1 == pytest.approx(r2, rel=1e-5)
+
+
+def test_update_weight_ratio_positive():
+    torch.manual_seed(2)
+    W = torch.randn(4, 4)
+    r = update_weight_ratio(W, W + torch.randn(4, 4))
+    assert r >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# finetuning_delta_svd tests (v1.30)
+# ---------------------------------------------------------------------------
+
+
+def test_finetuning_delta_svd_returns_result():
+    torch.manual_seed(3)
+    W_base = torch.randn(16, 8)
+    W_ft = W_base + 0.1 * torch.randn(16, 8)
+    res = finetuning_delta_svd(W_base, W_ft)
+    assert isinstance(res, FinetuningDeltaResult)
+    assert isinstance(res.sv_scale_factor, float)
+    assert isinstance(res.left_rotation_similarity, float)
+    assert isinstance(res.right_rotation_similarity, float)
+
+
+def test_finetuning_delta_svd_zero_update():
+    """Identical base and fine-tuned → scale factor ≈ 0."""
+    torch.manual_seed(4)
+    W = torch.randn(8, 8)
+    res = finetuning_delta_svd(W, W)
+    assert res.sv_scale_factor == pytest.approx(0.0, abs=1e-4)
+
+
+def test_finetuning_delta_svd_lora_like_high_rotation():
+    """LoRA update preserves the base directions → both rotation similarities should be > 0."""
+    torch.manual_seed(5)
+    W_base = torch.randn(16, 8)
+    # LoRA-style low-rank update that happens to share directions with W_base
+    U, _, Vh = torch.linalg.svd(W_base, full_matrices=False)
+    lora = 0.1 * (U[:, :2] @ Vh[:2])
+    res = finetuning_delta_svd(W_base, W_base + lora)
+    assert res.left_rotation_similarity > 0.0
+    assert res.right_rotation_similarity > 0.0
+
+
+def test_finetuning_delta_svd_similarities_in_unit_interval():
+    torch.manual_seed(6)
+    W_base = torch.randn(8, 6)
+    W_ft = W_base + 0.5 * torch.randn(8, 6)
+    res = finetuning_delta_svd(W_base, W_ft)
+    assert 0.0 <= res.left_rotation_similarity <= 1.0
+    assert 0.0 <= res.right_rotation_similarity <= 1.0

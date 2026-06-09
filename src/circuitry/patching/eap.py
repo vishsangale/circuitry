@@ -9,7 +9,16 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from circuitry.patching.graph import Edge, EdgeGraph, Node, build_graph
+from circuitry.patching.graph import (
+    Edge,
+    EdgeGraph,
+    Node,
+    _node_from_dict,
+    _node_str,
+    _node_to_dict,
+    build_graph,
+    edge_sort_key,
+)
 
 # Type alias for flexible inputs: either a raw tensor (toy models) or a dict
 # of keyword arguments (HF models, e.g. {"input_ids": tensor}).
@@ -29,6 +38,72 @@ class EAPResult:
 
     def threshold(self, tau: float) -> list[Edge]:
         return [e for e, s in self.scores.items() if abs(s) >= tau]
+
+    def to_markdown(self, *, top_k: int = 20) -> str:
+        """Render a markdown summary with a top-K edge table."""
+        lines = ["## EAP Circuit", ""]
+        lines.append(f"- Graph: {self.graph.n_layers} layers, {self.graph.n_heads} heads")
+        lines.append(f"- Total edges scored: {len(self.scores)}")
+        lines.append("")
+        ranked = self.top_k(top_k)
+        lines.append(f"### Top-{len(ranked)} Edges by |score|")
+        lines.append("")
+        lines.append("| rank | writer | slot | reader | score |")
+        lines.append("| ---: | --- | --- | --- | ---: |")
+        for i, (edge, score) in enumerate(ranked, 1):
+            lines.append(
+                f"| {i} | `{_node_str(edge.writer)}` | {edge.slot}"
+                f" | `{_node_str(edge.reader)}` | {score:.4g} |"
+            )
+        return "\n".join(lines)
+
+    def to_json(self) -> str:
+        """Serialize to JSON (round-trips via from_json())."""
+        import json
+        data = {
+            "kind": "eap",
+            "n_layers": self.graph.n_layers,
+            "n_heads": self.graph.n_heads,
+            "scores": [
+                {
+                    "writer": _node_to_dict(edge.writer),
+                    "reader": _node_to_dict(edge.reader),
+                    "slot": edge.slot,
+                    "score": score,
+                }
+                for edge, score in sorted(self.scores.items(), key=lambda kv: -abs(kv[1]))
+            ],
+        }
+        return json.dumps(data, indent=2)
+
+    @classmethod
+    def from_json(cls, text: str) -> "EAPResult":
+        """Deserialize from JSON produced by to_json()."""
+        import json
+        data = json.loads(text)
+        graph = build_graph(data["n_layers"], data["n_heads"])
+        edge_lookup: dict[tuple, Edge] = {
+            (e.writer, e.reader, e.slot): e for e in graph.edges
+        }
+        scores: dict[Edge, float] = {}
+        for row in data["scores"]:
+            writer = _node_from_dict(row["writer"])
+            reader = _node_from_dict(row["reader"])
+            slot = row["slot"]
+            edge = edge_lookup.get((writer, reader, slot)) or Edge(writer, reader, slot)
+            scores[edge] = row["score"]
+        return cls(graph=graph, scores=scores)
+
+    def save(self, path: "str | pathlib.Path") -> None:
+        """Write to_json() output to a file."""
+        import pathlib
+        pathlib.Path(path).write_text(self.to_json())
+
+    @classmethod
+    def load(cls, path: "str | pathlib.Path") -> "EAPResult":
+        """Load from a file written by save()."""
+        import pathlib
+        return cls.from_json(pathlib.Path(path).read_text())
 
 
 def score_edges(

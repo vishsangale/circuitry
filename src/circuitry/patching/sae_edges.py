@@ -3,8 +3,8 @@
 Multi-site error-term splice + per-downstream VJP edge scoring.
 Composes (does NOT subclass) SAEFeatureRunner for Stage 1.
 
-Only the HF-eager path is supported (TLSiteResolver → NotImplementedError).
-Only resid_post sites are supported (others → NotImplementedError).
+Both HF-eager (HFSiteResolver) and TransformerLens (TLSiteResolver) are supported (v1.7 P3).
+Supported components: resid_post, mlp_out, attn_out (others → NotImplementedError).
 
 Stage B additions:
   - compute_f_per_site: capture feature acts per site (no_grad)
@@ -29,6 +29,8 @@ from circuitry.patching.atp import AtPNode, AtPResult
 from circuitry.patching.graph import Node
 from circuitry.patching.sae_features import (
     SAEFeatureRunner,
+    TranscoderWrapper,
+    _extract_tensor,
     _freeze_sae,
     _restore_sae,
     _routed_extract,
@@ -71,6 +73,20 @@ def _is_always_connected(writer_site: Any, reader_site: Any) -> bool:
     parallel-attention architectures (attn and mlp both read from x, not each other).
     """
     return writer_site.component == "resid_post" and reader_site.component == "resid_post"
+
+
+def _is_parallel_intra_layer(writer_site: Any, reader_site: Any) -> bool:
+    """Return True for same-layer attn_out → mlp_out — causally undefined in parallel-attention arches.
+
+    In sequential (Llama-style) models attention runs before MLP, so this edge is valid.
+    In parallel (GPT-J-style) models both read resid_pre simultaneously, so there is no
+    causal path; the edge should be skipped when arch='parallel'.
+    """
+    return (
+        writer_site.layer == reader_site.layer
+        and writer_site.component == "attn_out"
+        and reader_site.component == "mlp_out"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -430,10 +446,15 @@ class SAEFeatureCircuit:
         model: nn.Module | None = None,
         sae_sites: dict[Site, Any] | None = None,
         resolver: Any | None = None,
+        position_scores: dict[SAEFeatureEdge, Tensor] | None = None,
     ) -> None:
         self.nodes = nodes
         self.edges = edges
         self.graph = graph
+        # Per-position scores: set when SAEFeatureEdgeRunner.run(per_position=True).
+        # dict[SAEFeatureEdge, Tensor] where each tensor has shape (seq_len,).
+        # position_scores[e].sum() == edges[e] (within float32 rounding).
+        self.position_scores = position_scores
         # Internal references for Stage B ablation methods
         self._model = model
         self._sae_sites = sae_sites
@@ -451,6 +472,22 @@ class SAEFeatureCircuit:
 
     def threshold(self, tau: float) -> list[SAEFeatureEdge]:
         return [e for e, s in self.edges.items() if abs(s) >= tau]
+
+    def top_positions(self, edge: SAEFeatureEdge, k: int = 5) -> list[tuple[int, float]]:
+        """Return the top-k sequence positions by absolute per-position score for *edge*.
+
+        Returns a list of (position_index, score) pairs sorted by |score| descending.
+        Raises KeyError if *edge* is not in position_scores (run with per_position=True first).
+        Raises ValueError if position_scores is None.
+        """
+        if self.position_scores is None:
+            raise ValueError(
+                "position_scores is None — re-run SAEFeatureEdgeRunner.run() with per_position=True"
+            )
+        pos_tensor = self.position_scores[edge]
+        scores_list = [(int(i), float(v)) for i, v in enumerate(pos_tensor.cpu())]
+        scores_list.sort(key=lambda iv: abs(iv[1]), reverse=True)
+        return scores_list[:k]
 
     # ------------------------------------------------------------------
     # Internal: extract circuit_nodes set from this circuit
@@ -1067,6 +1104,8 @@ class SAEFeatureEdgeRunner:
         include_error_node: bool = False,
         variant: str = "attrib",
         n_ig_steps: int = 0,
+        per_position: bool = False,
+        arch: str = "sequential",
     ) -> SAEFeatureCircuit:
         """Compute feature→feature SAE edge scores.
 
@@ -1085,9 +1124,18 @@ class SAEFeatureEdgeRunner:
                 sign-consistent with attrib); reader stays LIVE; eps frozen at both sites.
                 Cost = N× attrib; peak memory == attrib (one vjp_j alive at a time).
             n_ig_steps: number of IG integration steps (variant='ig' only). 0 → default of 32.
+            per_position: if True, also compute per-sequence-position edge scores and store
+                them in SAEFeatureCircuit.position_scores as dict[SAEFeatureEdge, Tensor]
+                where each Tensor has shape (seq_len,).  position_scores[e].sum() == edges[e]
+                within float32 rounding.  Default False (no overhead).
+            arch: 'sequential' (default, Llama-style — attention runs before MLP within a layer)
+                or 'parallel' (GPT-J-style — attention and MLP both read resid_pre; same-layer
+                attn_out→mlp_out edges are causally undefined and are proactively skipped).
+                'sequential' is also correct for any model where only resid_post sites are used.
 
         Returns:
-            SAEFeatureCircuit with .nodes (v1.5 scores), .edges, .graph.
+            SAEFeatureCircuit with .nodes (v1.5 scores), .edges, .graph,
+            and .position_scores when per_position=True.
         """
         if variant not in ("attrib", "ig"):
             raise NotImplementedError(
@@ -1097,6 +1145,10 @@ class SAEFeatureEdgeRunner:
         if layer_pairs not in ("adjacent", "all_forward"):
             raise ValueError(
                 f"layer_pairs must be 'adjacent' or 'all_forward', got {layer_pairs!r}"
+            )
+        if arch not in ("sequential", "parallel"):
+            raise ValueError(
+                f"arch must be 'sequential' or 'parallel', got {arch!r}"
             )
 
         was_training, orig_rg = self._stage1_runner._atp._freeze_eval()
@@ -1113,6 +1165,8 @@ class SAEFeatureEdgeRunner:
                 include_error_node=include_error_node,
                 variant=variant,
                 n_ig_steps=n_ig_steps,
+                per_position=per_position,
+                arch=arch,
             )
         finally:
             self._stage1_runner._atp._restore(was_training, orig_rg)
@@ -1131,6 +1185,8 @@ class SAEFeatureEdgeRunner:
         include_error_node: bool,
         variant: str = "attrib",
         n_ig_steps: int = 0,
+        per_position: bool = False,
+        arch: str = "sequential",
     ) -> SAEFeatureCircuit:
         """Inner run (freeze/restore already applied by caller)."""
         sorted_sites = self._sorted_sites()  # forward order
@@ -1170,6 +1226,7 @@ class SAEFeatureEdgeRunner:
         # STAGE 2: enumerate site pairs in forward-position order (rank-based)
         # ------------------------------------------------------------------
         all_edge_scores: dict[SAEFeatureEdge, float] = {}
+        all_pos_scores: dict[SAEFeatureEdge, Tensor] = {}
 
         # Iterate over site pairs in forward order (writer rank < reader rank)
         for i, (writer_site, _writer_sae) in enumerate(sorted_sites):
@@ -1180,6 +1237,9 @@ class SAEFeatureEdgeRunner:
                 # 'adjacent' mode: j must immediately follow i in rank order
                 if layer_pairs == "adjacent" and j != i + 1:
                     continue
+                # Parallel-attention: skip same-layer attn_out → mlp_out (causally undefined)
+                if arch == "parallel" and _is_parallel_intra_layer(writer_site, reader_site):
+                    continue
 
                 writer_survivors = site_survivors.get(_site_key(writer_site), [])
                 reader_survivors = site_survivors.get(_site_key(reader_site), [])
@@ -1188,7 +1248,7 @@ class SAEFeatureEdgeRunner:
                 if not writer_survivors and not reader_survivors:
                     continue
 
-                pair_edges = self._compute_pair_edges(
+                pair_scalar, pair_pos = self._compute_pair_edges(
                     clean_inputs=clean_inputs,
                     corrupted_inputs=corrupted_inputs,
                     metric=metric,
@@ -1199,13 +1259,20 @@ class SAEFeatureEdgeRunner:
                     include_error_node=include_error_node,
                     variant=variant,
                     n_ig_steps=n_ig_steps,
+                    per_position=per_position,
                 )
-                all_edge_scores.update(pair_edges)
+                all_edge_scores.update(pair_scalar)
+                if pair_pos:
+                    all_pos_scores.update(pair_pos)
 
         # Global max_edges cap (top-|score|)
         if max_edges is not None and len(all_edge_scores) > max_edges:
             sorted_edges = sorted(all_edge_scores.items(), key=lambda kv: abs(kv[1]), reverse=True)
             all_edge_scores = dict(sorted_edges[:max_edges])
+            # Keep only position_scores for edges that survived the cap
+            if all_pos_scores:
+                kept_keys = set(all_edge_scores.keys())
+                all_pos_scores = {e: v for e, v in all_pos_scores.items() if e in kept_keys}
 
         edge_graph.edges = sorted(all_edge_scores.keys(), key=_sae_edge_sort_key)
 
@@ -1213,6 +1280,7 @@ class SAEFeatureEdgeRunner:
             nodes=node_result,
             edges=all_edge_scores,
             graph=edge_graph,
+            position_scores=all_pos_scores if per_position else None,
             model=self.model,
             sae_sites=self._sae_sites,
             resolver=self.resolver,
@@ -1230,7 +1298,8 @@ class SAEFeatureEdgeRunner:
         include_error_node: bool,
         variant: str = "attrib",
         n_ig_steps: int = 0,
-    ) -> dict[SAEFeatureEdge, float]:
+        per_position: bool = False,
+    ) -> tuple[dict[SAEFeatureEdge, float], dict[SAEFeatureEdge, Tensor] | None]:
         """Stage 2 for a single (writer, reader) site pair.
 
         attrib (default):
@@ -1277,10 +1346,21 @@ class SAEFeatureEdgeRunner:
             _st: dict = writer_corrupt_store,
             _resolved: Any = writer_resolved,
         ) -> None:
-            a = _routed_extract(_resolved, output).detach()
-            a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             with torch.no_grad():
-                f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
+                if getattr(_sae, "hook_input", False):
+                    # Transcoder: encode from module input, eps in output space
+                    a_in = inp[0].detach().to(
+                        getattr(_sae, "device", inp[0].device),
+                        getattr(_sae, "dtype", inp[0].dtype),
+                    )
+                    a_out = _extract_tensor(output).detach().to(a_in.device, a_in.dtype)
+                    f_c = _sae.encode(a_in)
+                    x_hat_c = _sae.decode(f_c)
+                    eps_c = (a_out - x_hat_c).detach()
+                else:
+                    a = _routed_extract(_resolved, output).detach()
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                    f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
                 _st["f"] = f_c.detach()
                 _st["eps"] = eps_c.detach()  # captured for error→feature scoring
 
@@ -1290,9 +1370,15 @@ class SAEFeatureEdgeRunner:
             _st: dict = reader_corrupt_store,
             _resolved: Any = reader_resolved,
         ) -> None:
-            a = _routed_extract(_resolved, output).detach()
-            a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
             with torch.no_grad():
+                if getattr(_sae, "hook_input", False):
+                    a_in = inp[0].detach().to(
+                        getattr(_sae, "device", inp[0].device),
+                        getattr(_sae, "dtype", inp[0].dtype),
+                    )
+                else:
+                    a = _routed_extract(_resolved, output).detach()
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
                 f_c = _sae.encode(a_in)
                 _st["f"] = f_c.detach()
 
@@ -1308,7 +1394,7 @@ class SAEFeatureEdgeRunner:
         f_U_corrupt = writer_corrupt_store.get("f")
         eps_U_corrupt = writer_corrupt_store.get("eps")  # for error→feature delta
         if f_U_corrupt is None:
-            return {}
+            return {}, None
 
         # ------------------------------------------------------------------
         # Step B: capture f_U_clean (detached leaf) and f_D_clean (live)
@@ -1338,13 +1424,25 @@ class SAEFeatureEdgeRunner:
             instead of decode(f_U) + eps (frozen scalar), giving the error term
             a live gradient path to f_D for the VJP.
             """
-            a = _routed_extract(_resolved, output)
-            a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-            # Detached-leaf seed (§2.1 WRITER construction)
-            f_U = _sae.encode(a_in).detach().requires_grad_(True)
-            f_U.retain_grad()
-            x_hat = _sae.decode(f_U)
-            eps = (a_in - x_hat).detach()  # frozen clean eps
+            if getattr(_sae, "hook_input", False):
+                # Transcoder: encode from module input, eps = output − x_hat (output space)
+                a_in = inp[0].detach().to(
+                    getattr(_sae, "device", inp[0].device),
+                    getattr(_sae, "dtype", inp[0].dtype),
+                )
+                a_out = _routed_extract(_resolved, output)  # live output for eps + inject
+                f_U = _sae.encode(a_in).detach().requires_grad_(True)
+                f_U.retain_grad()
+                x_hat = _sae.decode(f_U)
+                eps = (a_out.detach() - x_hat.detach()).detach()  # frozen transcoder error
+            else:
+                a = _routed_extract(_resolved, output)
+                a_in = a.detach().to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                # Detached-leaf seed (§2.1 WRITER construction)
+                f_U = _sae.encode(a_in).detach().requires_grad_(True)
+                f_U.retain_grad()
+                x_hat = _sae.decode(f_U)
+                eps = (a_in - x_hat).detach()  # frozen clean eps
 
             if _include_err:
                 # Independent leaf for the error term — receives VJP from f_D
@@ -1369,11 +1467,23 @@ class SAEFeatureEdgeRunner:
             _resolved: Any = reader_resolved,
         ) -> Any:
             """READER site: LIVE non-detached encode so grad flows from metric to f_D."""
-            a = _routed_extract(_resolved, output)
-            a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-            # NOTE: a_in is NOT detached — live activation flows into encode
-            f_D, x_hat, eps = sae_decompose(_sae, a_in)
-            # eps is already detached by sae_decompose (frozen at clean)
+            if getattr(_sae, "hook_input", False):
+                # Transcoder: encode from module input (live, for grad flow from writer)
+                a_in = inp[0].to(
+                    getattr(_sae, "device", inp[0].device),
+                    getattr(_sae, "dtype", inp[0].dtype),
+                )
+                # NOTE: a_in is NOT detached — live activation flows from writer's splice
+                f_D = _sae.encode(a_in)
+                x_hat = _sae.decode(f_D)
+                a_out = _routed_extract(_resolved, output)  # live output for eps
+                eps = (a_out.detach() - x_hat.detach()).detach()  # frozen transcoder error
+            else:
+                a = _routed_extract(_resolved, output)
+                a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                # NOTE: a_in is NOT detached — live activation flows into encode
+                f_D, x_hat, eps = sae_decompose(_sae, a_in)
+                # eps is already detached by sae_decompose (frozen at clean)
             # Guard: only retain_grad if requires_grad is True; on parallel-attention
             # models the reader tensor may not depend on the writer (no causal path) and
             # retain_grad on a leaf-or-no-grad tensor raises RuntimeError.
@@ -1406,7 +1516,7 @@ class SAEFeatureEdgeRunner:
         err_leaf_U = writer_clean_store.get("err_leaf_U")  # only present when include_error_node
 
         if f_U_leaf is None or f_D_live is None:
-            return {}
+            return {}, None
 
         if f_D_live.grad is None:
             # No gradient path from metric to f_D after backward.
@@ -1430,7 +1540,7 @@ class SAEFeatureEdgeRunner:
                 "Returning empty edge dict for this pair.",
                 stacklevel=3,
             )
-            return {}
+            return {}, None
 
         # ------------------------------------------------------------------
         # Step C: compute Δf_U = f_U_corrupt − f_U_clean (fp32, device-aligned)
@@ -1471,6 +1581,7 @@ class SAEFeatureEdgeRunner:
                 upstream_feat_indices.append(nd.neuron)
 
         edge_scores: dict[SAEFeatureEdge, float] = {}
+        pos_scores: dict[SAEFeatureEdge, Tensor] = {}
 
         # component labels (None for resid_post to preserve v1.6 identity)
         _r_comp = reader_site.component if reader_site.component != "resid_post" else None
@@ -1520,25 +1631,29 @@ class SAEFeatureEdgeRunner:
                     vjp_j_fp32 = vjp_j.to(torch.float32)
 
                     for i in upstream_feat_indices:
-                        score = float(
-                            (delta_f_U[..., i] * vjp_j_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
-                        )
+                        product = (delta_f_U[..., i] * vjp_j_fp32[..., i].to(delta_f_U.device)).to(torch.float32)
+                        score = float(product.sum())
                         writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
                         edge = SAEFeatureEdge(writer=writer_node, reader=reader_node)
                         edge_scores[edge] = score
+                        if per_position:
+                            # Collapse all batch dims, keep seq_len as position axis
+                            pos_scores[edge] = product.view(-1, product.shape[-1]).sum(0) if product.dim() > 1 else product.clone()
 
                     del vjp_j, vjp_j_fp32
 
                 # error→feature edges (include_error_node=True only)
                 if include_error_node and vjp_err_j is not None and delta_eps_U is not None:
                     vjp_err_j_fp32 = vjp_err_j.to(torch.float32)
-                    # Score: Σ_pos (Δeps_U * vjp_err_j) summed over all positions
-                    score_err = float(
-                        (delta_eps_U.to(vjp_err_j_fp32.device) * vjp_err_j_fp32).to(torch.float32).sum()
-                    )
+                    product_err = (delta_eps_U.to(vjp_err_j_fp32.device) * vjp_err_j_fp32).to(torch.float32)
+                    score_err = float(product_err.sum())
                     error_writer_node = AtPNode(Node("sae_error", layer=writer_site.layer, component=_w_comp))
                     err_edge = SAEFeatureEdge(writer=error_writer_node, reader=reader_node)
                     edge_scores[err_edge] = score_err
+                    if per_position:
+                        # Sum over feature dim, then collapse batch
+                        pos_err = product_err.sum(-1)
+                        pos_scores[err_edge] = pos_err.view(-1, pos_err.shape[-1]).sum(0) if pos_err.dim() > 1 else pos_err.clone()
                     del vjp_err_j, vjp_err_j_fp32
 
                 del G_j  # FREE per-j (memory discipline)
@@ -1576,6 +1691,7 @@ class SAEFeatureEdgeRunner:
 
             # Accumulate raw sums; divide by N at end
             edge_sum: dict[SAEFeatureEdge, float] = {}
+            pos_sum: dict[SAEFeatureEdge, Tensor] = {}
 
             for k in range(1, _n_ig + 1):
                 alpha_k = (k - 0.5) / _n_ig
@@ -1693,7 +1809,7 @@ class SAEFeatureEdgeRunner:
                         "Returning empty edge dict for this pair.",
                         stacklevel=3,
                     )
-                    return {}
+                    return {}, None
 
                 gradf_D_k = f_D_k_live.grad
 
@@ -1734,12 +1850,15 @@ class SAEFeatureEdgeRunner:
 
                         for i in upstream_feat_indices:
                             # Accumulate: edge(i→j) += Δf_U[i] · vjp_j_k[i]
-                            contrib = float(
-                                (delta_f_U[..., i] * vjp_j_k_fp32[..., i].to(delta_f_U.device)).to(torch.float32).sum()
-                            )
+                            product_k = (delta_f_U[..., i] * vjp_j_k_fp32[..., i].to(delta_f_U.device)).to(torch.float32)
+                            contrib = float(product_k.sum())
                             writer_node = AtPNode(Node("sae_feature", layer=writer_site.layer, neuron=i, component=_w_comp))
                             edge_key = SAEFeatureEdge(writer=writer_node, reader=reader_node)
                             edge_sum[edge_key] = edge_sum.get(edge_key, 0.0) + contrib
+                            if per_position:
+                                p_k = product_k.view(-1, product_k.shape[-1]).sum(0) if product_k.dim() > 1 else product_k.clone()
+                                prev = pos_sum.get(edge_key)
+                                pos_sum[edge_key] = p_k if prev is None else prev + p_k
 
                         del vjp_j_k, vjp_j_k_fp32
 
@@ -1750,16 +1869,18 @@ class SAEFeatureEdgeRunner:
                         and delta_eps_U_t is not None
                     ):
                         vjp_err_j_k_fp32 = vjp_err_j_k.to(torch.float32)
-                        contrib_err = float(
-                            (delta_eps_U_t.to(vjp_err_j_k_fp32.device) * vjp_err_j_k_fp32)
-                            .to(torch.float32)
-                            .sum()
-                        )
+                        product_err_k = (delta_eps_U_t.to(vjp_err_j_k_fp32.device) * vjp_err_j_k_fp32).to(torch.float32)
+                        contrib_err = float(product_err_k.sum())
                         error_writer_node = AtPNode(
                             Node("sae_error", layer=writer_site.layer, component=_w_comp)
                         )
                         err_edge_key = SAEFeatureEdge(writer=error_writer_node, reader=reader_node)
                         edge_sum[err_edge_key] = edge_sum.get(err_edge_key, 0.0) + contrib_err
+                        if per_position:
+                            pos_err_k = product_err_k.sum(-1)
+                            p_err_k = pos_err_k.view(-1, pos_err_k.shape[-1]).sum(0) if pos_err_k.dim() > 1 else pos_err_k.clone()
+                            prev_err = pos_sum.get(err_edge_key)
+                            pos_sum[err_edge_key] = p_err_k if prev_err is None else prev_err + p_err_k
                         del vjp_err_j_k, vjp_err_j_k_fp32
 
                     del G_j  # FREE per-j
@@ -1772,8 +1893,11 @@ class SAEFeatureEdgeRunner:
             # Divide accumulated sums by N to get the IG estimate
             for edge_key, total in edge_sum.items():
                 edge_scores[edge_key] = total / _n_ig
+            if per_position:
+                for edge_key, total_pos in pos_sum.items():
+                    pos_scores[edge_key] = total_pos / _n_ig
 
-        return edge_scores
+        return edge_scores, (pos_scores if per_position else None)
 
     def bruteforce_feature_edge_scores(
         self,

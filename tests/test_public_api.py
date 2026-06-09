@@ -7,6 +7,7 @@ def test_public_surface():
     import circuitry
 
     expected = {
+        # recorder / workflow
         "HookPoint",
         "MetricWriter",
         "ModelInventory",
@@ -24,8 +25,67 @@ def test_public_surface():
         "scan_run",
         "token_similarity",
         "update_delta",
+        # patching
+        "CausalScrubResult",
+        "CausalScrubRunner",
+        "CircuitHypothesis",
+        "CrosscoderWrapper",
+        "DASResult",
+        "DASRunner",
+        "EdgePruningResult",
+        "EdgePruningRunner",
+        "EraseProjection",
+        "HAPRunner",
+        "LayerPrediction",
+        "apply_ablation",
+        "apply_steer",
+        "future_lens_kl",
+        "leace_erase",
+        "logit_lens_distributions",
+        # dynamics
+        "emergence_score",
+        "fourier_feature_alignment",
+        "information_bottleneck_score",
+        # activation geometry
+        "embedding_uniformity",
+        "kernel_alignment",
+        "local_intrinsic_dim",
+        "neural_collapse_score",
+        "spectral_collapse_rank",
+        # probing / representation
+        "LinearProbe",
+        "MDLResult",
+        "MassMeanProbe",
+        "mass_mean_probe",
+        "mdl_probe",
+        "train_linear_probe",
+        "verify_linear_representation",
+        # steering / attention
+        "attention_rollout",
+        "directional_ablation",
+        "repe_direction",
+        "steer_vector",
+        # weight / spectral training diagnostics
+        "FinetuningDeltaResult",
+        "finetuning_delta_svd",
+        "spectral_edge_gap",
+        "update_weight_ratio",
+        # SAE
+        "superposition_index",
+        "sae_downstream_loss",
+        "sae_influence_scores",
+        "fgaa_steering_vector",
+        "rlace_erase",
+        # attribution quality (v1.32)
+        "ReLPRunner",
+        "CertifiedCircuitResult",
+        "CertifiedCircuitRunner",
     }
-    assert set(circuitry.__all__) == expected
+    actual = set(circuitry.__all__)
+    missing = expected - actual
+    extra = actual - expected
+    assert not missing, f"Missing from __all__: {sorted(missing)}"
+    assert not extra, f"Unexpected in __all__: {sorted(extra)}"
     for name in expected:
         assert hasattr(circuitry, name), f"circuitry.{name} not re-exported"
 

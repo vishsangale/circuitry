@@ -13,9 +13,10 @@ import pytest
 SRC = pathlib.Path(__file__).parent.parent / "src" / "circuitry"
 
 FORBIDDEN = {
-    "core": ("circuitry.recorder", "circuitry.recipes", "circuitry.writers", "circuitry.cli", "circuitry.patching"),
+    "core": ("circuitry.recorder", "circuitry.recipes", "circuitry.writers", "circuitry.cli", "circuitry.patching", "circuitry.tuned_lens"),
     "recipes": ("circuitry.cli",),
     "patching": ("circuitry.cli",),
+    "tuned_lens": ("circuitry.recorder", "circuitry.recipes", "circuitry.cli"),
 }
 
 # Allowlist for the reverse-dependency rule (§3): `circuitry` may only import
@@ -84,4 +85,17 @@ def test_patching_does_not_import_cli():
                 assert not imp.startswith(forbidden), (
                     f"patching/{py.relative_to(patching_dir)} imports {imp}, "
                     f"violating layering rule"
+                )
+
+
+def test_tuned_lens_does_not_import_recorder_recipes_or_cli():
+    tuned_dir = SRC / "tuned_lens"
+    if not tuned_dir.exists():
+        pytest.skip("tuned_lens/ not yet created")
+    for py in tuned_dir.rglob("*.py"):
+        for imp in _imports(py):
+            for forbidden in FORBIDDEN["tuned_lens"]:
+                assert not imp.startswith(forbidden), (
+                    f"tuned_lens/{py.relative_to(tuned_dir)} imports {imp}, "
+                    f"violating §3 layering rule"
                 )

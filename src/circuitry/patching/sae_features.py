@@ -1,11 +1,10 @@
-"""SAE feature attribution runner. v1.5.0.
+"""SAE feature attribution runner.
 
-Node-level AtP*-style attribution for SAE features at residual-stream sites.
-Mechanism: error-term substitution (Marks "Sparse Feature Circuits").
-Only the HF-eager path is supported (TLSiteResolver → NotImplementedError).
-Only resid_post sites are supported in v1.5.0 (others → NotImplementedError).
-
-See docs/superpowers/specs/2026-05-30-v15-sae-feature-circuits-design.md.
+Node-level AtP*-style attribution for SAE features. Mechanism: error-term
+substitution (Marks "Sparse Feature Circuits"). Supported sites (v1.7+):
+resid_post, mlp_out, attn_out. Supported backends: HFSiteResolver (eager) and
+TLSiteResolver (TransformerLens). Supported variants: 'attrib' (AtP*) and 'ig'
+(integrated gradients, v1.7+). Optional error-node scoring via include_error_node.
 """
 from __future__ import annotations
 
@@ -97,6 +96,96 @@ def _routed_inject(resolved: Any, output: Any, new_sub: Tensor) -> Any:
     )
     full = _extract_tensor(output)
     return _inject_tensor(output, resolved.inject(full, new_sub))
+
+
+class TranscoderWrapper:
+    """Wrap a transcoder (module-input → module-output feature decomposition) as an
+    SAE-compatible object for SAEFeatureRunner and SAEFeatureEdgeRunner.
+
+    A transcoder encodes from the MODULE INPUT (``inp[0]`` in the forward hook) and
+    produces a reconstruction ``x_hat`` in the MODULE OUTPUT space.  The error term
+    is ``eps = output − x_hat`` (in output space).  The splice is always lossless:
+    ``x_hat + eps = output``.
+
+    ``hook_input = True`` signals the attribution hooks to route encoding through
+    ``inp[0]`` instead of ``output``.
+
+    Usage::
+
+        tc = TranscoderWrapper(my_transcoder)  # wraps any obj with encode/decode
+        runner = SAEFeatureRunner(model, {Site("mlp_out", layer=0): tc}, resolver)
+
+    The wrapped transcoder must implement ``encode(x_in: Tensor) -> Tensor`` (where
+    ``x_in`` is the module input) and ``decode(f: Tensor) -> Tensor`` (where the
+    output is in module output space).
+    """
+
+    hook_input: bool = True
+
+    def __init__(self, transcoder: Any) -> None:
+        self._tc = transcoder
+
+    def encode(self, x: Tensor) -> Tensor:
+        return self._tc.encode(x)
+
+    def decode(self, f: Tensor) -> Tensor:
+        return self._tc.decode(f)
+
+    @property
+    def device(self) -> Any:
+        return getattr(self._tc, "device", torch.device("cpu"))
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return getattr(self._tc, "dtype", torch.float32)
+
+
+class CrosscoderWrapper:
+    """Wraps a crosscoder SAE as a single-site intervention point.
+
+    A crosscoder reads activations from N layers simultaneously and produces
+    a shared feature vector.  This wrapper exposes it as a standard SAE
+    (encode / decode) by fixing a *primary layer* for single-site attribution.
+
+    hook_input is False (residual-stream output hook, same as standard SAEs).
+    Cross-layer analysis (all layers simultaneously) is available via
+    encode_all() for users who need it.
+
+    The wrapped crosscoder object must implement one of:
+      • crosscoder.encode(x)                   — single-tensor input
+      • crosscoder.encode_at_layer(x, layer)   — explicit layer routing
+    and one of:
+      • crosscoder.decode(f)                   — single output
+      • crosscoder.decode_at_layer(f, layer)   — layer-specific decode
+    """
+
+    hook_input: bool = False
+
+    def __init__(self, crosscoder: Any, *, primary_layer: int = 0) -> None:
+        self._cc = crosscoder
+        self.primary_layer = primary_layer
+
+    def encode(self, x: Tensor) -> Tensor:
+        if hasattr(self._cc, "encode_at_layer"):
+            return self._cc.encode_at_layer(x, self.primary_layer)
+        return self._cc.encode(x)
+
+    def decode(self, f: Tensor) -> Tensor:
+        if hasattr(self._cc, "decode_at_layer"):
+            return self._cc.decode_at_layer(f, self.primary_layer)
+        return self._cc.decode(f)
+
+    def encode_all(self, acts: list[Tensor]) -> Tensor:
+        """Encode from all layers simultaneously (full cross-layer mode)."""
+        return self._cc.encode(acts)
+
+    @property
+    def device(self) -> Any:
+        return getattr(self._cc, "device", torch.device("cpu"))
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return getattr(self._cc, "dtype", torch.float32)
 
 
 class SAEFeatureRunner:
@@ -312,13 +401,24 @@ class SAEFeatureRunner:
             _inc_err: bool = include_error_node,
             _resolved: Any = resolved,
         ) -> None:
-            a = _routed_extract(_resolved, output).detach()
             with torch.no_grad():
-                a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
-                f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
+                if getattr(_sae, "hook_input", False):
+                    # Transcoder: encode from module input, eps in output space
+                    a_in = inp[0].detach().to(
+                        getattr(_sae, "device", inp[0].device),
+                        getattr(_sae, "dtype", inp[0].dtype),
+                    )
+                    a_out = _extract_tensor(output).detach().to(a_in.device, a_in.dtype)
+                    f_c = _sae.encode(a_in)
+                    x_hat_c = _sae.decode(f_c)
+                    eps_c = (a_out - x_hat_c).detach()
+                else:
+                    a = _routed_extract(_resolved, output).detach()
+                    a_in = a.to(getattr(_sae, "device", a.device), getattr(_sae, "dtype", a.dtype))
+                    f_c, x_hat_c, eps_c = sae_decompose(_sae, a_in)
                 _store["f"] = f_c.detach()
                 if _inc_err:
-                    _eps_store["eps"] = eps_c  # already detached by sae_decompose
+                    _eps_store["eps"] = eps_c  # already detached
 
         corr_hook = layer_mod.register_forward_hook(_corr_output_hook)
         try:
@@ -351,19 +451,30 @@ class SAEFeatureRunner:
             _mdev: Any = model_device,
             _resolved: Any = resolved,
         ) -> Any:
-            # Extract sub-activation via resolver (identity for resid_post + position=None)
-            a = _routed_extract(_resolved, output)
-            # Device/dtype align to SAE (mirrors metrics.py:26-28)
-            a_in = a.detach().to(
-                getattr(_sae, "device", a.device),
-                getattr(_sae, "dtype", a.dtype),
-            )
-
-            # §2.1: seed grad AT the feature tensor
-            f = _sae.encode(a_in).detach().requires_grad_(True)
-            f.retain_grad()
-            x_hat = _sae.decode(f)
-            eps = (a_in - x_hat).detach()  # frozen clean reconstruction error
+            if getattr(_sae, "hook_input", False):
+                # Transcoder: encode from module input; eps = output − x_hat (output space)
+                a_in = inp[0].detach().to(
+                    getattr(_sae, "device", inp[0].device),
+                    getattr(_sae, "dtype", inp[0].dtype),
+                )
+                a_out = _routed_extract(_resolved, output)  # live output for inject + eps
+                # §2.1: seed grad AT the feature tensor (from module input)
+                f = _sae.encode(a_in).detach().requires_grad_(True)
+                f.retain_grad()
+                x_hat = _sae.decode(f)
+                eps = (a_out.detach() - x_hat.detach()).detach()  # frozen transcoder error
+            else:
+                # Standard SAE: encode from module output
+                a = _routed_extract(_resolved, output)
+                a_in = a.detach().to(
+                    getattr(_sae, "device", a.device),
+                    getattr(_sae, "dtype", a.dtype),
+                )
+                # §2.1: seed grad AT the feature tensor
+                f = _sae.encode(a_in).detach().requires_grad_(True)
+                f.retain_grad()
+                x_hat = _sae.decode(f)
+                eps = (a_in - x_hat).detach()  # frozen clean reconstruction error
 
             _f_store["f"] = f
             _eps_clean_s["eps"] = eps

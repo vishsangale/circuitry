@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from collections import defaultdict
 from collections.abc import Callable
 
@@ -34,20 +35,30 @@ HERO_SECTIONS = frozenset({
     # v0.9 additions:
     "activation/logit_lens_kl",
     "activation/induction_score",
+    # v1.11 copy-suppression heads:
+    "activation/copy_suppression_score",
     "activation/attention_pattern_entropy",
+    # v1.12 attention sinks:
+    "activation/attention_sink_score",
     "activation/sae",
+    # v1.10 tuned lens:
+    "activation/tuned_lens_kl",
     # v1.3 training-dynamics:
     "weight/update_delta",
     "weight/rank_trajectory",
     "weight/direction_cosine",
+    # v1.10 scale-invariant update size:
+    "weight/update_delta_rel",
+    # v1.16 representational drift:
+    "activation/repr_drift",
 })
 
 GRAD_PER_PARAM_TOP_K = 10  # Show top K and bottom K; hide the middle.
 
 # Declarative flag rules: (section_prefix, flag_label, predicate(last, signed), message_template)
-# NOTE: ``signed = last - first`` (signed trend), NOT the range-delta from _stats.
-# The _stats ``delta`` field is the unsigned range (vmax - vmin) and must NOT be used
-# for trend-direction predicates (rank_collapsing / dead_rising would never fire).
+# NOTE: ``signed = last - first`` (signed trend). Since v1.10 the _stats ``delta``
+# field is also signed (last - first), so the table Δ and the flag trend agree; the
+# explicit ``signed`` below documents intent and is robust to future _stats changes.
 FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
     (
         "activation/dead_fraction",
@@ -80,16 +91,60 @@ FLAG_RULES: list[tuple[str, str, Callable[[float, float], bool], str]] = [
         "rank_trajectory declining (last={last:.2f}, Δ={signed:+.4g})",
     ),
     (
-        "weight/update_delta",
+        # Keys on the scale-invariant ||ΔW||/||W|| companion (v1.10) so the
+        # threshold is dimensionless and means the same across parameter sizes —
+        # the absolute weight/update_delta was scale-dependent (v1.3 review).
+        "weight/update_delta_rel",
         "update_delta_vanishing",
-        lambda last, signed: last < 1e-6,
-        "update_delta near zero — possible gradient vanishing (last={last:.2g})",
+        lambda last, signed: last < 1e-5,
+        "relative update_delta near zero — possible gradient vanishing (last={last:.2g})",
     ),
     (
         "weight/direction_cosine",
         "direction_reversal",
         lambda last, signed: last < -0.5,
         "direction_cosine strongly negative — update direction reversal (last={last:.3f})",
+    ),
+    (
+        "activation/attention_sink_score",
+        "attention_sink_detected",
+        # A per-head mean > 0.5 on the live training-forward attention means
+        # the head is directing more than half its attention weight to the sink
+        # position (position 0 / BOS by default) — the diagnostic signature of
+        # attention sink heads (Xiao et al. 2023).
+        lambda last, signed: last > 0.5,
+        "attention_sink_score high — potential attention sink head (last={last:.3f})",
+    ),
+    (
+        "activation/repr_drift",
+        "repr_drift_high",
+        # Linear CKA drift > 0.5 from the reference snapshot means the layer's
+        # representational geometry has shifted substantially — worth investigating
+        # whether this is intentional (e.g. post-grokking alignment) or a sign of
+        # instability.
+        lambda last, signed: last > 0.5,
+        "repr_drift high — significant representational shift from reference (last={last:.3f})",
+    ),
+    (
+        "activation/copy_suppression_score",
+        "copy_suppression_detected",
+        # A per-head mean > 0.3 on the repeated-token probe indicates the head is
+        # consistently attending to same-token positions — the hallmark pattern of
+        # copy-suppression heads (McDougall et al. 2023).  Scores well above this
+        # threshold warrant closer inspection (the head may be suppressing token
+        # copying across the full training distribution).
+        lambda last, signed: last > 0.3,
+        "copy_suppression_score high — potential copy-suppression head (last={last:.3f})",
+    ),
+    (
+        "activation/tuned_lens_kl",
+        "tuned_lens_not_forming",
+        # A fitted tuned lens drives per-layer KL toward ~0; a tuned-lens KL
+        # that stays high (> 1 nat) means the prediction is not forming in the
+        # residual stream where the lens expects it (or the lens is stale for
+        # this checkpoint).
+        lambda last, signed: last > 1.0,
+        "tuned_lens_kl still high — prediction not forming / stale lens (last={last:.3f} nats)",
     ),
 ]
 
@@ -183,7 +238,7 @@ def _render_section(
                 continue
             _, row_id = _section_and_row(tag)
             first, last, vmin, vmax, delta = _stats(grouped[tag])
-            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
+            delta_cell = f"{delta:+.4g}" if delta != 0 else "—"
             out.append(
                 f"| `{row_id}` | {first:.4g} | {last:.4g} | "
                 f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
@@ -195,7 +250,7 @@ def _render_section(
         for tag in sorted_tags:
             _, row_id = _section_and_row(tag)
             first, last, vmin, vmax, delta = _stats(grouped[tag])
-            delta_cell = f"{delta:.4g}" if delta > 0 else "—"
+            delta_cell = f"{delta:+.4g}" if delta != 0 else "—"
             out.append(
                 f"| `{row_id}` | {first:.4g} | {last:.4g} | "
                 f"{vmin:.4g} | {vmax:.4g} | {delta_cell} |"
@@ -203,6 +258,317 @@ def _render_section(
 
     out.append("")
     return out
+
+
+_FORMATION_THRESHOLDS: dict[str, float] = {
+    "activation/induction_score": 0.4,
+    "activation/copy_suppression_score": 0.3,
+    "activation/attention_sink_score": 0.5,
+}
+
+_TRANSITION_PREFIXES: frozenset[str] = frozenset({
+    "weight/effective_rank",
+    "weight/rank_trajectory",
+    "weight/update_delta_rel",
+})
+
+
+_SOURCE_TO_REPORT_FAMILY: dict[str, str] = {
+    "weight": "weight",
+    "named_param": "weight",
+    "output": "activation",
+    "input": "activation",
+    "grad": "grad",
+}
+
+
+def _parse_matched_module_counts(text: str) -> dict[str, int]:
+    """Parse matched_modules.txt; return matched-module count per report family.
+
+    Lines beginning with ``# hook_point[N] source=X`` start a new block.
+    Non-empty, non-comment lines within a block are module/parameter names;
+    they are deduplicated per family before counting (the same module may appear
+    under multiple hook-points with the same source).
+    """
+    family_modules: dict[str, set[str]] = {}
+    current_family: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# hook_point"):
+            m = re.search(r"source=(\w+)", stripped)
+            current_family = (
+                _SOURCE_TO_REPORT_FAMILY.get(m.group(1).lower(), m.group(1).lower())
+                if m else None
+            )
+        elif stripped and not stripped.startswith("#") and current_family is not None:
+            module_name = stripped.split(" →")[0].strip() if " →" in stripped else stripped
+            if module_name:
+                family_modules.setdefault(current_family, set()).add(module_name)
+    return {fam: len(mods) for fam, mods in sorted(family_modules.items())}
+
+
+def _transition_direction(section: str, before: float, after: float) -> str:
+    """Human-readable direction label for a phase transition."""
+    rising = after > before
+    if section == "weight/update_delta_rel":
+        return "↑ norm growth" if rising else "↓ norm collapse"
+    return "↑ growth" if rising else "↓ collapse"
+
+
+def _drift_trend(
+    vals: list[float],
+    series: list[tuple[int, float]],
+    pts_fn: object,
+) -> str:
+    """Trend label for a repr_drift series: phase-transition > rising > stable > falling."""
+    pts = pts_fn(series)  # type: ignore[operator]
+    if pts:
+        return f"⚡ step {pts[0]}"
+    mid = max(1, len(vals) // 2)
+    first_half = sum(vals[:mid]) / mid
+    second_half = sum(vals[mid:]) / max(1, len(vals) - mid)
+    if second_half > first_half + 0.05:
+        return "↑ rising"
+    if first_half > second_half + 0.05:
+        return "↓ falling"
+    return "→ stable"
+
+
+def _build_training_dynamics_section(
+    grouped: dict[str, list[tuple[int, float]]],
+    step_count: int,
+) -> list[str]:
+    """Render a ## Training Dynamics section with four sub-tables.
+
+    - **Head Formation Events**: heads whose attention score crossed its threshold
+      *during* the recording window (formation step > series' first recorded step).
+    - **Phase Transitions**: sharp change-points in rank/health metrics
+      (``weight/effective_rank``, ``weight/rank_trajectory``, ``weight/update_delta_rel``)
+      with a direction label (↑ growth / ↓ collapse; ↑ norm growth / ↓ norm collapse for
+      ``update_delta_rel``).
+    - **Grokking Signals**: first sharp transition in loss / accuracy / error /
+      perplexity series via :func:`~circuitry.core.dynamics.grokking_step`.
+    - **Representation Drift**: per-layer CKA drift from the reference snapshot, with a
+      trend label (↑ rising / → stable / ↓ falling / ⚡ step N for sharp transitions).
+
+    Returns ``[]`` when ``step_count <= 1`` or when no events are detected.
+    """
+    if step_count <= 1:
+        return []
+
+    from circuitry.core.dynamics import grokking_step as _gs
+    from circuitry.core.dynamics import head_formation_step as _hfs
+    from circuitry.core.dynamics import phase_transition_steps as _pts
+
+    # --- Head formation events ---
+    # (module, head_idx, score_type, formation_step, last_score)
+    formation_events: list[tuple[str, int, str, int, float]] = []
+
+    for tag, series in grouped.items():
+        for prefix, thr in _FORMATION_THRESHOLDS.items():
+            if not tag.startswith(prefix + "/"):
+                continue
+            rest = tag[len(prefix) + 1:]
+            parts = rest.rsplit("/", 1)
+            if len(parts) != 2 or not parts[1].startswith("head_"):
+                continue
+            module = parts[0]
+            try:
+                head_idx = int(parts[1][5:])  # len("head_") == 5
+            except ValueError:
+                continue
+            if len(series) < 2:
+                continue  # need dynamics (multiple steps)
+
+            step = _hfs(series, threshold=thr)
+            if step is None:
+                continue
+            first_step = min(s for s, _ in series)
+            if step == first_step:
+                continue  # pre-formed before recording started
+
+            last_score = max(series, key=lambda x: x[0])[1]
+            score_type = prefix.split("/", 1)[1]  # e.g. "induction_score"
+            formation_events.append((module, head_idx, score_type, step, last_score))
+
+    # --- Phase transitions on rank/health metrics ---
+    # (section, row_id, pt_step, before_val, after_val)
+    transition_events: list[tuple[str, str, int, float, float]] = []
+
+    for tag, series in grouped.items():
+        section, row_id = _section_and_row(tag)
+        if section not in _TRANSITION_PREFIXES:
+            continue
+        if len(series) < 4:
+            continue  # too few points for reliable smoothing
+        pts = _pts(series)
+        if not pts:
+            continue
+        sorted_s = sorted(series)
+        step_vals = {s: v for s, v in sorted_s}
+        all_steps = [s for s, _ in sorted_s]
+        for pt_step in pts:
+            before_steps = [s for s in all_steps if s < pt_step]
+            after_steps = [s for s in all_steps if s >= pt_step]
+            if not before_steps or not after_steps:
+                continue
+            transition_events.append(
+                (section, row_id, pt_step, step_vals[before_steps[-1]], step_vals[after_steps[0]])
+            )
+
+    # --- Grokking signals on loss / accuracy series ---
+    # (tag_row_id, grokking_step_val, value_at_step)
+    _GROKKING_KEYWORDS = ("loss", "acc", "accuracy", "error", "perplexity")
+    grokking_events: list[tuple[str, int, float]] = []
+    for tag, series in grouped.items():
+        if len(series) < 4:
+            continue
+        _, row_id = _section_and_row(tag)
+        if not any(kw in row_id.lower() for kw in _GROKKING_KEYWORDS):
+            continue
+        gs = _gs(series)
+        if gs is None:
+            continue
+        val_at = next((v for s, v in sorted(series) if s == gs), None)
+        if val_at is not None:
+            grokking_events.append((row_id, gs, val_at))
+
+    # --- Representation drift trending ---
+    # (row_id, first_drift, last_drift, trend_label)
+    drift_trends: list[tuple[str, float, float, str]] = []
+    for tag, series in grouped.items():
+        section, row_id = _section_and_row(tag)
+        if section != "activation/repr_drift":
+            continue
+        if len(series) < 2:
+            continue
+        sorted_s = sorted(series)
+        vals = [v for _, v in sorted_s]
+        drift_trends.append((row_id, vals[0], vals[-1], _drift_trend(vals, sorted_s, _pts)))
+    drift_trends.sort(key=lambda x: -x[2])  # most-drifted layers first
+
+    if not formation_events and not transition_events and not grokking_events and not drift_trends:
+        return []
+
+    lines: list[str] = ["## Training Dynamics", ""]
+
+    if formation_events:
+        formation_events.sort(key=lambda e: (e[0], e[1], e[3]))
+        lines.append("### Head Formation Events")
+        lines.append("")
+        lines.append("| module | head | score | formed at step | final score |")
+        lines.append("| --- | --- | --- | ---: | ---: |")
+        for module, head_idx, score_type, step, last_score in formation_events:
+            lines.append(
+                f"| `{module}` | head_{head_idx} | {score_type} | {step} | {last_score:.3f} |"
+            )
+        lines.append("")
+
+    if transition_events:
+        transition_events.sort(key=lambda e: (e[2], e[1]))  # sort by pt_step then row_id
+        lines.append("### Phase Transitions")
+        lines.append("")
+        lines.append("| metric | step | before | after | direction |")
+        lines.append("| --- | ---: | ---: | ---: | --- |")
+        for section, row_id, pt_step, before, after in transition_events:
+            direction = _transition_direction(section, before, after)
+            lines.append(
+                f"| `{row_id}` | {pt_step} | {before:.4g} | {after:.4g} | {direction} |"
+            )
+        lines.append("")
+
+    if grokking_events:
+        grokking_events.sort(key=lambda e: e[1])
+        lines.append("### Grokking Signals")
+        lines.append("")
+        lines.append("| metric | step | value at transition |")
+        lines.append("| --- | ---: | ---: |")
+        for row_id, step, val in grokking_events:
+            lines.append(f"| `{row_id}` | {step} | {val:.4g} |")
+        lines.append("")
+
+    if drift_trends:
+        lines.append("### Representation Drift")
+        lines.append("")
+        lines.append("| module | start drift | end drift | Δ | trend |")
+        lines.append("| --- | ---: | ---: | ---: | --- |")
+        for row_id, first_d, last_d, trend in drift_trends:
+            delta = last_d - first_d
+            lines.append(
+                f"| `{row_id}` | {first_d:.3f} | {last_d:.3f} | {delta:+.3f} | {trend} |"
+            )
+        lines.append("")
+
+    return lines
+
+
+def _build_head_specialization_section(
+    grouped: dict[str, list[tuple[int, float]]],
+) -> list[str]:
+    """Render a ## Head Specialization table from the last-step attention scores.
+
+    Reads ``activation/induction_score``, ``activation/copy_suppression_score``,
+    and ``activation/attention_sink_score`` tags; classifies each head; returns
+    markdown lines.  Returns ``[]`` when none of those tags are present.
+    """
+    from circuitry.core.attention import head_specialization as _hs
+
+    _PREFIXES = {
+        "activation/induction_score": "ind",
+        "activation/copy_suppression_score": "css",
+        "activation/attention_sink_score": "snk",
+    }
+
+    # module -> head_idx -> {key: last_value}
+    scores: dict[str, dict[int, dict[str, float]]] = {}
+    for tag, series in grouped.items():
+        for prefix, key in _PREFIXES.items():
+            if not tag.startswith(prefix + "/"):
+                continue
+            rest = tag[len(prefix) + 1:]
+            parts = rest.rsplit("/", 1)
+            if len(parts) != 2 or not parts[1].startswith("head_"):
+                continue
+            module = parts[0]
+            try:
+                head_idx = int(parts[1][5:])  # len("head_") == 5
+            except ValueError:
+                continue
+            last_val = max(series, key=lambda x: x[0])[1]
+            scores.setdefault(module, {}).setdefault(head_idx, {})[key] = last_val
+
+    if not scores:
+        return []
+
+    lines = ["## Head Specialization", ""]
+    lines.append("| module | head | type | induction | copy_suppression | sink |")
+    lines.append("| --- | --- | --- | ---: | ---: | ---: |")
+
+    for module in sorted(scores):
+        heads = scores[module]
+        n = max(heads) + 1
+        ind = [heads.get(i, {}).get("ind") for i in range(n)]
+        css = [heads.get(i, {}).get("css") for i in range(n)]
+        snk = [heads.get(i, {}).get("snk") for i in range(n)]
+
+        all_present = all(v is not None for v in ind + css + snk)
+        if all_present:
+            types = _hs(ind, css, snk)  # type: ignore[arg-type]
+        else:
+            types = ["—"] * n
+
+        for i in range(n):
+            t = types[i]
+            type_cell = f"**{t}**" if t not in ("uniform", "—") else t
+            ind_cell = f"{ind[i]:.3f}" if ind[i] is not None else "—"
+            css_cell = f"{css[i]:.3f}" if css[i] is not None else "—"
+            snk_cell = f"{snk[i]:.3f}" if snk[i] is not None else "—"
+            lines.append(
+                f"| `{module}` | head_{i} | {type_cell} "
+                f"| {ind_cell} | {css_cell} | {snk_cell} |"
+            )
+    lines.append("")
+    return lines
 
 
 def build_report(
@@ -264,9 +630,27 @@ def build_report(
     lines.append("")
     lines.append(
         f"- **{len(grouped)}** scalar tags · **{moving}** moving "
-        f"(Δ > 0) · **{static}** static · **{step_count}** emit step(s) "
+        f"(changed) · **{static}** static · **{step_count}** emit step(s) "
         f"observed."
     )
+    # Per-top-level-family tag counts (e.g. "weight: 24 · activation: 12").
+    family_counts: dict[str, int] = {}
+    for tag in grouped:
+        fam = tag.split("/")[0]
+        family_counts[fam] = family_counts.get(fam, 0) + 1
+    if family_counts:
+        fam_parts = " · ".join(
+            f"**{fam}**: {cnt}" for fam, cnt in sorted(family_counts.items())
+        )
+        lines.append(f"- Tags by family: {fam_parts}.")
+    # Per-hook-family matched-module counts from matched_modules.txt (recipe coverage).
+    if not compact and matched_path.exists():
+        module_counts = _parse_matched_module_counts(matched_path.read_text())
+        if module_counts:
+            mod_parts = " · ".join(
+                f"**{fam}**: {cnt}" for fam, cnt in module_counts.items()
+            )
+            lines.append(f"- Modules matched: {mod_parts}.")
     if step_count == 1:
         lines.append("")
         lines.append(
@@ -315,6 +699,13 @@ def build_report(
 
     for section in hero:
         lines.extend(_render_section(section, sections[section], grouped))
+
+    # v1.13 head-specialization table: synthesises induction / copy-suppression /
+    # sink scores into a per-head type label; only rendered when those tags exist.
+    lines.extend(_build_head_specialization_section(grouped))
+
+    # v1.14 training-dynamics: head formation events + phase transitions.
+    lines.extend(_build_training_dynamics_section(grouped, step_count))
 
     if advanced:
         lines.append("<details>")
