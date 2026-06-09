@@ -6,7 +6,13 @@ import pytest
 import torch
 
 from circuitry.core import activation
-from circuitry.core.activation import NormStats, repr_drift
+from circuitry.core.activation import (
+    NormStats,
+    embedding_uniformity,
+    kernel_alignment,
+    local_intrinsic_dim,
+    repr_drift,
+)
 
 
 def test_dead_fraction_all_zeros_is_one():
@@ -370,3 +376,148 @@ def test_cka_single_row_raises(method):
     X = torch.randn(1, 8)
     with pytest.raises(ValueError, match="require >= 2 rows"):
         repr_drift(X, X, method=method)
+
+
+# ---------------------------------------------------------------------------
+# local_intrinsic_dim tests
+# ---------------------------------------------------------------------------
+
+
+def test_local_intrinsic_dim_returns_float():
+    torch.manual_seed(40)
+    acts = torch.randn(50, 16)
+    lid = local_intrinsic_dim(acts)
+    assert isinstance(lid, float)
+    assert math.isfinite(lid)
+
+
+def test_local_intrinsic_dim_positive():
+    torch.manual_seed(41)
+    acts = torch.randn(50, 16)
+    lid = local_intrinsic_dim(acts)
+    assert lid >= 1.0, f"Expected LID >= 1, got {lid}"
+
+
+def test_local_intrinsic_dim_low_lt_high():
+    """A low-dimensional subspace should have lower LID than full-dimensional noise."""
+    rng = torch.Generator().manual_seed(42)
+    n, d = 300, 16
+    # Low-dim: 2-D subspace in 16-D
+    t = torch.randn(n, 2, generator=rng)
+    basis = torch.zeros(2, d); basis[0, 0] = 1.0; basis[1, 1] = 1.0
+    acts_low = t @ basis + 0.001 * torch.randn(n, d, generator=rng)
+    # High-dim: full 16-D random noise
+    acts_high = torch.randn(n, d, generator=rng)
+    lid_low = local_intrinsic_dim(acts_low)
+    lid_high = local_intrinsic_dim(acts_high)
+    assert lid_low < lid_high, (
+        f"Expected LID(2D subspace) < LID(full-rank noise); got {lid_low:.2f} vs {lid_high:.2f}"
+    )
+
+
+def test_local_intrinsic_dim_fewer_than_3_raises():
+    with pytest.raises(ValueError):
+        local_intrinsic_dim(torch.randn(2, 8))
+
+
+def test_local_intrinsic_dim_deterministic():
+    torch.manual_seed(43)
+    acts = torch.randn(100, 16)
+    lid1 = local_intrinsic_dim(acts, seed=0)
+    lid2 = local_intrinsic_dim(acts, seed=0)
+    assert lid1 == lid2
+
+
+# ---------------------------------------------------------------------------
+# kernel_alignment tests
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_alignment_identical_cka():
+    """CKA of identical matrices should be 1.0 (drift = 0)."""
+    torch.manual_seed(50)
+    acts = torch.randn(30, 16)
+    score = kernel_alignment(acts, acts, method="cka")
+    assert score == pytest.approx(1.0, abs=1e-5)
+
+
+def test_kernel_alignment_cka_range():
+    torch.manual_seed(51)
+    a = torch.randn(30, 16)
+    b = torch.randn(30, 16)
+    score = kernel_alignment(a, b, method="cka")
+    assert 0.0 <= score <= 1.0, f"CKA out of [0,1]: {score}"
+
+
+def test_kernel_alignment_mnn_identical():
+    """MNN alignment of identical matrices should be 1.0."""
+    torch.manual_seed(52)
+    acts = torch.randn(30, 16)
+    score = kernel_alignment(acts, acts, method="mnn")
+    assert score == pytest.approx(1.0, abs=1e-5)
+
+
+def test_kernel_alignment_mnn_random_low():
+    """MNN alignment of independent random matrices should be < 1."""
+    torch.manual_seed(53)
+    a = torch.randn(40, 16)
+    b = torch.randn(40, 16)
+    score = kernel_alignment(a, b, method="mnn")
+    assert score < 1.0
+
+
+def test_kernel_alignment_invalid_method():
+    a = torch.randn(10, 8)
+    with pytest.raises(ValueError):
+        kernel_alignment(a, a, method="bad")
+
+
+def test_kernel_alignment_returns_float():
+    torch.manual_seed(54)
+    a = torch.randn(20, 8)
+    b = torch.randn(20, 8)
+    for method in ("cka", "mnn"):
+        score = kernel_alignment(a, b, method=method)
+        assert isinstance(score, float)
+
+
+# ---------------------------------------------------------------------------
+# embedding_uniformity tests
+# ---------------------------------------------------------------------------
+
+
+def test_embedding_uniformity_identical_collapse():
+    """All identical embeddings should give uniformity ≈ 1.0 (maximum collapse)."""
+    E = torch.ones(20, 8)
+    u = embedding_uniformity(E)
+    assert u == pytest.approx(1.0, abs=1e-5)
+
+
+def test_embedding_uniformity_orthogonal_low():
+    """Orthogonal embeddings (standard basis) should give uniformity ≈ 0."""
+    n, d = 8, 8
+    E = torch.eye(n, d)
+    u = embedding_uniformity(E)
+    assert u == pytest.approx(0.0, abs=1e-5)
+
+
+def test_embedding_uniformity_range():
+    torch.manual_seed(60)
+    E = torch.randn(50, 16)
+    u = embedding_uniformity(E)
+    assert 0.0 <= u <= 1.0, f"uniformity out of [0,1]: {u}"
+
+
+def test_embedding_uniformity_returns_float():
+    torch.manual_seed(61)
+    E = torch.randn(30, 8)
+    u = embedding_uniformity(E)
+    assert isinstance(u, float)
+
+
+def test_embedding_uniformity_deterministic():
+    torch.manual_seed(62)
+    E = torch.randn(200, 16)
+    u1 = embedding_uniformity(E, seed=0)
+    u2 = embedding_uniformity(E, seed=0)
+    assert u1 == u2

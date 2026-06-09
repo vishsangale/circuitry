@@ -56,13 +56,13 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── spectral.py
 │   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); fourier_feature_alignment, information_bottleneck_score (v1.27)
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl; logit_lens_distributions, future_lens_kl (v1.23–v1.24)
-│   │   ├── steer.py        # steer_vector — CAA mean-difference direction (v1.23)
-│   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24)
+│   │   ├── steer.py        # steer_vector (v1.23); repe_direction, directional_ablation (v1.29)
+│   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24); mdl_probe/MDLResult, mass_mean_probe/MassMeanProbe, verify_linear_representation (v1.29)
 │   │   ├── erase.py        # leace_erase / EraseProjection — orthogonal concept erasure (v1.24)
 │   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy, head_specialization
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae; load_gemma_scope, load_llama_scope (v1.26)
-│   │   └── metrics.py      # sae_reconstruction_error
+│   │   └── metrics.py      # sae_reconstruction_error; superposition_index (v1.29)
 │   ├── benchmarks/         # v1.27: synthetic MIB tasks + SAEBench metrics
 │   │   ├── __init__.py
 │   │   ├── mib.py          # MIBTask, load_ioi, load_greater_than (Mueller et al. ICML 2025)
@@ -71,7 +71,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── sites.py        # Site dataclass + HF/TL resolution
 │   │   ├── intervene.py    # patch_site() context manager
 │   │   ├── runner.py       # PatchRunner prompt-pair runner
-│   │   ├── steer.py        # apply_steer context manager — adds coeff*vector at site (v1.23)
+│   │   ├── steer.py        # apply_steer (v1.23); apply_ablation (v1.29)
 │   │   ├── edge_pruning.py # EdgePruningRunner / EdgePruningResult — mask-logit L0 pruning (v1.25)
 │   │   ├── hap.py          # HAPRunner — EAP pre-filter + EdgePruningRunner (v1.25)
 │   │   ├── das.py          # DASRunner / DASResult — interchange-intervention rotation learning (v1.28)
@@ -167,6 +167,11 @@ activation.repr_drift(ref: Tensor, cur: Tensor, method: str = 'linear_cka', *,
 # Rows are subsampled (seeded, CPU-deterministic) to max_samples before Gram computation.
 # Recorder emits per-layer tags: activation/repr_drift/<module>.
 
+# representation geometry (v1.29)
+activation.local_intrinsic_dim(acts: Tensor, *, max_samples: int = 2048, seed: int = 0) -> float  # Two-NN manifold dimensionality estimator (Levina & Bickel 2004); subsample → cdist → topk(2) → 1/mean(log(d2/d1)); requires >= 3 samples
+activation.kernel_alignment(acts_a: Tensor, acts_b: Tensor, *, method: str = 'cka', max_samples: int = 256, seed: int = 0) -> float  # cross-model alignment: 'cka' reuses repr_drift CKA (score = 1 - drift); 'mnn' = mutual nearest-neighbour overlap; both ∈ [0, 1] where 1 = identical; Huh et al. ICML 2024
+activation.embedding_uniformity(E: Tensor, *, n_samples: int = 2048, seed: int = 0) -> float  # mean off-diagonal cosine similarity after L2 normalisation; ≈ 1 = collapsed, ≈ 0 = spread / uniform; Guo et al. ICML 2024
+
 # gradient-space
 gradient.grad_norm_per_module(grads: dict[str, Tensor]) -> dict[str, float]
 gradient.total_grad_norm(per_module_norms: dict[str, float]) -> float  # sqrt(sum of squares)
@@ -200,12 +205,15 @@ dynamics.grokking_step(series: list[tuple[int, float]], *, z_threshold: float = 
 dynamics.fourier_feature_alignment(W: Tensor, task_freqs: Tensor, *, n_freqs: int | None = None) -> float  # (v1.27) fraction of spectral power at task_freqs via rfft; Nanda et al. ICLR 2024
 dynamics.information_bottleneck_score(acts_train: Tensor, acts_val: Tensor, labels_train: Tensor, labels_val: Tensor, *, n_bins: int = 20, eps: float = 1e-10) -> float  # (v1.27) MI proxy I(T;Y)/H(Y) via binned histogram on first PC; Nanda et al. ICLR 2024
 
-# activation steering (v1.23 core direction; v1.23 patching context manager)
+# activation steering (v1.23 core direction; v1.23 patching context manager; v1.29 ablation)
 from circuitry.core import steer
 steer.steer_vector(positive_acts: Tensor, negative_acts: Tensor, *, normalize: bool = True) -> Tensor  # Rimsky et al. 2024 CAA: mean(positive) − mean(negative), optionally unit-normalised; raises ValueError on near-zero norm
+steer.repe_direction(diffs: Tensor) -> Tensor  # (v1.29) Zou et al. 2023 RepE: first PC of centred (n_pairs, d_model) difference matrix; unit-normalised; single-sample falls back to uncentered d[0]; zero matrix returns zeros(d_model)
+steer.directional_ablation(acts: Tensor, direction: Tensor) -> Tensor  # (v1.29) Arditi et al. NeurIPS 2024: acts − (acts · d̂) d̂; orthogonal-complement projection; no-op for near-zero direction
 
 from circuitry.patching import steer as patching_steer
 patching_steer.apply_steer(model, site: Site, vector: Tensor, *, coeff: float = 1.0, resolver=None)  # context manager; adds coeff*vector to site output; hook always removed on exit
+patching_steer.apply_ablation(model, site: Site, direction: Tensor, *, resolver=None)  # (v1.29) context manager; removes direction component from site output; hook always removed on exit; Arditi et al. NeurIPS 2024
 
 # linear probing (v1.24)
 from circuitry.core import probe
@@ -214,6 +222,17 @@ probe.train_linear_probe(acts: Tensor, labels: Tensor, *, max_iter: int = 1000, 
 #   .predict_proba(acts) → Tensor, .accuracy(acts, labels) → float, .direction() → Tensor
 # direction() = unit concept vector: normalised weight[0] for binary, first left singular of
 #   between-class weight matrix for multiclass (pca_lowrank)
+
+# MDL probing (v1.29)
+probe.mdl_probe(acts: Tensor, labels: Tensor, *, n_chunks: int = 8) -> MDLResult  # Voita & Titov 2020 online-coding MDL; splits into n_chunks; chunk 0 uses log(n_classes) uniform prior; mdl_ratio < 1 = genuine encoding
+# MDLResult(frozen): .code_length, .data_entropy, .mdl_ratio (= code_length / (n * data_entropy))
+
+# mass-mean probe (v1.29)
+probe.mass_mean_probe(acts: Tensor, labels: Tensor) -> MassMeanProbe  # Marks & Tegmark COLM 2024; binary only; direction = normalised (μ₁ − μ₀) on CPU; threshold = midpoint
+# MassMeanProbe: .direction (Tensor, CPU), .threshold (float), .classes (list), .predict(acts), .accuracy(acts, labels)
+
+# linear representation verification (v1.29)
+probe.verify_linear_representation(probe, steer_vec: Tensor) -> float  # Park et al. arXiv:2311.03658; cosine(probe.direction(), steer_vec); handles dimension mismatch by truncation
 
 # concept erasure / LEACE (v1.24)
 from circuitry.core import erase
@@ -226,6 +245,7 @@ erase.leace_erase(acts: Tensor, labels: Tensor) -> EraseProjection  # Park et al
 from circuitry import sae
 sae.load_sae(release: str, sae_id: str, device: str = "cpu")
 sae.sae_reconstruction_error(x: Tensor, sae) -> dict[str, float]
+sae.metrics.superposition_index(feature_acts: Tensor) -> float  # (v1.29) exp(H(|feature_acts|.flatten())); >> n_neurons → superposition; 1.0 if all zero or single feature active; arXiv:2512.13568
 
 # SAE feature attribution — differentiable encode/decode helpers (v1.5)
 # These wrap sae.encode / sae.decode under NORMAL autograd (no inference_mode/detach),
@@ -608,7 +628,7 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 - SAE training (interop with SAELens later if demand surfaces).
 - JAX / Flax support.
 - DDP / FSDP-aware reductions — current releases are single-process; non-zero ranks no-op. See §11 for the additive future-release path.
-- ~~Logit lens / tuned lens beyond `core/lens.py`'s `logit_lens_kl`.~~ **Tuned lens shipped in v1.10** (`core.lens.tuned_lens_kl` + `circuitry.tuned_lens.fit_tuned_lens` + the opt-in `tuned_lens_kl` Recorder/scan diagnostic; §4.1, §4.4). **SAE-feature circuits shipped: node-level attribution in v1.5** (`SAEFeatureRunner`); **feature→feature edges + greedy `FeatureACDC` in v1.6** (`SAEFeatureEdgeRunner`, §4.6); **`mlp_out`/`attn_out` SAE sites, multi-site-per-layer composite keying, the TransformerLens backend, and the integrated-gradients variant (`variant='ig'`) all shipped in v1.7.** SAE *reconstruction* metrics shipped in v0.9 (`circuitry.sae`). **~~Per-position feature edges~~** shipped in v1.19 (`per_position=True` flag + `SAEFeatureCircuit.position_scores` + `top_positions()`; §4.6). **~~Parallel-attention intra-layer edge skipping~~** shipped in v1.20 (`arch='parallel'` flag + `_is_parallel_intra_layer()`; §4.6). **~~Transcoder SAEs as intervention sites~~** shipped in v1.21 (`TranscoderWrapper` + `hook_input=True` routing in `SAEFeatureRunner` and `SAEFeatureEdgeRunner`; §4.6). **~~Temporal SAE attribution~~** shipped in v1.22 (`SAEFeatureTemporalRunner` + `TemporalAtPResult`; §4.6). Note: each step is independent; true recurrent-SAE attribution remains a known limitation. **~~Logit lens distributions~~** shipped in v1.23 (`logit_lens_distributions` / `LayerPrediction`; §4.1). **~~Activation steering / CAA~~** shipped in v1.23 (`steer_vector` / `apply_steer`; §4.1, §4.6). **~~Linear probing~~** shipped in v1.24 (`train_linear_probe` / `LinearProbe`; §4.1). **~~Concept erasure (LEACE)~~** shipped in v1.24 (`leace_erase` / `EraseProjection`; §4.1). **~~Future lens~~** shipped in v1.24 (`future_lens_kl`; §4.1). **~~Edge Pruning (NeurIPS 2024)~~** shipped in v1.25 (`EdgePruningRunner` + `EdgePruningResult`; §4.6). **~~HAP~~** shipped in v1.25 (`HAPRunner`; §4.6). **~~CrosscoderWrapper~~** shipped in v1.26 (`CrosscoderWrapper`; §4.6). **~~Gemma Scope / Llama Scope loaders~~** shipped in v1.26 (`load_gemma_scope`/`load_llama_scope`; §4.1). **~~MIB task loaders~~** shipped in v1.27 (`load_ioi`/`load_greater_than`; §4.1). **~~SAEBench metrics~~** shipped in v1.27 (`run_saebench`/`SAEBenchResult`; §4.1). **~~Fourier feature alignment + information bottleneck~~** shipped in v1.27 (`fourier_feature_alignment`/`information_bottleneck_score`; §4.1). **~~DAS (Distributed Alignment Search)~~** shipped in v1.28 (`DASRunner`/`DASResult`; §4.6). **~~Causal Scrubbing~~** shipped in v1.28 (`CausalScrubRunner`/`CircuitHypothesis`/`CausalScrubResult`; §4.6).
+- ~~Logit lens / tuned lens beyond `core/lens.py`'s `logit_lens_kl`.~~ **Tuned lens shipped in v1.10** (`core.lens.tuned_lens_kl` + `circuitry.tuned_lens.fit_tuned_lens` + the opt-in `tuned_lens_kl` Recorder/scan diagnostic; §4.1, §4.4). **SAE-feature circuits shipped: node-level attribution in v1.5** (`SAEFeatureRunner`); **feature→feature edges + greedy `FeatureACDC` in v1.6** (`SAEFeatureEdgeRunner`, §4.6); **`mlp_out`/`attn_out` SAE sites, multi-site-per-layer composite keying, the TransformerLens backend, and the integrated-gradients variant (`variant='ig'`) all shipped in v1.7.** SAE *reconstruction* metrics shipped in v0.9 (`circuitry.sae`). **~~Per-position feature edges~~** shipped in v1.19 (`per_position=True` flag + `SAEFeatureCircuit.position_scores` + `top_positions()`; §4.6). **~~Parallel-attention intra-layer edge skipping~~** shipped in v1.20 (`arch='parallel'` flag + `_is_parallel_intra_layer()`; §4.6). **~~Transcoder SAEs as intervention sites~~** shipped in v1.21 (`TranscoderWrapper` + `hook_input=True` routing in `SAEFeatureRunner` and `SAEFeatureEdgeRunner`; §4.6). **~~Temporal SAE attribution~~** shipped in v1.22 (`SAEFeatureTemporalRunner` + `TemporalAtPResult`; §4.6). Note: each step is independent; true recurrent-SAE attribution remains a known limitation. **~~Logit lens distributions~~** shipped in v1.23 (`logit_lens_distributions` / `LayerPrediction`; §4.1). **~~Activation steering / CAA~~** shipped in v1.23 (`steer_vector` / `apply_steer`; §4.1, §4.6). **~~Linear probing~~** shipped in v1.24 (`train_linear_probe` / `LinearProbe`; §4.1). **~~Concept erasure (LEACE)~~** shipped in v1.24 (`leace_erase` / `EraseProjection`; §4.1). **~~Future lens~~** shipped in v1.24 (`future_lens_kl`; §4.1). **~~Edge Pruning (NeurIPS 2024)~~** shipped in v1.25 (`EdgePruningRunner` + `EdgePruningResult`; §4.6). **~~HAP~~** shipped in v1.25 (`HAPRunner`; §4.6). **~~CrosscoderWrapper~~** shipped in v1.26 (`CrosscoderWrapper`; §4.6). **~~Gemma Scope / Llama Scope loaders~~** shipped in v1.26 (`load_gemma_scope`/`load_llama_scope`; §4.1). **~~MIB task loaders~~** shipped in v1.27 (`load_ioi`/`load_greater_than`; §4.1). **~~SAEBench metrics~~** shipped in v1.27 (`run_saebench`/`SAEBenchResult`; §4.1). **~~Fourier feature alignment + information bottleneck~~** shipped in v1.27 (`fourier_feature_alignment`/`information_bottleneck_score`; §4.1). **~~DAS (Distributed Alignment Search)~~** shipped in v1.28 (`DASRunner`/`DASResult`; §4.6). **~~Causal Scrubbing~~** shipped in v1.28 (`CausalScrubRunner`/`CircuitHypothesis`/`CausalScrubResult`; §4.6). **~~MDL probing~~** shipped in v1.29 (`mdl_probe`/`MDLResult`; §4.1). **~~Mass-mean probe~~** shipped in v1.29 (`mass_mean_probe`/`MassMeanProbe`; §4.1). **~~verify_linear_representation~~** shipped in v1.29 (§4.1). **~~repe_direction~~** shipped in v1.29 (`core/steer.py`; §4.1). **~~directional_ablation + apply_ablation~~** shipped in v1.29 (§4.1, §4.6). **~~local_intrinsic_dim~~** shipped in v1.29 (Two-NN estimator; §4.1). **~~kernel_alignment~~** shipped in v1.29 (CKA/MNN; §4.1). **~~embedding_uniformity~~** shipped in v1.29 (§4.1). **~~superposition_index~~** shipped in v1.29 (`sae/metrics.py`; §4.1).
 - **Note:** causal interventions / activation patching shipped as the `circuitry.patching` subsystem in v1.0 — see §4.6. It is no longer out of scope.
 - Web dashboard. TB + markdown report is the UI.
 - Differentiability guarantees through diagnostics. Primitives may use non-differentiable ops (`torch.linalg.svd`).

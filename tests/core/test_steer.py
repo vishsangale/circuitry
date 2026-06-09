@@ -1,12 +1,12 @@
-"""Tests for steer_vector (core) and apply_steer (patching)."""
+"""Tests for steer_vector, repe_direction, directional_ablation (core) and apply_steer/apply_ablation (patching)."""
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import pytest
 
-from circuitry.core.steer import steer_vector
-from circuitry.patching.steer import apply_steer
+from circuitry.core.steer import directional_ablation, repe_direction, steer_vector
+from circuitry.patching.steer import apply_ablation, apply_steer
 from circuitry.patching.sites import Site, HFSiteResolver
 
 
@@ -195,3 +195,158 @@ def test_apply_steer_cleanup_on_exception():
 
     hooks_after = len(model.layers[0]._forward_hooks)
     assert hooks_after == hooks_before, "Hook must be removed even after exception"
+
+
+# ---------------------------------------------------------------------------
+# repe_direction tests
+# ---------------------------------------------------------------------------
+
+
+def test_repe_direction_unit_norm():
+    torch.manual_seed(10)
+    diffs = torch.randn(8, 16)
+    d = repe_direction(diffs)
+    assert abs(d.norm().item() - 1.0) < 1e-5
+
+
+def test_repe_direction_shape():
+    torch.manual_seed(11)
+    diffs = torch.randn(5, 32)
+    d = repe_direction(diffs)
+    assert d.shape == (32,)
+
+
+def test_repe_direction_1d_input():
+    """Single difference vector (1-D) should still return a unit vector."""
+    torch.manual_seed(12)
+    diff = torch.randn(16)
+    d = repe_direction(diff)
+    assert d.shape == (16,)
+    assert abs(d.norm().item() - 1.0) < 1e-5
+
+
+def test_repe_direction_zero_returns_zero():
+    """All-zero diffs should return a zero vector."""
+    d = repe_direction(torch.zeros(4, 16))
+    assert d.norm().item() < 1e-7
+
+
+def test_repe_direction_high_signal_first_pc():
+    """When one dimension dominates variance, repe_direction should point along it."""
+    torch.manual_seed(13)
+    n, dim = 20, 16
+    diffs = torch.randn(n, dim) * 0.001
+    # Add a linearly-growing ramp so dim-0 has high variance even after centering.
+    diffs[:, 0] = torch.linspace(-5.0, 5.0, n)
+    d = repe_direction(diffs)
+    assert abs(d[0].item()) > 0.9, f"Expected direction ≈ e_0, got d[0]={d[0].item():.3f}"
+
+
+# ---------------------------------------------------------------------------
+# directional_ablation tests
+# ---------------------------------------------------------------------------
+
+
+def test_directional_ablation_removes_direction():
+    """After ablation, the component along `direction` should be near zero."""
+    torch.manual_seed(20)
+    d = 16
+    acts = torch.randn(10, d)
+    direction = torch.randn(d)
+    ablated = directional_ablation(acts, direction)
+    d_hat = direction / direction.norm()
+    residual_proj = (ablated.float() @ d_hat.float()).abs().max().item()
+    assert residual_proj < 1e-5, f"Component not removed; max proj = {residual_proj}"
+
+
+def test_directional_ablation_preserves_orthogonal():
+    """Component orthogonal to direction should be unchanged."""
+    torch.manual_seed(21)
+    d = 8
+    direction = torch.zeros(d)
+    direction[0] = 1.0  # ablate only dim 0
+    acts = torch.randn(5, d)
+    ablated = directional_ablation(acts, direction)
+    # dims 1..d-1 must be identical
+    assert torch.allclose(ablated[:, 1:].float(), acts[:, 1:].float(), atol=1e-6)
+
+
+def test_directional_ablation_shape_preserved():
+    torch.manual_seed(22)
+    acts = torch.randn(3, 7, 16)
+    direction = torch.randn(16)
+    out = directional_ablation(acts, direction)
+    assert out.shape == acts.shape
+
+
+def test_directional_ablation_zero_direction():
+    """Near-zero direction should return acts unchanged."""
+    torch.manual_seed(23)
+    acts = torch.randn(4, 8)
+    out = directional_ablation(acts, torch.zeros(8))
+    assert torch.allclose(out, acts.float(), atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# apply_ablation tests
+# ---------------------------------------------------------------------------
+
+
+def test_apply_ablation_removes_component():
+    """Output inside the context should have near-zero projection onto direction."""
+    torch.manual_seed(30)
+    d = 8
+    model = _TinyModel(d)
+    resolver = HFSiteResolver(
+        n_heads=1, d_model=d, layer_pattern="layers.{L}", mlp_module=""
+    )
+    site = Site(component="resid_post", layer=0)
+    direction = torch.randn(d)
+
+    x = torch.randn(1, 1, d)
+    model.eval()
+    with apply_ablation(model, site, direction, resolver=resolver):
+        with torch.no_grad():
+            out = model(x).clone()
+
+    d_hat = direction / direction.norm()
+    proj = (out.float().reshape(-1, d) @ d_hat.float()).abs().max().item()
+    assert proj < 1e-5, f"Direction not ablated; max proj = {proj}"
+
+
+def test_apply_ablation_cleanup():
+    """No forward hooks remain after the context exits."""
+    torch.manual_seed(31)
+    d = 8
+    model = _TinyModel(d)
+    resolver = HFSiteResolver(
+        n_heads=1, d_model=d, layer_pattern="layers.{L}", mlp_module=""
+    )
+    site = Site(component="resid_post", layer=0)
+    direction = torch.randn(d)
+
+    hooks_before = len(model.layers[0]._forward_hooks)
+    with apply_ablation(model, site, direction, resolver=resolver):
+        hooks_during = len(model.layers[0]._forward_hooks)
+    hooks_after = len(model.layers[0]._forward_hooks)
+
+    assert hooks_during == hooks_before + 1
+    assert hooks_after == hooks_before
+
+
+def test_apply_ablation_cleanup_on_exception():
+    """Hook is removed even if an exception occurs inside the context."""
+    torch.manual_seed(32)
+    d = 8
+    model = _TinyModel(d)
+    resolver = HFSiteResolver(
+        n_heads=1, d_model=d, layer_pattern="layers.{L}", mlp_module=""
+    )
+    site = Site(component="resid_post", layer=0)
+    direction = torch.randn(d)
+
+    hooks_before = len(model.layers[0]._forward_hooks)
+    with pytest.raises(RuntimeError, match="intentional"):
+        with apply_ablation(model, site, direction, resolver=resolver):
+            raise RuntimeError("intentional test error")
+    assert len(model.layers[0]._forward_hooks) == hooks_before

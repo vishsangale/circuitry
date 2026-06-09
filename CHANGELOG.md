@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] — 2026-06-09
+
+**Probing & Representation Geometry.**
+
+### Added
+- **`core/probe.py`** — `MDLResult` / `mdl_probe`: MDL probing (Voita & Titov
+  2020, arXiv:2003.12298) — computes online-coding code length across n_chunks
+  data splits; `mdl_ratio < 1` indicates genuine encoding. `MassMeanProbe` /
+  `mass_mean_probe`: binary mass-mean probe (Marks & Tegmark COLM 2024,
+  arXiv:2310.06824) — direction = normalised (μ₁ − μ₀), with threshold at the
+  midpoint; `.predict()` and `.accuracy()` methods. `verify_linear_representation`:
+  cosine similarity between a probe direction and a steering vector (Park et al.
+  arXiv:2311.03658), with graceful dimension-mismatch handling via truncation.
+- **`core/steer.py`** — `repe_direction`: first-PC concept direction from
+  activation differences (Zou et al. 2023, arXiv:2310.01405). `directional_ablation`:
+  orthogonal projection removing a concept direction from activations (Arditi et al.
+  NeurIPS 2024, arXiv:2406.11717).
+- **`patching/steer.py`** — `apply_ablation`: context manager that registers a
+  forward hook removing a concept direction at a site; mirrors `apply_steer`
+  structure (eval-mode, try/finally cleanup).
+- **`core/activation.py`** — `local_intrinsic_dim`: Two-NN manifold dimensionality
+  estimator (Levina & Bickel 2004). `kernel_alignment`: CKA or MNN cross-model
+  alignment score (Huh et al. ICML 2024, arXiv:2405.07987). `embedding_uniformity`:
+  mean off-diagonal cosine similarity for collapse detection (Guo et al. ICML 2024,
+  arXiv:2310.04400).
+- **`sae/metrics.py`** — `superposition_index`: effective feature count via SAE
+  activation entropy — `exp(H(|feature_acts|))`; `>> n_neurons` signals
+  superposition (arXiv:2512.13568).
+- All 12 new names exported at `circuitry.*`; version bumped to `1.29.0`.
+- Tests: 18 probe + 14 steer + 15 activation geometry + 7 SAE metrics = 54 new tests.
+
+---
+
 ## [1.28.0] — 2026-06-08
 
 **Causal alignment — DAS and Causal Scrubbing.**

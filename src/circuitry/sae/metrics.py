@@ -49,3 +49,31 @@ def sae_reconstruction_error(x: Any, sae: Any) -> dict[str, float]:
         "frac_alive": frac_alive,
         "ce_recovered_proxy": ce_recovered_proxy,
     }
+
+
+def superposition_index(feature_acts: Any) -> float:
+    """Effective number of SAE features (superposition measure).
+
+    Returns ``exp(H)`` where ``H`` is the Shannon entropy of the activation
+    magnitude distribution across features.  When ``exp(H) >> n_neurons``,
+    the layer is operating under superposition (more effective features than
+    embedding dimensions).
+
+    Args:
+        feature_acts: (..., n_features) SAE activation tensor (output of
+            ``sae.encode(x)``).
+
+    Returns:
+        Effective feature count (float >= 1.0).
+
+    Reference: arXiv:2512.13568 "Superposition as Lossy Compression".
+    """
+    t = _as_tensor(feature_acts).detach().to(torch.float32)
+    mags = t.abs().flatten()
+    total = mags.sum()
+    if total.item() < 1e-10:
+        return 1.0
+    probs = mags / total
+    log_probs = torch.where(probs > 0, probs.log(), torch.zeros_like(probs))
+    entropy = float(-(probs * log_probs).sum().item())
+    return float(torch.exp(torch.tensor(entropy)).item())
