@@ -2,6 +2,187 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] — 2026-06-09
+
+**Mean ablation + feature geometry.**
+
+### Added
+- **`patching/mean_ablation.py`** (new module):
+  - `compute_mean_activation(model, module, dataset_inputs) → Tensor` — runs the
+    model on a list of inputs, captures the target module's output, and returns the
+    mean activation (averaged over both batch and dataset).  Used to pre-compute the
+    reference activation for mean ablation.
+  - `mean_ablation(model, module, mean_act)` — context manager that replaces the
+    module's output with *mean_act* (broadcast to match the live batch shape) on every
+    forward pass inside the context.  Provides a more in-distribution null hypothesis
+    than zero ablation.  No hooks remain after the context exits.
+    12 new tests in `tests/patching/test_mean_ablation.py`.
+- **`core/feature_geometry.py`** (new module):
+  - `feature_interference(feature_dirs, *, normalize=True) → Tensor` — ``(n, n)``
+    pairwise cosine-similarity matrix between feature directions.  High off-diagonal
+    values indicate redundant or competing features.
+  - `feature_coverage(feature_dirs, acts, *, k=None) → float` — fraction of
+    activation variance explained by the feature directions (all, or top-k by
+    explained variance).  In ``[0, 1]``.
+  - `feature_spread(feature_dirs, *, normalize=True) → float` — mean pairwise
+    angular distance in radians.  Near π/2 ≈ high diversity; near 0 ≈ redundant set.
+    13 new tests in `tests/core/test_feature_geometry.py`.
+
+## [1.39.0] — 2026-06-09
+
+**Head knockout + neuron statistics.**
+
+### Added
+- **`patching/head_knockout.py`** (new module) — `HeadKnockoutRunner(model,
+  head_modules, *, layer_names)`, `HeadKnockoutResult`: ablates individual attention
+  heads by zeroing each head module's output and measures the metric drop.  Returns an
+  ``(n_layers, n_heads)`` importance matrix where
+  ``importance[l, h] = clean_score − knockout_score[l, h]``.  Positive = head was
+  helping; negative = head was hurting.  `HeadKnockoutResult` exposes `.top_heads(k)`,
+  `.to_markdown()`.  Based on Michel et al. 2019 / Voita et al. 2019.
+  12 new tests in `tests/patching/test_head_knockout.py`.
+- **`core/neuron.py`** (new module) — `neuron_stats(acts, *, threshold=0.0) →
+  NeuronStats`: fast vectorised per-neuron statistics over any ``(..., d)`` activation
+  tensor (leading dims flattened): mean, std, max, dead fraction (fraction of neurons
+  whose max < threshold), and excess kurtosis.  `NeuronStats` is a plain dataclass.
+  12 new tests in `tests/core/test_neuron.py`.
+
+## [1.38.0] — 2026-06-09
+
+**Transformer circuit primitives — QK/OV weight-space analysis.**
+
+### Added
+- **`core/circuits.py`** (new module) — pure weight-matrix analysis functions:
+  - `ov_matrix(W_V, W_O) → Tensor` — computes `W_V @ W_O` per head; shape
+    ``(..., d_model, d_head) × (..., d_head, d_model) → (..., d_model, d_model)``.
+    The OV circuit captures what each head writes to the residual stream.
+  - `qk_matrix(W_Q, W_K) → Tensor` — computes `W_Q @ W_K.T` per head; shape
+    ``(..., d_model, d_head) × (..., d_model, d_head) → (..., d_model, d_model)``.
+    The QK circuit captures what positions each head attends between.
+  - `head_composition_score(W_OV, W_dest) → float` — Frobenius-norm normalised
+    composition score `‖W_OV @ W_dest‖_F / (‖W_OV‖_F · ‖W_dest‖_F)` ∈ [0, 1].
+    Measures how strongly one head's output feeds into another's Q/K/V.
+  - `composition_scores(W_OV_src, W_dest) → Tensor` — batched composition score
+    matrix for all `(n_heads_src, n_heads_dst)` pairs.
+  - `top_logit_tokens(direction, W_U, *, k=10) → (ids, scores)` — top-k tokens
+    promoted by a residual-space direction via `direction @ W_U`.
+  - `top_embedding_tokens(direction, W_E, *, k=10) → (ids, scores)` — top-k tokens
+    whose embeddings are most aligned with a direction via `W_E @ direction`.
+  All pure functions; no forward passes. 14 new tests in `tests/core/test_circuits.py`.
+  Reference: Elhage et al. 2021 "A Mathematical Framework for Transformer Circuits".
+
+## [1.37.0] — 2026-06-09
+
+**Activation Patch Grid + Gradient-Based Input Attribution.**
+
+### Added
+- **`patching/patch_grid.py`** (new module) — `PatchGridRunner(model, *, modules,
+  module_names, module_pattern)`, `PatchGridResult`: runs activation patching across all
+  `(layer, position)` pairs and returns a `(n_layers, seq_len)` recovery heatmap.  For
+  each cell `(l, p)` the runner patches only position `p` of layer `l`'s output from the
+  clean run into the corrupted forward pass, then measures normalised metric recovery
+  `(patched − corrupted) / (clean − corrupted)`.  `PatchGridResult` exposes `.top_sites(k)`,
+  `.to_markdown()`.  Directly implements the residual-stream patching grid used in circuit
+  papers (Wang et al. 2022 IOI, Hanna et al. 2023 greater-than).  12 new tests in
+  `tests/patching/test_patch_grid.py`.
+- **`core/attribution.py`** (new module):
+  - `gradient_input_attribution(grads, embeds, *, reduction="l2") → Tensor` — per-token
+    gradient × input attribution.  Accepts pre-computed gradient and embedding tensors of
+    shape `(batch, seq, d_model)` or `(batch, d_model)`; reduces over `d_model` via
+    `"l2"` (default, always ≥ 0), `"dot"` (signed), `"abs"` / `"l1"` (sum of absolutes).
+    One backward pass by the caller; pure function here.
+  - `integrated_gradients(model_fn, embeds, *, baseline, n_steps=50, reduction="dot") → Tensor`
+    — Sundararajan et al. 2017 IG (arXiv:1703.01365).  Integrates the gradient of
+    `model_fn` along the path from `baseline` (default: zeros) to `embeds` and multiplies
+    by `embeds − baseline`.  With `reduction="dot"` satisfies the completeness axiom:
+    `attribution.sum() ≈ model_fn(embeds) − model_fn(baseline)`.  `n_steps` trapezoidal
+    integration steps.  13 new tests in `tests/core/test_attribution.py`.
+
+## [1.36.0] — 2026-06-09
+
+**Logit decomposition + causal tracing.**
+
+### Added
+- **`core/decompose.py`** (new module) — `logit_decomposition(components, unembed, token_a, token_b, *, position, ln_scale, ln_bias) → LogitDecompositionResult`:
+  decomposes `logit[token_a] − logit[token_b]` into per-component contributions by
+  projecting each residual-stream component onto the logit-difference direction
+  `W_U[:,token_a] − W_U[:,token_b]`.  Optional linear LayerNorm approximation via
+  `ln_scale`.  Components sum exactly to the true logit diff (no LN) or approximately
+  with LN folding.  `LogitDecompositionResult` exposes `.ranked()`, `.top_k(k)`,
+  `.to_markdown()`.  Based on the Transformer Circuits framework
+  (Elhage et al. 2021).  12 new tests in `tests/core/test_logit_decompose.py`.
+- **`patching/causal_trace.py`** (new module) — `CausalTraceRunner(model, *, modules,
+  module_names, module_pattern)`, `CausalTraceResult`: implements the ROME causal
+  tracing experiment (Meng et al. NeurIPS 2022, arXiv:2202.05262).  For each candidate
+  module, patches the clean hidden state back into the corrupted forward pass and
+  measures metric recovery, normalised to `(patched − corrupted) / (clean − corrupted)`.
+  Accepts either an explicit module list or a regex `module_pattern`.
+  `CausalTraceResult` exposes `.top_layers(k)`, `.to_markdown()`.
+  12 new tests in `tests/patching/test_causal_trace.py`.
+
+## [1.35.0] — 2026-06-09
+
+**DAAM cross-attention attribution + HyperDAS input-conditioned alignment search.**
+
+### Added
+- **`core/attention.py`** addition — `daam_attribution(attn_maps, *, head_agg, normalize,
+  spatial_shape) → Tensor`: aggregates per-step cross-attention maps from diffusion models
+  into a `(seq_len, n_patches)` attribution heatmap. Averages over denoising steps and
+  batch; aggregates heads by mean or max; optional L1 normalisation per token; optional
+  reshape to `(seq_len, H, W)` for a spatial grid (arXiv:2210.04885, Tang et al. ICCV 2023).
+  14 new tests in `tests/core/test_daam.py`.
+- **`patching/hyperdas.py`** (new module) — `HyperDASNet(d_model, subspace_dim, hidden_dim)`,
+  `HyperDASResult`, `HyperDASRunner(model, module, *, d_model, subspace_dim, hidden_dim)`:
+  input-conditioned alignment search via hypernetwork. Extends DAS by replacing the
+  global fixed rotation R with a hypernetwork H: activation → orthonormal subspace basis
+  (differentiable Gram-Schmidt). Training objective: cross-entropy under interchange
+  intervention; gradients flow through `basis = hyper_net(h_base_pooled)` while
+  base/source activations are detached (frozen model). Returns trained network, IIA score,
+  and per-step losses (arXiv:2503.10894). 12 new tests in `tests/patching/test_hyperdas.py`.
+
+## [1.34.0] — 2026-06-09
+
+**CLT Attribution Graphs.**
+
+### Added
+- **`patching/clt.py`** (new module) — `CLTNode`, `CLTEdge`, `CLTGraphResult`,
+  `CLTGraphRunner(model, layer_transcoders)`: builds a feature-level attribution
+  graph using cross-layer transcoders. For each consecutive layer pair `(l, l+1)`,
+  scores every feature-to-feature edge using the EAP approximation
+  `score(fi→fj) = Σ delta_fi · grad_fj`. Clean forward pass splices each
+  transcoder losslessly (`decode(encode(x)) + sg(output − decode(encode(x)))`) so
+  PyTorch autograd gives `f.grad = ∂metric/∂f` after `backward()`.
+  `CLTGraphResult` exposes `.top_k()`, `.threshold()`, `.to_markdown()`,
+  `.node_scores` (per-feature importance), `.layer_order` (arXiv:2603.21014).
+- 12 new tests in `tests/patching/test_clt.py`.
+
+## [1.33.0] — 2026-06-09
+
+**Inference-Time Diagnostics & Deeper Attribution.**
+
+### Added
+- **`patching/iti.py`** (new module) — `ITIConfig`, `fit_iti(head_acts, labels, *, coeff=15.0)`,
+  `apply_iti(model, config, *, attn_modules, resolver)`: Inference-Time Intervention.
+  Trains per-(layer, head) mass-mean probes on labelled activation data; at inference adds
+  `coeff × direction` to each head's output slice. Direct integration of existing
+  `mass_mean_probe` primitive (arXiv:2306.03341, Li et al.).
+- **`patching/cd.py`** (new module) — `CDResult`, `cd_token_contributions(attn_weights, *,
+  head_agg, add_residual)`: CD-T contextual decomposition. Propagates per-source-token
+  contribution scores through the attention stack via iterative left-multiplication of the
+  aggregated attention matrix; optional 50/50 residual blend models skip connections.
+  Returns `contributions[q, s]` = fraction of position *q* attributable to source *s*
+  (arXiv:2407.00886, Jain et al. ICLR 2025).
+- **`core/weight.py`** additions:
+  - `critical_sharpness(model, loss_fn, *, n_iters=20, tol=1e-4) → float`: largest Hessian
+    eigenvalue λ_max via power iteration using double backpropagation (HVP). High sharpness
+    correlates with poor generalisation (arXiv:2601.16979, Damian et al.).
+  - `gradient_subspace_saturation(grad_history, *, k=10) → float`: fraction of the current
+    gradient lying in the top-*k* principal directions of historical gradients. High
+    saturation = gradient has settled into a low-rank subspace (plasticity loss signal)
+    (arXiv:2508.07370, Chen et al.).
+- 34 new tests across `tests/patching/test_iti.py`, `tests/patching/test_cd.py`,
+  `tests/core/test_critical_sharpness.py`.
+
 ## [1.32.0] — 2026-06-09
 
 **Attribution Quality.**

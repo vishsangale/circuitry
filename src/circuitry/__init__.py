@@ -18,7 +18,16 @@ UNRELIABLE_METRICS guard.
 v1.32 added attribution quality: ReLPRunner (LRP-epsilon edge attribution, arXiv:2508.21258),
 CertifiedCircuitRunner/CertifiedCircuitResult (randomised subsampling stability, arXiv:2602.22968),
 and MIB benchmark additions: load_ravel, load_arithmetic, load_mcqa, mib_circuit_f1,
-mib_iia_score (Mueller et al. ICML 2025).)
+mib_iia_score (Mueller et al. ICML 2025).
+v1.33 added: ITIConfig/fit_iti/apply_iti (Inference-Time Intervention, arXiv:2306.03341),
+CDResult/cd_token_contributions (CD-T contextual decomposition, arXiv:2407.00886),
+critical_sharpness (Hessian sharpness via HVP power iteration, arXiv:2601.16979),
+gradient_subspace_saturation (gradient subspace saturation diagnostic, arXiv:2508.07370).
+v1.34 added CLT Attribution Graphs: CLTNode, CLTEdge, CLTGraphResult, CLTGraphRunner
+(feature-level EAP over lossless-spliced transcoders, arXiv:2503.10474).
+v1.35 added: daam_attribution (DAAM cross-attention aggregation, arXiv:2210.04885),
+HyperDASNet/HyperDASResult/HyperDASRunner (input-conditioned alignment search via
+hypernetworks, arXiv:2503.10894).
 """
 
 from circuitry.core.activation import (
@@ -30,7 +39,22 @@ from circuitry.core.activation import (
     spectral_collapse_rank,
     token_similarity,
 )
-from circuitry.core.attention import attention_rollout
+from circuitry.core.attention import attention_rollout, daam_attribution
+from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
+from circuitry.core.feature_geometry import (
+    feature_coverage,
+    feature_interference,
+    feature_spread,
+)
+from circuitry.core.circuits import (
+    composition_scores,
+    head_composition_score,
+    ov_matrix,
+    qk_matrix,
+    top_embedding_tokens,
+    top_logit_tokens,
+)
+from circuitry.core.decompose import LogitDecompositionResult, logit_decomposition
 from circuitry.core.dynamics import (
     emergence_score,
     fourier_feature_alignment,
@@ -40,6 +64,7 @@ from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase, rlace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
+from circuitry.core.neuron import NeuronStats, neuron_stats
 from circuitry.core.probe import (
     LinearProbe,
     MDLResult,
@@ -53,11 +78,21 @@ from circuitry.core.spectral import spectral_edge_gap
 from circuitry.core.steer import directional_ablation, repe_direction, steer_vector
 from circuitry.core.weight import (
     FinetuningDeltaResult,
+    critical_sharpness,
     direction_cosine,
     finetuning_delta_svd,
+    gradient_subspace_saturation,
     update_delta,
     update_weight_ratio,
 )
+from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
+from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
+from circuitry.patching.cd import CDResult, cd_token_contributions
+from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
+from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
+from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
+from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
@@ -76,13 +111,32 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.32.0"
+__version__ = "1.40.0"
 
 __all__ = [
+    "CDResult",
+    "CLTEdge",
+    "HyperDASNet",
+    "HyperDASResult",
+    "HyperDASRunner",
+    "CLTGraphResult",
+    "CLTGraphRunner",
+    "CLTNode",
     "CausalScrubResult",
     "CausalScrubRunner",
+    "CausalTraceResult",
+    "CausalTraceRunner",
     "CertifiedCircuitResult",
+    "composition_scores",
+    "head_composition_score",
+    "ov_matrix",
+    "qk_matrix",
+    "top_embedding_tokens",
+    "top_logit_tokens",
+    "PatchGridResult",
+    "PatchGridRunner",
     "CertifiedCircuitRunner",
+    "ITIConfig",
     "CircuitHypothesis",
     "CrosscoderWrapper",
     "DASResult",
@@ -106,10 +160,29 @@ __all__ = [
     "EdgePruningResult",
     "EdgePruningRunner",
     "HAPRunner",
+    "HeadKnockoutResult",
+    "HeadKnockoutRunner",
+    "NeuronStats",
+    "neuron_stats",
+    "compute_mean_activation",
+    "feature_coverage",
+    "feature_interference",
+    "feature_spread",
+    "mean_ablation",
     "apply_ablation",
+    "apply_iti",
     "apply_steer",
+    "cd_token_contributions",
+    "critical_sharpness",
+    "fit_iti",
+    "gradient_subspace_saturation",
     "attention_rollout",
     "build_report",
+    "LogitDecompositionResult",
+    "daam_attribution",
+    "gradient_input_attribution",
+    "integrated_gradients",
+    "logit_decomposition",
     "direction_cosine",
     "directional_ablation",
     "discover",

@@ -13,12 +13,20 @@ from __future__ import annotations
 
 from circuitry.patching.acdc import ACDCResult, ACDCRunner
 from circuitry.patching.atp import AtPNode, AtPResult, AtPRunner
+from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
+from circuitry.patching.cd import CDResult, cd_token_contributions
+from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
+from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
+from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.graph import Edge, Node
 from circuitry.patching.hap import HAPRunner
+from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
+from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
 from circuitry.patching.intervene import PatchHandle, patch_site
 from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.runner import PatchResult, PatchRunner
@@ -33,7 +41,17 @@ __all__ = [
     "AtPNode",
     "AtPResult",
     "AtPRunner",
+    "CausalTraceResult",
+    "CausalTraceRunner",
+    "CDResult",
+    "PatchGridResult",
+    "PatchGridRunner",
+    "CLTEdge",
+    "CLTGraphResult",
+    "CLTGraphRunner",
+    "CLTNode",
     "CausalScrubResult",
+    "ITIConfig",
     "CausalScrubRunner",
     "CertifiedCircuitResult",
     "CertifiedCircuitRunner",
@@ -48,6 +66,13 @@ __all__ = [
     "EdgePruningRunner",
     "FeatureACDCRunner",
     "HAPRunner",
+    "HeadKnockoutResult",
+    "HeadKnockoutRunner",
+    "compute_mean_activation",
+    "mean_ablation",
+    "HyperDASNet",
+    "HyperDASResult",
+    "HyperDASRunner",
     "Node",
     "PatchHandle",
     "PatchResult",
@@ -62,7 +87,10 @@ __all__ = [
     "Site",
     "TemporalAtPResult",
     "TranscoderWrapper",
+    "apply_iti",
     "apply_steer",
+    "cd_token_contributions",
+    "fit_iti",
     "patch_site",
     "steer_vector",
     "to_hooked_transformer",

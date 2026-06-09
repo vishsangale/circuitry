@@ -80,6 +80,52 @@ def test_public_surface():
         "ReLPRunner",
         "CertifiedCircuitResult",
         "CertifiedCircuitRunner",
+        # ITI + CD-T + sharpness (v1.33)
+        "ITIConfig",
+        "fit_iti",
+        "apply_iti",
+        "CDResult",
+        "cd_token_contributions",
+        "critical_sharpness",
+        "gradient_subspace_saturation",
+        # CLT attribution graphs (v1.34)
+        "CLTNode",
+        "CLTEdge",
+        "CLTGraphResult",
+        "CLTGraphRunner",
+        # DAAM + HyperDAS (v1.35)
+        "daam_attribution",
+        "HyperDASNet",
+        "HyperDASResult",
+        "HyperDASRunner",
+        # Logit Decomposition + Causal Tracing (v1.36)
+        "LogitDecompositionResult",
+        "logit_decomposition",
+        "CausalTraceResult",
+        "CausalTraceRunner",
+        # Patch Grid + Gradient Attribution (v1.37)
+        "PatchGridResult",
+        "PatchGridRunner",
+        "gradient_input_attribution",
+        "integrated_gradients",
+        # QK/OV circuits + token direction analysis (v1.38)
+        "ov_matrix",
+        "qk_matrix",
+        "head_composition_score",
+        "composition_scores",
+        "top_logit_tokens",
+        "top_embedding_tokens",
+        # Head knockout + neuron stats (v1.39)
+        "HeadKnockoutResult",
+        "HeadKnockoutRunner",
+        "NeuronStats",
+        "neuron_stats",
+        # Mean ablation + feature geometry (v1.40)
+        "compute_mean_activation",
+        "mean_ablation",
+        "feature_interference",
+        "feature_coverage",
+        "feature_spread",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

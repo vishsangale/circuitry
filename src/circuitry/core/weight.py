@@ -6,11 +6,17 @@ See docs/design.md §4.1 for the contract.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+import torch.nn as nn
+
+if TYPE_CHECKING:
+    from torch import Tensor
 
 ArrayLike = torch.Tensor | np.ndarray
 
@@ -503,3 +509,119 @@ def finetuning_delta_svd(
         left_rotation_similarity=left_sim,
         right_rotation_similarity=right_sim,
     )
+
+
+def critical_sharpness(
+    model: "nn.Module",
+    loss_fn: "Callable[[], Tensor]",
+    *,
+    n_iters: int = 20,
+    tol: float = 1e-4,
+) -> float:
+    """Largest Hessian eigenvalue λ_max (sharpness) via power iteration.
+
+    Uses double backpropagation (no full Hessian materialised) to estimate
+    the leading eigenvalue of the loss Hessian. High sharpness at the end of
+    training correlates with poor generalisation and instability under LR warmup
+    restarts (arXiv:2601.16979).
+
+    Args:
+        model:   PyTorch model.  Parameters that require grad are used.
+        loss_fn: No-argument callable returning a scalar loss tensor.
+            Must be differentiable through model's parameters.
+        n_iters: Maximum power-iteration steps.
+        tol:     Stop early when relative eigenvalue change < tol.
+
+    Returns:
+        Estimated λ_max as a float.
+
+    Reference: Damian et al. arXiv:2601.16979.
+    """
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        return 0.0
+
+    with torch.no_grad():
+        # Initialise a random unit vector matching the parameter shapes.
+        v = [torch.randn_like(p) for p in params]
+        v_norm = math.sqrt(sum(vi.pow(2).sum().item() for vi in v))
+        v = [vi / v_norm for vi in v]
+
+    eigenvalue = 0.0
+    for _ in range(n_iters):
+        with torch.enable_grad():
+            loss = loss_fn()
+            grads = torch.autograd.grad(loss, params, create_graph=True)
+            vg = sum((vi * gi).sum() for vi, gi in zip(v, grads))
+            hvp_raw = torch.autograd.grad(vg, params, retain_graph=False)
+
+        # Replace any None entries (disconnected params) with zeros.
+        hvp = [
+            (h if h is not None else torch.zeros_like(p))
+            for h, p in zip(hvp_raw, params)
+        ]
+
+        # New eigenvalue estimate: <Hv, v> / <v, v>  (v is already unit).
+        new_eig = sum((h * vi).sum().item() for h, vi in zip(hvp, v))
+
+        # Normalise Hv to get the new unit vector.
+        hv_norm = math.sqrt(sum(h.pow(2).sum().item() for h in hvp))
+        if hv_norm == 0.0:
+            break
+        with torch.no_grad():
+            v = [h / hv_norm for h in hvp]
+
+        # Convergence check.
+        if abs(eigenvalue) > 0 and abs(new_eig - eigenvalue) / (abs(eigenvalue) + 1e-30) < tol:
+            eigenvalue = new_eig
+            break
+        eigenvalue = new_eig
+
+    return float(eigenvalue)
+
+
+def gradient_subspace_saturation(
+    grad_history: "list[Tensor]",
+    *,
+    k: int = 10,
+) -> float:
+    """Fraction of the current gradient in the top-k historical gradient subspace.
+
+    High saturation means the gradient direction has settled into a low-rank
+    subspace (sign of plasticity loss / convergence). Low saturation means
+    the gradient is still exploring new directions.
+
+    Args:
+        grad_history: List of (d,) flattened gradient tensors, oldest first.
+            The last entry is the "current" gradient; the rest form the history.
+            Must contain at least 2 entries.
+        k: Number of principal directions of the history subspace (capped at
+            len(grad_history) - 1).
+
+    Returns:
+        ||proj_Vk(g_t)||² / ||g_t||² in [0, 1].
+        Returns 0.0 if fewer than 2 entries or if current gradient is zero.
+
+    Reference: Chen et al. arXiv:2508.07370.
+    """
+    if len(grad_history) < 2:
+        return 0.0
+
+    current = grad_history[-1].float().flatten()
+    current_norm_sq = current.pow(2).sum()
+    if current_norm_sq.item() == 0.0:
+        return 0.0
+
+    # Stack history (excluding current) into rows: shape (T-1, d).
+    # Economy SVD of (T-1, d) gives Vh of shape (min(T-1, d), d) — row vectors
+    # that span the column space of H and can project against current (shape d).
+    H = torch.stack([g.float().flatten() for g in grad_history[:-1]], dim=0)  # (T-1, d)
+
+    # Economy SVD; Vh has shape (min(T-1, d), d).
+    _, _, Vh = torch.linalg.svd(H, full_matrices=False)
+    # Cap k at the number of singular vectors actually returned.
+    k = min(k, Vh.shape[0])
+    Vk = Vh[:k]  # (k, d)
+
+    proj_sq = (Vk @ current).pow(2).sum()
+    return float((proj_sq / current_norm_sq.clamp_min(1e-24)).item())

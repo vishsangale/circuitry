@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-09 (v1.40.0)
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -317,6 +317,136 @@ benchmarks.load_arithmetic(n, *, op, modulus, seed, vocab_size, seq_len) -> MIBT
 benchmarks.load_mcqa(n, *, n_choices, seed, vocab_size, seq_len) -> MIBTask  # multiple-choice Q&A
 benchmarks.mib_circuit_f1(circuit_edges, ground_truth_edges) -> float  # edge-set F1 for MIB localisation leaderboard
 benchmarks.mib_iia_score(das_result, *, threshold=0.5) -> float  # IIA-at-threshold for causal variable localisation
+
+# Inference-Time Intervention + CD-T + sharpness (v1.33)
+from circuitry.patching import iti, cd
+iti.ITIConfig  # dataclass: head_directions {(layer,head): (d_head,) direction}, d_head, coeff
+iti.fit_iti(head_acts, labels, *, coeff=15.0) -> ITIConfig  # train per-head mass-mean probes
+iti.apply_iti(model, config, *, attn_modules, resolver)  # context manager; steers head slices
+# arXiv:2306.03341 Li et al. "Inference-Time Intervention"
+
+cd.CDResult  # .contributions: (seq, seq) tensor — contributions[q, s] = fraction of q from source s
+cd.cd_token_contributions(attn_weights, *, head_agg="mean", add_residual=True) -> CDResult
+# attn_weights: list of (n_heads, seq, seq) or (batch, n_heads, seq, seq) per layer
+# Propagates per-token contributions through attention stack with optional residual blending
+# arXiv:2407.00886 Jain et al. "CD-T: Contextual Decomposition for Transformers" ICLR 2025
+
+from circuitry.core import weight
+weight.critical_sharpness(model, loss_fn, *, n_iters=20, tol=1e-4) -> float
+# Largest Hessian eigenvalue λ_max via power iteration (double backprop / HVP); arXiv:2601.16979
+weight.gradient_subspace_saturation(grad_history, *, k=10) -> float
+# Fraction of current gradient in top-k historical gradient subspace;
+# high = plasticity loss, low = still exploring; arXiv:2508.07370
+
+# CLT Attribution Graphs (v1.34)
+from circuitry.patching import clt
+clt.CLTNode(layer, feature)  # frozen dataclass node
+clt.CLTEdge(src: CLTNode, dst: CLTNode)  # frozen dataclass directed edge
+clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
+# .run(clean, corrupted, metric, *, score_threshold=0.0) -> CLTGraphResult
+# Two-pass EAP at the feature level: lossless transcoder splice in clean pass
+# gives f.grad = ∂metric/∂f; delta_f from corrupted pass gives edge scores
+# CLTGraphResult: .scores {CLTEdge: float}, .node_scores {CLTNode: float},
+#   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
+# Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
+# arXiv:2603.21014 (Anthropic attribution graphs)
+
+# Mean Ablation (v1.40)
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
+compute_mean_activation(model, module, dataset_inputs) -> Tensor  # mean over dataset
+mean_ablation(model, module, mean_act)  # context manager; replaces output with mean_act
+# More in-distribution null than zero ablation; no hooks after context exits
+
+# Feature Geometry (v1.40)
+from circuitry.core.feature_geometry import feature_interference, feature_coverage, feature_spread
+feature_interference(feature_dirs, *, normalize=True) -> Tensor  # (n,n) cosine-sim matrix
+feature_coverage(feature_dirs, acts, *, k=None) -> float         # fraction variance explained [0,1]
+feature_spread(feature_dirs, *, normalize=True) -> float         # mean pairwise angle (radians)
+
+# Head Knockout (v1.39)
+from circuitry.patching.head_knockout import HeadKnockoutRunner, HeadKnockoutResult
+HeadKnockoutRunner(model, head_modules: list[list[nn.Module]], *, layer_names=None)
+# .run(inputs, metric) -> HeadKnockoutResult
+# importance[l,h] = clean_score - knockout_score[l,h]  (zero-ablate each head's module output)
+# HeadKnockoutResult: .importance (n_layers,n_heads), .top_heads(k), .to_markdown()
+# Michel et al. 2019 NeurIPS / Voita et al. 2019 ACL
+
+# Neuron Statistics (v1.39)
+from circuitry.core.neuron import neuron_stats, NeuronStats
+neuron_stats(acts, *, threshold=0.0) -> NeuronStats  # acts: (..., d) → stats over (d,)
+# NeuronStats: .mean (d,), .std (d,), .max (d,), .dead_fraction float, .kurtosis (d,)
+
+# Transformer Circuit Primitives (v1.38)
+from circuitry.core.circuits import ov_matrix, qk_matrix, head_composition_score, composition_scores, top_logit_tokens, top_embedding_tokens
+ov_matrix(W_V, W_O) -> Tensor         # (..., d_model, d_head) x (..., d_head, d_model) -> (..., d_model, d_model)
+qk_matrix(W_Q, W_K) -> Tensor         # (..., d_model, d_head) x (..., d_model, d_head) -> (..., d_model, d_model)  [W_Q @ W_K.T]
+head_composition_score(W_OV, W_dest) -> float   # ‖W_OV @ W_dest‖_F / (‖W_OV‖_F · ‖W_dest‖_F) ∈ [0,1]
+composition_scores(W_OV_src, W_dest) -> Tensor  # (n_heads_src, n_heads_dst) score matrix
+top_logit_tokens(direction, W_U, *, k=10) -> (list[int], list[float])   # direction @ W_U → top-k token ids
+top_embedding_tokens(direction, W_E, *, k=10) -> (list[int], list[float])  # W_E @ direction → top-k token ids
+# All pure functions; no forward passes. Elhage et al. 2021 transformer circuits
+
+# Gradient-Based Token Attribution (v1.37)
+from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
+gradient_input_attribution(grads, embeds, *, reduction="l2") -> Tensor  # (batch, seq)
+# grads: (batch, seq, d_model) gradient w.r.t. embedding output
+# embeds: (batch, seq, d_model) embedding vectors
+# reduction: "l2" (default, ≥0) | "dot" (signed) | "abs"/"l1" (≥0)
+# Per-token ‖grad ⊙ embed‖ — one caller backward pass, pure function here
+# Simonyan 2013 gradient saliency; Shrikumar 2016 gradient×input
+
+integrated_gradients(model_fn, embeds, *, baseline=None, n_steps=50, reduction="dot") -> Tensor  # (batch, seq)
+# model_fn: (batch, seq, d_model) -> (batch,) scalar
+# baseline: defaults to zeros_like(embeds)
+# completeness with reduction="dot": sum over tokens ≈ model_fn(embeds) - model_fn(baseline)
+# arXiv:1703.01365 (Sundararajan et al. 2017)
+
+# Activation Patch Grid (v1.37)
+from circuitry.patching.patch_grid import PatchGridRunner, PatchGridResult
+PatchGridRunner(model, *, modules=list[nn.Module] | None, module_names=None, module_pattern=str | None)
+# .run(clean_inputs, corrupted_inputs, metric) -> PatchGridResult
+# For each (layer, position): patch clean act[:, pos, :] into corrupted run
+# PatchGridResult: .recovery (n_layers, seq_len), .layer_names, .clean_score, .corrupted_score
+#   .top_sites(k), .to_markdown()
+# Wang et al. 2022 IOI / Hanna et al. 2023 greater-than circuit paper pattern
+
+# Logit Decomposition (v1.36)
+from circuitry.core.decompose import logit_decomposition, LogitDecompositionResult
+logit_decomposition(components, unembed, token_a, token_b, *, position=-1, ln_scale=None, ln_bias=None) -> LogitDecompositionResult
+# components: dict[name -> (batch, seq, d_model) or (batch, d_model)]  residual-stream contributions
+# Projects each component onto W_U[:,token_a] - W_U[:,token_b]; sum == true logit diff (no LN)
+# Optional linear LN approximation via ln_scale (d_model,)
+# LogitDecompositionResult: .scores {str: float}, .ranked(), .top_k(k), .to_markdown()
+# Elhage et al. 2021, https://transformer-circuits.pub/2021/framework/index.html
+
+# Causal Tracing (v1.36)
+from circuitry.patching.causal_trace import CausalTraceRunner, CausalTraceResult
+CausalTraceRunner(model, *, modules=list[nn.Module] | None, module_names=list[str] | None, module_pattern=str | None)
+# .run(clean_inputs, corrupted_inputs, metric) -> CausalTraceResult
+# For each module: patch clean hidden state into corrupted run, measure metric recovery
+# recovery[i] = (patched_score - corrupted_score) / (clean_score - corrupted_score)
+# CausalTraceResult: .recovery (n_layers,), .layer_names, .clean_score, .corrupted_score
+#   .top_layers(k), .to_markdown()
+# Meng et al. 2022 NeurIPS, arXiv:2202.05262
+
+# DAAM cross-attention attribution (v1.35)
+from circuitry.core.attention import daam_attribution
+daam_attribution(attn_maps, *, head_agg="mean", normalize=True, spatial_shape=None) -> Tensor
+# attn_maps: list of (n_heads, n_patches, seq_len) or (batch, n_heads, n_patches, seq_len) per step
+# Returns (seq_len, n_patches) or (seq_len, H, W) attribution heatmap
+# Aggregates over denoising steps and batch; head_agg ∈ {"mean","max"}
+# Optional L1 normalisation; optional spatial reshape; arXiv:2210.04885
+
+# HyperDAS: input-conditioned alignment search via hypernetwork (v1.35)
+from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
+HyperDASNet(d_model, subspace_dim, hidden_dim=64)
+# forward(h: (batch, d_model)) -> (batch, subspace_dim, d_model) orthonormal rows
+# MLP + differentiable Gram-Schmidt orthonormalization
+HyperDASRunner(model, module, *, d_model, subspace_dim=1, hidden_dim=64)
+# .run(base_inputs, source_inputs, labels, *, n_steps=200, lr=1e-3, loss_fn=None) -> HyperDASResult
+# Train H: activation → orthonormal basis via interchange-intervention cross-entropy
+# Gradients flow: loss → h_int → basis = hyper_net(h_base_pooled) → hyper_net.parameters()
+# arXiv:2503.10894
 ```
 
 Invariants for everything in `core/`:
