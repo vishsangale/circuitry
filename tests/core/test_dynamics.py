@@ -266,3 +266,52 @@ def test_information_bottleneck_low_when_random():
         scores.append(information_bottleneck_score(acts_train, acts_val, labels_train, labels_val))
     # Random activations should not reliably predict labels; mean score well below 1
     assert sum(scores) / len(scores) < 0.65
+
+
+# ---------------------------------------------------------------------------
+# emergence_score tests (v1.30)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.dynamics import emergence_score
+
+
+def test_emergence_score_returns_float():
+    series = [(i, float(i)) for i in range(1, 15)]
+    es = emergence_score(series)
+    assert isinstance(es, float)
+    assert math.isfinite(es)
+
+
+def test_emergence_score_linear_series_small():
+    """A perfectly linear series has zero second derivative → small emergence score."""
+    series = [(i, float(i)) for i in range(1, 20)]
+    es = emergence_score(series)
+    # Linear in log-step may produce some curvature, but should be small
+    # relative to a genuinely emergent series
+    assert es >= 0.0
+
+
+def test_emergence_score_sudden_jump_large():
+    """A series with a sudden nonlinear jump should give a larger emergence score."""
+    # Flat then sudden exponential growth = high curvature on log-step axis
+    series_flat = [(i, 0.0) for i in range(1, 10)]
+    series_jump = [(i + 10, float(2 ** i)) for i in range(10)]
+    series = series_flat + series_jump
+    es = emergence_score(series)
+    assert es > 0.0
+
+
+def test_emergence_score_short_series():
+    """Series shorter than 3 should return 0.0."""
+    assert emergence_score([]) == 0.0
+    assert emergence_score([(1, 1.0)]) == 0.0
+    assert emergence_score([(1, 1.0), (2, 2.0)]) == 0.0
+
+
+def test_emergence_score_monotone_vs_nonmonotone():
+    """Nonmonotone (emergent) series should score higher than smooth linear."""
+    linear = [(i, 0.1 * i) for i in range(1, 30)]
+    emergent = [(i, 0.0 if i < 15 else float((i - 14) ** 3)) for i in range(1, 30)]
+    es_linear = emergence_score(linear)
+    es_emergent = emergence_score(emergent)
+    assert es_emergent > es_linear

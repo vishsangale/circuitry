@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -389,3 +390,116 @@ def attention_head_rank(
             slice_i = t[:, i * head_dim : (i + 1) * head_dim]
         ranks.append(effective_rank(slice_i))
     return ranks
+
+
+def update_weight_ratio(
+    W_prev: ArrayLike,
+    W_curr: ArrayLike,
+    *,
+    eps: float = 1e-12,
+) -> float:
+    """Scale-invariant per-layer update size: ``‖W_curr − W_prev‖_F / ‖W_prev‖_F``.
+
+    The Frobenius-norm relative update is the μP / maximal-update-parametrisation
+    diagnostic: when the learning rate is properly scaled across widths, this ratio
+    is constant across layers and widths at each step.  Use it to verify μP scaling
+    or to detect vanishing/exploding updates layer-by-layer.
+
+    Unlike :func:`relative_update_delta` (which operates on full state dicts),
+    this operates on a single weight matrix so it can be used inline in a per-layer
+    loop.
+
+    Args:
+        W_prev: previous weight matrix (any shape ≥ 1-D).
+        W_curr: current weight matrix (same shape).
+        eps:    denominator guard against division by zero.
+
+    Returns:
+        ``‖ΔW‖_F / (‖W_prev‖_F + eps)`` as a float.
+
+    Reference: Yang et al. 2022 μP, arXiv:2203.03466; Yang & Hu 2021 maximal
+               update parametrisation; applied to diagnostics in arXiv:2510.19093.
+    """
+    a = torch.as_tensor(W_prev).to(torch.float32)
+    b = torch.as_tensor(W_curr).to(torch.float32)
+    delta_norm = float((b - a).norm().item())
+    prev_norm = float(a.norm().item())
+    return delta_norm / (prev_norm + eps)
+
+
+@dataclass(frozen=True)
+class FinetuningDeltaResult:
+    """SVD decomposition of a fine-tuning weight update.
+
+    Attributes:
+        sv_scale_factor:           ``sum(s_delta) / (sum(s_base) + eps)`` — fraction
+                                   of original singular-value mass captured by the
+                                   update.  High → large-magnitude change.
+        left_rotation_similarity:  mean |cos(U_delta_i, U_base_i)| across the min-rank
+                                   leading singular vectors.  1.0 = same left
+                                   subspace; 0.0 = orthogonal (pure rotation).
+        right_rotation_similarity: same for right singular vectors V.
+    """
+
+    sv_scale_factor: float
+    left_rotation_similarity: float
+    right_rotation_similarity: float
+
+
+def finetuning_delta_svd(
+    W_base: ArrayLike,
+    W_ft: ArrayLike,
+    *,
+    k: int | None = None,
+    eps: float = 1e-12,
+) -> FinetuningDeltaResult:
+    """SVD analysis of the fine-tuning update ``ΔW = W_ft − W_base``.
+
+    Computes:
+    - **sv_scale_factor**: total singular-value mass of ΔW relative to W_base.
+    - **left_rotation_similarity**: alignment of ΔW's left singular vectors with
+      W_base's — distinguishes geometry-changing (rotation) from geometry-preserving
+      (scaling) updates.
+    - **right_rotation_similarity**: same for right singular vectors.
+
+    A fine-tuned model that preserved the base geometry scores high on both
+    rotation similarities (LoRA-style updates do this by design).  A model that
+    underwent catastrophic forgetting scores low.
+
+    Args:
+        W_base: (m, n) base (pre-fine-tuning) weight matrix.
+        W_ft:   (m, n) fine-tuned weight matrix.
+        k:      number of leading singular vectors to compare.
+                Defaults to ``min(m, n, 32)``.
+        eps:    guard for near-zero denominators.
+
+    Returns:
+        :class:`FinetuningDeltaResult`.
+
+    Reference: arXiv:2509.17866 "Spectral Fingerprints of Fine-Tuning".
+    """
+    base = _as_2d(W_base).to(torch.float64)
+    ft = _as_2d(W_ft).to(torch.float64)
+    delta = ft - base
+
+    min_dim = min(base.shape)
+    if k is None:
+        k = min(min_dim, 32)
+    k = min(k, min_dim)
+
+    # SVD of base and delta (economy / thin)
+    U_b, s_b, Vh_b = torch.linalg.svd(base, full_matrices=False)
+    U_d, s_d, Vh_d = torch.linalg.svd(delta, full_matrices=False)
+
+    sv_scale_factor = float(s_d[:k].sum().item()) / (float(s_b[:k].sum().item()) + eps)
+
+    # Alignment: mean |cos| between corresponding leading singular vectors
+    k_cmp = min(k, U_b.shape[1], U_d.shape[1])
+    left_sim = float((U_b[:, :k_cmp] * U_d[:, :k_cmp]).sum(dim=0).abs().mean().item())
+    right_sim = float((Vh_b[:k_cmp] * Vh_d[:k_cmp]).sum(dim=1).abs().mean().item())
+
+    return FinetuningDeltaResult(
+        sv_scale_factor=sv_scale_factor,
+        left_rotation_similarity=left_sim,
+        right_rotation_similarity=right_sim,
+    )

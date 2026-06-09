@@ -522,6 +522,96 @@ def embedding_uniformity(
     return float(gram[mask].mean().item())
 
 
+def neural_collapse_score(acts: ArrayLike, labels: ArrayLike) -> float:
+    """NC1 neural-collapse metric: within-class / between-class covariance ratio.
+
+    NC1 = Tr(Σ_W · Σ_B⁺) / C, where:
+      - Σ_W = mean within-class covariance (averaged over classes),
+      - Σ_B = between-class covariance of class means,
+      - C   = number of classes,
+      - Σ_B⁺ = Moore-Penrose pseudoinverse.
+
+    A perfectly collapsed network gives NC1 → 0 (within-class scatter vanishes).
+    Rising NC1 indicates representation collapse or plasticity loss (e.g. during
+    continual learning, after fine-tuning on a small dataset).
+
+    Args:
+        acts:   (n, d_model) activation tensor.
+        labels: (n,) integer class labels.
+
+    Returns:
+        NC1 score (float ≥ 0).  Lower = more collapsed (better for a finished
+        training run; high during fine-tuning signals plasticity loss).
+
+    Reference: Papyan et al. 2020 "Prevalence of Neural Collapse during the
+               terminal phase of deep learning training" PNAS; applied as a
+               fine-tuning health metric in arXiv:2404.02719, arXiv:2604.00230.
+    """
+    t = _as_tensor(acts)
+    if t.ndim == 1:
+        t = t.unsqueeze(0)
+    t = t.reshape(-1, t.shape[-1]).to(torch.float64)
+    lbl = torch.as_tensor(labels).long().flatten()
+    if lbl.shape[0] != t.shape[0]:
+        raise ValueError(
+            f"neural_collapse_score: acts and labels must have the same first dimension; "
+            f"got {t.shape[0]} vs {lbl.shape[0]}"
+        )
+    classes = lbl.unique()
+    c = classes.shape[0]
+    if c < 2:
+        return 0.0
+    d = t.shape[1]
+    global_mean = t.mean(0)
+    class_means = torch.stack([t[lbl == cls].mean(0) for cls in classes])  # (C, d)
+
+    # Between-class covariance Σ_B (outer product of centred class means, uniform weight)
+    centred_means = class_means - global_mean.unsqueeze(0)
+    sigma_b = (centred_means.T @ centred_means) / c  # (d, d)
+
+    # Within-class covariance Σ_W (average of per-class covariances)
+    sigma_w = torch.zeros(d, d, dtype=torch.float64)
+    for i, cls in enumerate(classes):
+        xi = t[lbl == cls] - class_means[i]
+        ni = xi.shape[0]
+        if ni > 0:
+            sigma_w += (xi.T @ xi) / ni
+    sigma_w /= c
+
+    # NC1 = Tr(Σ_W · pinv(Σ_B)) / C
+    sigma_b_pinv = torch.linalg.pinv(sigma_b)
+    nc1 = float(torch.trace(sigma_w @ sigma_b_pinv).item()) / c
+    return max(0.0, nc1)
+
+
+def spectral_collapse_rank(acts: ArrayLike) -> float:
+    """Effective rank of the activation matrix — an activation-space collapse signal.
+
+    A downward trend in ``spectral_collapse_rank`` over training steps signals
+    representation collapse or plasticity loss: the activations are spanning a
+    shrinking effective subspace.
+
+    This is the activation-space analogue of the weight-space
+    :func:`~circuitry.core.weight.effective_rank`.
+
+    Args:
+        acts: (n, d_model) activation tensor (or any shape; flattened to 2-D as
+              ``(n, d_model)`` with ``n = prod(shape[:-1])``).
+
+    Returns:
+        Effective rank (float in [1, min(n, d_model)]).
+
+    Reference: arXiv:2509.22335 "Spectral Collapse in Transformers".
+    """
+    from circuitry.core.weight import effective_rank as _eff_rank
+
+    t = _as_tensor(acts)
+    if t.ndim == 1:
+        t = t.unsqueeze(0)
+    t = t.reshape(-1, t.shape[-1])
+    return _eff_rank(t)
+
+
 def gate_stats(x: ArrayLike, eps: float = 1e-6) -> dict[str, float]:
     """Statistics on a post-gate MLP activation tensor.
 

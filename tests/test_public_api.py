@@ -43,12 +43,15 @@ def test_public_surface():
         "leace_erase",
         "logit_lens_distributions",
         # dynamics
+        "emergence_score",
         "fourier_feature_alignment",
         "information_bottleneck_score",
         # activation geometry
         "embedding_uniformity",
         "kernel_alignment",
         "local_intrinsic_dim",
+        "neural_collapse_score",
+        "spectral_collapse_rank",
         # probing / representation
         "LinearProbe",
         "MDLResult",
@@ -57,10 +60,16 @@ def test_public_surface():
         "mdl_probe",
         "train_linear_probe",
         "verify_linear_representation",
-        # steering
+        # steering / attention
+        "attention_rollout",
         "directional_ablation",
         "repe_direction",
         "steer_vector",
+        # weight / spectral training diagnostics
+        "FinetuningDeltaResult",
+        "finetuning_delta_svd",
+        "spectral_edge_gap",
+        "update_weight_ratio",
         # SAE
         "superposition_index",
     }

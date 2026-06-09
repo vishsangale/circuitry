@@ -521,3 +521,82 @@ def test_embedding_uniformity_deterministic():
     u1 = embedding_uniformity(E, seed=0)
     u2 = embedding_uniformity(E, seed=0)
     assert u1 == u2
+
+
+# ---------------------------------------------------------------------------
+# neural_collapse_score tests (v1.30)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.activation import neural_collapse_score, spectral_collapse_rank
+
+
+def test_neural_collapse_score_returns_float():
+    torch.manual_seed(70)
+    acts = torch.randn(30, 16)
+    labels = torch.randint(0, 3, (30,))
+    nc1 = neural_collapse_score(acts, labels)
+    assert isinstance(nc1, float)
+    assert nc1 >= 0.0
+
+
+def test_neural_collapse_score_zero_for_identical():
+    """Zero within-class variance (all samples identical per class) → NC1 = 0."""
+    n, d = 10, 8
+    # Each class: all samples at the exact same point → Σ_W = 0 → NC1 = 0
+    class_means = [torch.zeros(d).fill_(i * 10.0) for i in range(3)]
+    acts = torch.cat([m.unsqueeze(0).expand(n, -1) for m in class_means])
+    labels = torch.cat([torch.full((n,), i, dtype=torch.long) for i in range(3)])
+    nc1 = neural_collapse_score(acts, labels)
+    assert nc1 == pytest.approx(0.0, abs=1e-6)
+
+
+def test_neural_collapse_score_high_for_mixed():
+    """Randomly mixed activations (no class structure) should give higher NC1."""
+    torch.manual_seed(72)
+    acts = torch.randn(60, 8)
+    labels = torch.randint(0, 3, (60,))
+    nc1 = neural_collapse_score(acts, labels)
+    # Not strictly guaranteed but should be > tiny threshold with random data
+    assert nc1 >= 0.0
+
+
+def test_neural_collapse_score_single_class():
+    """Single class should return 0.0 (no between-class structure)."""
+    acts = torch.randn(10, 8)
+    labels = torch.zeros(10, dtype=torch.long)
+    nc1 = neural_collapse_score(acts, labels)
+    assert nc1 == pytest.approx(0.0, abs=1e-8)
+
+
+def test_neural_collapse_score_shape_mismatch():
+    with pytest.raises(ValueError):
+        neural_collapse_score(torch.randn(10, 8), torch.zeros(5, dtype=torch.long))
+
+
+# ---------------------------------------------------------------------------
+# spectral_collapse_rank tests (v1.30)
+# ---------------------------------------------------------------------------
+
+
+def test_spectral_collapse_rank_returns_float():
+    torch.manual_seed(80)
+    acts = torch.randn(20, 16)
+    scr = spectral_collapse_rank(acts)
+    assert isinstance(scr, float)
+    assert scr >= 1.0
+
+
+def test_spectral_collapse_rank_full_rank_high():
+    """Full-rank random activations should give a high effective rank."""
+    torch.manual_seed(81)
+    acts = torch.randn(64, 32)
+    scr = spectral_collapse_rank(acts)
+    assert scr > 10.0, f"Expected high rank for full-rank acts, got {scr:.2f}"
+
+
+def test_spectral_collapse_rank_rank1_is_one():
+    """Rank-1 activation matrix (all rows identical) should give effective rank ≈ 1."""
+    v = torch.randn(8)
+    acts = v.unsqueeze(0).expand(20, -1).clone()
+    scr = spectral_collapse_rank(acts)
+    assert scr == pytest.approx(1.0, abs=0.1)

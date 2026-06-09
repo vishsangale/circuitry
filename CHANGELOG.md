@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] — 2026-06-09
+
+**Training Diagnostics.**
+
+### Added
+- **`core/weight.py`** — `update_weight_ratio(W_prev, W_curr) → float`: Frobenius
+  relative update `‖ΔW‖_F / ‖W_prev‖_F`; the μP scaling diagnostic. `FinetuningDeltaResult`
+  / `finetuning_delta_svd(W_base, W_ft) → FinetuningDeltaResult`: SVD of `W_ft − W_base`
+  returning scale factor and left/right rotation similarity; distinguishes geometry-changing
+  from geometry-preserving fine-tuning (arXiv:2509.17866).
+- **`core/spectral.py`** — `spectral_edge_gap(W_prev, W_curr, *, k=5) → float`: ratio
+  `s[k-1] / s[k]` of the weight-update singular values; a growing gap fingerprints
+  circuit formation during grokking (arXiv:2604.06256).
+- **`core/activation.py`** — `neural_collapse_score(acts, labels) → float`: NC1 metric
+  `Tr(Σ_W · Σ_B⁺) / C`; → 0 in terminal training, rising during plasticity loss /
+  continual learning (Papyan et al. 2020; arXiv:2404.02719). `spectral_collapse_rank(acts)
+  → float`: effective rank of the activation matrix — a downward trend signals
+  representation collapse (arXiv:2509.22335).
+- **`core/dynamics.py`** — `emergence_score(series, *, window=5) → float`: maximum
+  smoothed second log-derivative `d²M / d(log step)²`; a spike discriminates abrupt
+  emergent capabilities from smooth learning (arXiv:2508.04401).
+- **`core/attention.py`** — `attention_rollout(attn_weights, *, grads=None) → Tensor`:
+  recursive attention rollout for ViTs returning `(B, T)` patch saliency; uniform rollout
+  (Abnar & Zuidema ACL 2020) with optional gradient-weighted GMAR variant
+  (arXiv:2504.19414).
+- All 7 new names exported at `circuitry.*`; version bumped to `1.30.0`.
+- Tests: ~35 new tests across test_weight, test_spectral, test_activation, test_dynamics,
+  test_attention.
+
+---
+
 ## [1.29.0] — 2026-06-09
 
 **Probing & Representation Geometry.**

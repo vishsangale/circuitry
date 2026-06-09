@@ -65,3 +65,57 @@ def rank_trajectory(
             else:
                 out[k].append(weight.effective_rank(_flatten_to_2d(sd[k])))
     return out
+
+
+def spectral_edge_gap(
+    W_prev: "ArrayLike",
+    W_curr: "ArrayLike",
+    *,
+    k: int = 5,
+) -> float:
+    """Spectral gap in the top-k singular values of the weight update ΔW.
+
+    Computes ``s[k-1] / s[k]`` (1-indexed; 0-indexed: ``s[k-1] / s[k]``) of
+    the sorted singular values of ``W_curr − W_prev``.  A growing gap between
+    the ``k``-th and ``(k+1)``-th singular value fingerprints circuit formation
+    during grokking: structured computation crystallises into a low-rank update.
+
+    Complements :func:`~circuitry.core.dynamics.grokking_step` (which detects
+    *when* a phase transition occurs) by characterising *what* the update looks
+    like spectrally (sharp low-rank update = circuit formation).
+
+    Args:
+        W_prev: (m, n) weight matrix before the update.
+        W_curr: (m, n) weight matrix after the update.
+        k:      rank boundary; must satisfy ``1 <= k < min(m, n)``.
+
+    Returns:
+        ``s[k-1] / s[k]`` where singular values are sorted descending.
+        Returns ``1.0`` if all singular values beyond index k−1 are < 1e-12
+        (degenerate / rank-deficient update).
+
+    Reference: arXiv:2604.06256 "Spectral Signatures of Circuit Formation".
+    """
+    import torch as _torch
+    import numpy as _np
+
+    a = _torch.as_tensor(W_prev).to(_torch.float64)
+    b = _torch.as_tensor(W_curr).to(_torch.float64)
+    if a.ndim > 2:
+        a = a.reshape(a.shape[0], -1)
+    if b.ndim > 2:
+        b = b.reshape(b.shape[0], -1)
+    delta = b - a
+    sv = _torch.linalg.svdvals(delta)  # descending order
+    if k < 1:
+        raise ValueError(f"spectral_edge_gap: k must be >= 1, got {k}")
+    if k >= sv.shape[0]:
+        raise ValueError(
+            f"spectral_edge_gap: k={k} >= min(m,n)={sv.shape[0]}; "
+            "reduce k or use a larger weight matrix"
+        )
+    s_k = float(sv[k - 1].item())
+    s_k1 = float(sv[k].item())
+    if s_k1 < 1e-12:
+        return float(s_k / 1e-12) if s_k > 1e-12 else 1.0
+    return s_k / s_k1

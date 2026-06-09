@@ -365,3 +365,85 @@ def test_entropy_all_valid_mask_matches_no_mask():
     masked = attention_pattern_entropy(attn, valid_mask=mask)
     plain = attention_pattern_entropy(attn)
     assert masked == pytest.approx(plain, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# attention_rollout tests (v1.30)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.attention import attention_rollout
+
+
+def test_attention_rollout_output_shape():
+    """Output shape is (B, T)."""
+    torch.manual_seed(0)
+    B, H, T = 2, 4, 8
+    attn = [torch.softmax(torch.randn(B, H, T, T), dim=-1) for _ in range(3)]
+    out = attention_rollout(attn)
+    assert out.shape == (B, T)
+
+
+def test_attention_rollout_sums_to_one():
+    """Each row of the output should sum to approximately 1."""
+    torch.manual_seed(1)
+    B, H, T = 1, 2, 6
+    attn = [torch.softmax(torch.randn(B, H, T, T), dim=-1) for _ in range(4)]
+    out = attention_rollout(attn)
+    row_sums = out.sum(dim=-1)
+    assert torch.allclose(row_sums, torch.ones(B), atol=1e-5)
+
+
+def test_attention_rollout_uniform_symmetric():
+    """Uniform attention → all non-CLS patch positions have equal saliency.
+
+    Adding identity for the residual stream biases the first (CLS) position,
+    but all other positions must be symmetric under patch permutation.
+    """
+    B, H, T = 1, 3, 5
+    uniform = torch.full((B, H, T, T), 1.0 / T)
+    out = attention_rollout([uniform] * 4)
+    patch_saliency = out[0, 1:]  # exclude index 0 (CLS)
+    assert torch.allclose(
+        patch_saliency,
+        patch_saliency[0].expand_as(patch_saliency),
+        atol=1e-6,
+    )
+
+
+def test_attention_rollout_with_grads_shape():
+    """GMAR with grads should return same shape as uniform rollout."""
+    torch.manual_seed(2)
+    B, H, T = 2, 3, 7
+    attn = [torch.softmax(torch.randn(B, H, T, T), dim=-1) for _ in range(3)]
+    grads = [torch.randn(B, H, T, T) for _ in range(3)]
+    out_plain = attention_rollout(attn)
+    out_gmar = attention_rollout(attn, grads=grads)
+    assert out_gmar.shape == out_plain.shape
+
+
+def test_attention_rollout_gmar_differs_from_plain():
+    """GMAR should generally differ from uniform rollout when heads have varying magnitudes."""
+    torch.manual_seed(3)
+    B, H, T = 1, 4, 6
+    attn = [torch.softmax(torch.randn(B, H, T, T), dim=-1) for _ in range(3)]
+    # Make one head have much larger gradients → GMAR should be dominated by that head
+    grads = [torch.ones(B, H, T, T) for _ in range(3)]
+    grads[0] = grads[0].clone()
+    grads[0][:, 0] *= 100.0  # head 0 has 100× larger gradient
+    out_plain = attention_rollout(attn)
+    out_gmar = attention_rollout(attn, grads=grads)
+    assert not torch.allclose(out_plain, out_gmar, atol=1e-4)
+
+
+def test_attention_rollout_empty_raises():
+    with pytest.raises(ValueError):
+        attention_rollout([])
+
+
+def test_attention_rollout_3d_input():
+    """(H, T, T) input (no batch dim) should be handled."""
+    torch.manual_seed(4)
+    H, T = 4, 8
+    attn = [torch.softmax(torch.randn(H, T, T), dim=-1) for _ in range(2)]
+    out = attention_rollout(attn)
+    assert out.shape == (1, T)

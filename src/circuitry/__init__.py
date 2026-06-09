@@ -8,17 +8,27 @@ pillar — including SAEFeatureRunner (v1.5) and SAEFeatureEdgeRunner / FeatureA
 integrated-gradients variant; ``resid_post`` + HF results are byte-for-byte identical.
 v1.29 added probing & representation geometry primitives: MDL probing, mass-mean probe,
 RepE direction, directional ablation, local intrinsic dimensionality, cross-model kernel
-alignment, embedding uniformity, and superposition index.)
+alignment, embedding uniformity, and superposition index.
+v1.30 added training diagnostics: update_weight_ratio, finetuning_delta_svd,
+spectral_edge_gap, neural_collapse_score, spectral_collapse_rank, emergence_score,
+and attention_rollout.)
 """
 
 from circuitry.core.activation import (
     embedding_uniformity,
     kernel_alignment,
     local_intrinsic_dim,
+    neural_collapse_score,
     repr_drift,
+    spectral_collapse_rank,
     token_similarity,
 )
-from circuitry.core.dynamics import fourier_feature_alignment, information_bottleneck_score
+from circuitry.core.attention import attention_rollout
+from circuitry.core.dynamics import (
+    emergence_score,
+    fourier_feature_alignment,
+    information_bottleneck_score,
+)
 from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
@@ -32,8 +42,15 @@ from circuitry.core.probe import (
     train_linear_probe,
     verify_linear_representation,
 )
+from circuitry.core.spectral import spectral_edge_gap
 from circuitry.core.steer import directional_ablation, repe_direction, steer_vector
-from circuitry.core.weight import direction_cosine, update_delta
+from circuitry.core.weight import (
+    FinetuningDeltaResult,
+    direction_cosine,
+    finetuning_delta_svd,
+    update_delta,
+    update_weight_ratio,
+)
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.hap import HAPRunner
@@ -48,7 +65,7 @@ from circuitry.recorder.scan import scan_run
 from circuitry.sae.metrics import superposition_index
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.29.0"
+__version__ = "1.30.0"
 
 __all__ = [
     "CausalScrubResult",
@@ -58,6 +75,7 @@ __all__ = [
     "DASResult",
     "DASRunner",
     "EraseProjection",
+    "FinetuningDeltaResult",
     "HookPoint",
     "LayerPrediction",
     "LinearProbe",
@@ -76,11 +94,14 @@ __all__ = [
     "HAPRunner",
     "apply_ablation",
     "apply_steer",
+    "attention_rollout",
     "build_report",
     "direction_cosine",
     "directional_ablation",
     "discover",
+    "emergence_score",
     "embedding_uniformity",
+    "finetuning_delta_svd",
     "fourier_feature_alignment",
     "future_lens_kl",
     "information_bottleneck_score",
@@ -90,14 +111,18 @@ __all__ = [
     "logit_lens_distributions",
     "mass_mean_probe",
     "mdl_probe",
+    "neural_collapse_score",
     "register_recipe",
     "repe_direction",
     "repr_drift",
     "scan_run",
+    "spectral_collapse_rank",
+    "spectral_edge_gap",
     "steer_vector",
     "superposition_index",
     "token_similarity",
     "train_linear_probe",
     "update_delta",
+    "update_weight_ratio",
     "verify_linear_representation",
 ]

@@ -223,3 +223,92 @@ def attention_pattern_entropy(
         entropy = entropy.masked_fill(~mask, float("nan"))
     # NaN-aware per-head mean over (batch, query) — drops fully-masked PAD rows.
     return torch.nanmean(entropy, dim=(0, 2)).tolist()
+
+
+def attention_rollout(
+    attn_weights: list[Any],
+    *,
+    grads: list[Any] | None = None,
+    discard_ratio: float = 0.0,
+) -> torch.Tensor:
+    """Recursive attention rollout — patch-level saliency map for ViTs.
+
+    Accumulates attention across layers by multiplying attention matrices with
+    a residual-stream identity term at each layer.  The optional ``grads``
+    parameter enables Gradient-weighted Multi-head Attention Rollout (GMAR):
+    each head's contribution is weighted by the magnitude of the gradient of
+    the loss with respect to that head's attention weights before averaging.
+
+    **Uniform rollout** (Abnar & Zuidema 2020): at each layer compute
+    ``A_hat = A + I`` (add identity for the skip connection), row-normalise,
+    and multiply through layers: ``R = A_hat_L @ … @ A_hat_1``.  The first
+    row of ``R`` gives the attention map from the CLS token to all patches.
+
+    **GMAR** (gradient-weighted): for each head, weight its attention matrix by
+    ``mean(|grad|)`` before averaging over heads.
+
+    Args:
+        attn_weights: list of per-layer attention weight tensors, each of shape
+            ``(B, H, T, T)`` (batch, heads, queries, keys).  Layers are given
+            in bottom-to-top order (first element = first layer).
+        grads:        optional list of gradient tensors, same shapes as
+            ``attn_weights``.  When provided, each head's matrix is weighted by
+            ``mean(|grad|)`` over the spatial dimensions before averaging.
+        discard_ratio: fraction of the lowest attention values to zero out at
+            each layer before rollout (noise suppression; default 0 = off).
+
+    Returns:
+        ``(B, T)`` float tensor — saliency of each token/patch for each sample
+        in the batch.  ``T`` includes the CLS token at index 0 (for standard
+        ViT tokenisation); the patch saliency is ``result[:, 1:]``.
+
+    Reference:
+        Abnar & Zuidema 2020, ACL "Quantifying Attention Flow in Transformers".
+        GMAR: arXiv:2504.19414 "Gradient-weighted Multi-head Attention Rollout".
+    """
+    if not attn_weights:
+        raise ValueError("attention_rollout: attn_weights must be non-empty")
+
+    def _prep(a: Any) -> torch.Tensor:
+        t = torch.as_tensor(a).detach().to(torch.float32)
+        if t.ndim == 3:  # (H, T, T) — add batch dim
+            t = t.unsqueeze(0)
+        return t  # (B, H, T, T)
+
+    layers_a = [_prep(a) for a in attn_weights]
+    B, H, T, _ = layers_a[0].shape
+
+    layers_g: list[torch.Tensor] | None = None
+    if grads is not None:
+        layers_g = [_prep(g) for g in grads]
+
+    result = torch.eye(T, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1).clone()  # (B, T, T)
+
+    for idx, A in enumerate(layers_a):
+        # --- per-head weighting (GMAR) ---
+        if layers_g is not None:
+            g = layers_g[idx]  # (B, H, T, T)
+            head_weight = g.abs().mean(dim=(-2, -1), keepdim=True)  # (B, H, 1, 1)
+            head_weight = head_weight / (head_weight.sum(dim=1, keepdim=True) + 1e-12)
+            A_eff = (A * head_weight).sum(dim=1)  # (B, T, T)
+        else:
+            A_eff = A.mean(dim=1)  # (B, T, T)
+
+        # Discard lowest-attention values
+        if discard_ratio > 0.0:
+            flat = A_eff.flatten(start_dim=1)  # (B, T*T)
+            n_discard = int(flat.shape[1] * discard_ratio)
+            if n_discard > 0:
+                threshold, _ = flat.kthvalue(n_discard + 1, dim=1)  # (B,)
+                mask = A_eff < threshold.unsqueeze(-1).unsqueeze(-1)
+                A_eff = A_eff.masked_fill(mask, 0.0)
+
+        # Add residual (identity) and row-normalise
+        A_hat = A_eff + torch.eye(T, dtype=A_eff.dtype).unsqueeze(0)
+        row_sum = A_hat.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        A_hat = A_hat / row_sum
+
+        result = A_hat @ result
+
+    # Return saliency: first row = CLS→all tokens
+    return result[:, 0, :]  # (B, T)

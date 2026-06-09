@@ -361,3 +361,67 @@ def information_bottleneck_score(
     score = mi / (h_y + eps)
     # Clip to [0, 1]
     return float(min(max(score, 0.0), 1.0))
+
+
+
+def emergence_score(
+    series: list[tuple[int, float]],
+    *,
+    window: int = 5,
+    eps: float = 1e-12,
+) -> float:
+    """Smoothed second log-derivative of a scalar training series.
+
+    Computes ``d²M / d(log step)²`` — the second derivative of the metric with
+    respect to log-step.  A sharp spike indicates a sudden non-linear
+    acceleration: the emergence signature of a capability appearing abruptly.
+
+    Contrast with :func:`phase_transition_steps` (which detects *any* sharp
+    change, smooth or abrupt, via a bilateral-mean filter): this function
+    specifically quantifies how *curved* the metric is on a log-step axis,
+    which is the appropriate axis for emergent-capability detection (Wei et al.
+    2022 found emergence on log-FLOPs scales).
+
+    Args:
+        series: List of ``(step, value)`` pairs, sorted ascending by step.
+        window: Smoothing half-width (triangular window); reduces noise.
+        eps:    Guard for log(0) and division by zero.
+
+    Returns:
+        Maximum absolute value of the smoothed second log-derivative.
+        Returns 0.0 for series shorter than 3 points.
+
+    Reference: arXiv:2508.04401 "Measuring Emergence"; Wei et al. 2022
+               "Emergent Abilities of Large Language Models".
+    """
+    import math as _math
+
+    if len(series) < 3:
+        return 0.0
+
+    steps, values = zip(*sorted(series, key=lambda x: x[0]))
+    log_steps = [_math.log(max(s, 1)) for s in steps]
+    vals = list(values)
+    n = len(vals)
+
+    # Triangular moving average
+    def _smooth(arr: list[float]) -> list[float]:
+        out = []
+        for i in range(len(arr)):
+            lo, hi = max(0, i - window), min(len(arr), i + window + 1)
+            out.append(sum(arr[lo:hi]) / (hi - lo))
+        return out
+
+    sv = _smooth(vals)
+    ls = log_steps  # already smooth (log is monotone)
+
+    # First derivative: dM / d(log step) via finite differences
+    d1 = [(sv[i + 1] - sv[i]) / (ls[i + 1] - ls[i] + eps) for i in range(n - 1)]
+
+    # Second derivative: d²M / d(log step)²
+    ls_mid = [(ls[i] + ls[i + 1]) / 2 for i in range(n - 1)]
+    d2 = [(d1[i + 1] - d1[i]) / (ls_mid[i + 1] - ls_mid[i] + eps) for i in range(len(d1) - 1)]
+
+    if not d2:
+        return 0.0
+    return float(max(abs(v) for v in d2))
