@@ -11,7 +11,10 @@ RepE direction, directional ablation, local intrinsic dimensionality, cross-mode
 alignment, embedding uniformity, and superposition index.
 v1.30 added training diagnostics: update_weight_ratio, finetuning_delta_svd,
 spectral_edge_gap, neural_collapse_score, spectral_collapse_rank, emergence_score,
-and attention_rollout.)
+and attention_rollout.
+v1.31 added SAE quality & steering: sae_downstream_loss, sae_influence_scores,
+fgaa_steering_vector, rlace_erase, p_anneal/hierarchical_topk arch support, and
+UNRELIABLE_METRICS guard.)
 """
 
 from circuitry.core.activation import (
@@ -30,7 +33,7 @@ from circuitry.core.dynamics import (
     information_bottleneck_score,
 )
 from circuitry.patching.sae_features import CrosscoderWrapper
-from circuitry.core.erase import EraseProjection, leace_erase
+from circuitry.core.erase import EraseProjection, leace_erase, rlace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
 from circuitry.core.probe import (
@@ -62,10 +65,12 @@ from circuitry.recorder.hooks import HookPoint, StepContext, TensorSource
 from circuitry.recorder.live import Recorder
 from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
-from circuitry.sae.metrics import superposition_index
+from circuitry.sae.metrics import sae_downstream_loss, superposition_index
+from circuitry.sae.grad import sae_influence_scores
+from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.30.0"
+__version__ = "1.31.0"
 
 __all__ = [
     "CausalScrubResult",
@@ -106,7 +111,11 @@ __all__ = [
     "future_lens_kl",
     "information_bottleneck_score",
     "kernel_alignment",
+    "fgaa_steering_vector",
     "leace_erase",
+    "rlace_erase",
+    "sae_downstream_loss",
+    "sae_influence_scores",
     "local_intrinsic_dim",
     "logit_lens_distributions",
     "mass_mean_probe",

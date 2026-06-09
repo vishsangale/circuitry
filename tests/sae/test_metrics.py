@@ -155,3 +155,130 @@ def test_superposition_index_nd_input():
     si = superposition_index(feat)
     assert isinstance(si, float)
     assert si >= 1.0
+
+
+# ---------------------------------------------------------------------------
+# UNRELIABLE_METRICS / warn_if_unreliable tests (v1.31)
+# ---------------------------------------------------------------------------
+
+import warnings
+from circuitry.sae.metrics import UNRELIABLE_METRICS, warn_if_unreliable
+
+
+def test_unreliable_metrics_contains_tpp_scr():
+    assert "tpp" in UNRELIABLE_METRICS
+    assert "scr" in UNRELIABLE_METRICS
+
+
+def test_warn_if_unreliable_emits_warning():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        warn_if_unreliable("tpp")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "tpp" in str(w[0].message)
+
+
+def test_warn_if_unreliable_no_warning_for_safe_metric():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        warn_if_unreliable("recon_mse")
+    assert len(w) == 0
+
+
+def test_unreliable_metrics_is_frozenset():
+    assert isinstance(UNRELIABLE_METRICS, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# sae_downstream_loss tests (v1.31)
+# ---------------------------------------------------------------------------
+
+import torch.nn as nn
+import torch.nn.functional as F
+from circuitry.sae.metrics import sae_downstream_loss
+from circuitry.patching.sites import Site, HFSiteResolver
+
+
+class _TinyLM(nn.Module):
+    """Minimal 1-layer LM with .config for resolver."""
+
+    class _Config:
+        n_heads = 1
+        d_model = 8
+        layer_pattern = "layers.{L}"
+        mlp_module = ""
+
+    def __init__(self, d: int = 8, vocab: int = 16) -> None:
+        super().__init__()
+        self.config = self._Config()
+        self.layers = nn.ModuleList([nn.Linear(d, d, bias=False)])
+        self.head = nn.Linear(d, vocab, bias=False)
+        self.d = d
+
+    def forward(self, x):
+        h = self.layers[0](x.float())
+        return self.head(h)
+
+
+class _IdentitySAESimple:
+    device = torch.device("cpu")
+    dtype = torch.float32
+    def encode(self, x): return x
+    def decode(self, f): return f
+
+
+class _ZeroSAE:
+    device = torch.device("cpu")
+    dtype = torch.float32
+    def encode(self, x): return torch.zeros_like(x)
+    def decode(self, f): return torch.zeros_like(f)
+
+
+def _make_resolver(d=8):
+    return HFSiteResolver(n_heads=1, d_model=d, layer_pattern="layers.{L}", mlp_module="")
+
+
+def test_sae_downstream_loss_identity_sae_near_zero_kl():
+    """Identity SAE → output unchanged → KL ≈ 0."""
+    torch.manual_seed(0)
+    model = _TinyLM()
+    tokens = torch.randn(1, 4, 8)
+    resolver = _make_resolver()
+    site = Site(component="resid_post", layer=0)
+    out = sae_downstream_loss(_IdentitySAESimple(), model, tokens, site=site, resolver=resolver)
+    assert out["kl_divergence"] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_sae_downstream_loss_zero_sae_nonzero_kl():
+    """Zero SAE replaces activations with zeros → meaningful KL divergence."""
+    torch.manual_seed(1)
+    model = _TinyLM()
+    tokens = torch.randn(1, 4, 8)
+    resolver = _make_resolver()
+    site = Site(component="resid_post", layer=0)
+    out = sae_downstream_loss(_ZeroSAE(), model, tokens, site=site, resolver=resolver)
+    assert out["kl_divergence"] > 0.0
+
+
+def test_sae_downstream_loss_returns_required_keys():
+    torch.manual_seed(2)
+    model = _TinyLM()
+    tokens = torch.randn(1, 2, 8)
+    resolver = _make_resolver()
+    site = Site(component="resid_post", layer=0)
+    out = sae_downstream_loss(_IdentitySAESimple(), model, tokens, site=site, resolver=resolver)
+    assert set(out.keys()) == {"kl_divergence", "ce_delta", "l0"}
+    for v in out.values():
+        assert isinstance(v, float)
+
+
+def test_sae_downstream_loss_l0_identity():
+    """Identity SAE: all features active → L0 = d_model."""
+    torch.manual_seed(3)
+    model = _TinyLM()
+    tokens = torch.randn(1, 3, 8)
+    resolver = _make_resolver()
+    site = Site(component="resid_post", layer=0)
+    out = sae_downstream_loss(_IdentitySAESimple(), model, tokens, site=site, resolver=resolver)
+    assert out["l0"] == pytest.approx(8.0, abs=0.1)

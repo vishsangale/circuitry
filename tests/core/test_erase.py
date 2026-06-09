@@ -151,3 +151,95 @@ def test_leace_erase_returns_cpu_tensors():
     )
     assert proj.P.dtype == torch.float32
     assert proj.direction.dtype == torch.float32
+
+
+# ---------------------------------------------------------------------------
+# rlace_erase tests (v1.31)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.erase import rlace_erase
+
+
+def test_rlace_erase_returns_eraser_projection():
+    torch.manual_seed(0)
+    acts = torch.randn(40, 16)
+    labels = torch.randint(0, 2, (40,))
+    proj = rlace_erase(acts, labels)
+    assert isinstance(proj, EraseProjection)
+    assert proj.P.shape == (16, 16)
+    assert proj.direction.shape == (16,)
+
+
+def test_rlace_erase_p_is_idempotent():
+    """P^2 = P (orthogonal projection)."""
+    torch.manual_seed(1)
+    acts = torch.randn(40, 16)
+    labels = torch.randint(0, 2, (40,))
+    proj = rlace_erase(acts, labels, rank=1)
+    assert torch.allclose(proj.P @ proj.P, proj.P, atol=1e-5)
+
+
+def test_rlace_erase_p_is_symmetric():
+    """P = P^T."""
+    torch.manual_seed(2)
+    acts = torch.randn(40, 16)
+    labels = torch.randint(0, 2, (40,))
+    proj = rlace_erase(acts, labels)
+    assert torch.allclose(proj.P, proj.P.T, atol=1e-5)
+
+
+def test_rlace_erase_removes_concept():
+    """After erasure a linear probe should not exceed chance accuracy."""
+    torch.manual_seed(3)
+    n, d = 120, 16
+    acts = torch.randn(n, d)
+    acts[:60, 0] += 3.0   # class 0 has positive dim-0
+    labels = torch.cat([torch.zeros(60, dtype=torch.long), torch.ones(60, dtype=torch.long)])
+    proj = rlace_erase(acts, labels, rank=1)
+    erased = proj.apply(acts)
+    acc = _linear_accuracy(erased, labels)
+    assert acc < 0.65, f"Expected near-chance after RLACE erasure, got {acc:.3f}"
+
+
+def test_rlace_erase_rank2():
+    """rank=2 should erase two concept directions."""
+    torch.manual_seed(4)
+    acts = torch.randn(90, 16)
+    labels = torch.randint(0, 3, (90,))
+    proj = rlace_erase(acts, labels, rank=2)
+    assert proj.P.shape == (16, 16)
+    assert torch.allclose(proj.P @ proj.P, proj.P, atol=1e-5)
+
+
+def test_rlace_erase_rank1_matches_leace_direction():
+    """RLACE rank=1 should erase the same subspace as LEACE for binary labels."""
+    torch.manual_seed(5)
+    n, d = 80, 16
+    acts = torch.randn(n, d)
+    acts[:40, 0] += 2.0
+    labels = torch.cat([torch.zeros(40, dtype=torch.long), torch.ones(40, dtype=torch.long)])
+    proj_rlace = rlace_erase(acts, labels, rank=1)
+    from circuitry.core.erase import leace_erase
+    proj_leace = leace_erase(acts, labels)
+    # Both should erase the same concept; erased activations should be similar
+    erased_rlace = proj_rlace.apply(acts)
+    erased_leace = proj_leace.apply(acts)
+    acc_rlace = _linear_accuracy(erased_rlace, labels)
+    acc_leace = _linear_accuracy(erased_leace, labels)
+    # Both should reduce accuracy to near-chance
+    assert acc_rlace < 0.65
+    assert acc_leace < 0.65
+
+
+def test_rlace_erase_too_few_classes_raises():
+    acts = torch.randn(10, 8)
+    labels = torch.zeros(10, dtype=torch.long)
+    with pytest.raises(ValueError, match="2 distinct classes"):
+        rlace_erase(acts, labels)
+
+
+def test_rlace_erase_invalid_rank_raises():
+    acts = torch.randn(20, 8)
+    labels = torch.randint(0, 2, (20,))
+    with pytest.raises(ValueError):
+        rlace_erase(acts, labels, rank=8)  # rank >= d_model

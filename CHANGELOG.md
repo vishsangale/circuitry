@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] — 2026-06-09
+
+**SAE Quality & Steering.**
+
+### Added
+- **`core/erase.py`** — `rlace_erase(acts, labels, *, rank=1) → EraseProjection`: rank-k
+  adversarial concept erasure (Ravfogel et al. ICML 2022, arXiv:2201.12091). Finds `P = I − U Uᵀ`
+  where U spans the top-`rank` eigenvectors of the between-class scatter `B = M_c^T M_c`; for
+  `rank=1` recovers the LEACE direction.
+- **`sae/metrics.py`** — `UNRELIABLE_METRICS: frozenset` containing `{"tpp", "scr"}` — a
+  frozen guard for metrics with high-variance estimates on standard SAE benchmarks.
+  `warn_if_unreliable(metric_name)`: emits a `UserWarning` when `metric_name ∈ UNRELIABLE_METRICS`.
+  `sae_downstream_loss(sae, model, tokens, *, site, resolver=None) → dict`: KL-faithfulness
+  metric — runs the model clean then with a SAE hook at `site`, returns
+  `{"kl_divergence", "ce_delta", "l0"}`.
+- **`sae/grad.py`** — `sae_influence_scores(sae, x, loss_fn) → Tensor`: GradSAE per-feature
+  influence `|∂loss/∂f_i| · |f_i|`, mean over batch/positions (arXiv:2505.08080). `p_anneal`
+  and `hierarchical_topk` added to `SUPPORTED_SAE_ARCHITECTURES`.
+- **`sae/steer.py`** (new module) — `fgaa_steering_vector(sae, positive_acts, negative_acts, *,
+  n_features=10) → Tensor`: Feature-Guided Activation Addition — selects top-`n_features`
+  discriminative SAE features by `|mean_pos − mean_neg|` and returns a weighted sum of their
+  decoder columns as a `(d_model,)` CPU float32 steering vector (arXiv:2501.09929).
+- All 4 new top-level names (`rlace_erase`, `sae_downstream_loss`, `sae_influence_scores`,
+  `fgaa_steering_vector`) exported at `circuitry.*`; version bumped to `1.31.0`.
+- Tests: ~35 new tests across test_erase (rlace_erase), test_metrics (UNRELIABLE_METRICS +
+  sae_downstream_loss), test_grad (sae_influence_scores), test_steer (fgaa_steering_vector),
+  test_sae_architectures (p_anneal + hierarchical_topk), test_public_api.
+
+---
+
 ## [1.30.0] — 2026-06-09
 
 **Training Diagnostics.**

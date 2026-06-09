@@ -95,3 +95,81 @@ def leace_erase(
         P=P.detach(),
         direction=d_hat.detach(),
     )
+
+
+def rlace_erase(
+    acts: Tensor,
+    labels: Tensor,
+    *,
+    rank: int = 1,
+) -> EraseProjection:
+    """Rank-k adversarial concept erasure (RLACE).
+
+    Finds the rank-``rank`` orthogonal projection P = I − U Uᵀ (where U is a
+    ``(d_model, rank)`` column-orthonormal matrix) that maximally removes a
+    concept from a linear classifier.  The adversarially optimal subspace to
+    erase is spanned by the top-``rank`` eigenvectors of the between-class
+    scatter matrix B = M_c^T M_c (where M_c is the matrix of centred class
+    means).
+
+    For ``rank=1`` this recovers the LEACE direction (same subspace; different
+    derivation from the adversarial perspective).
+
+    For multi-class labels with ``rank > 1``, RLACE finds the subspace that
+    most aggressively removes all concept information detectable by a linear
+    probe — orthogonalising out the top-``rank`` directions of inter-class
+    variance simultaneously.
+
+    Args:
+        acts:   ``(n, d_model)`` float activation tensor.
+        labels: ``(n,)`` integer class labels (≥ 2 classes required).
+        rank:   Number of directions to erase.  Must satisfy
+                ``1 ≤ rank < d_model``.
+
+    Returns:
+        :class:`EraseProjection` where ``.direction`` is the first erased
+        direction (the leading eigenvector) and ``.P`` is the full rank-``rank``
+        orthogonal projection ``I − U Uᵀ``.
+
+    Reference: Ravfogel et al. ICML 2022 "Linear Adversarial Concept Erasure"
+               arXiv:2201.12091.
+    """
+    acts_f32 = acts.detach().to(torch.float32).cpu()
+    labels_cpu = labels.detach().cpu()
+
+    classes = torch.unique(labels_cpu)
+    n_classes = int(classes.shape[0])
+    d_model = acts_f32.shape[-1]
+
+    if n_classes < 2:
+        raise ValueError(
+            f"rlace_erase: labels must have >= 2 distinct classes, got {n_classes}"
+        )
+    if rank < 1 or rank >= d_model:
+        raise ValueError(
+            f"rlace_erase: rank must satisfy 1 <= rank < d_model={d_model}, got rank={rank}"
+        )
+    rank = min(rank, n_classes - 1)  # can't erase more than n_classes-1 directions
+
+    # Between-class scatter: B = M_c^T M_c where M_c = centred class means
+    class_means = torch.stack(
+        [acts_f32[labels_cpu == int(c.item())].mean(0) for c in classes],
+        dim=0,
+    )  # (C, d_model)
+    M_c = class_means - class_means.mean(0)  # centred class means (C, d_model)
+    B = M_c.T @ M_c  # (d_model, d_model) between-class scatter
+
+    # Top-rank eigenvectors of B = the adversarially optimal subspace to erase
+    # torch.linalg.eigh returns eigenvalues in ascending order → last `rank` are top
+    eigvals, eigvecs = torch.linalg.eigh(B)  # eigvecs: (d_model, d_model)
+    U = eigvecs[:, -rank:]  # (d_model, rank) — top eigenvectors
+
+    # Orthogonalise U via QR to ensure exact orthonormality
+    U, _ = torch.linalg.qr(U)
+
+    P = torch.eye(d_model, dtype=torch.float32) - U @ U.T
+
+    return EraseProjection(
+        P=P.detach(),
+        direction=U[:, 0].detach(),  # first erased direction
+    )

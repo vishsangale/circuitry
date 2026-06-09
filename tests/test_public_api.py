@@ -72,6 +72,10 @@ def test_public_surface():
         "update_weight_ratio",
         # SAE
         "superposition_index",
+        "sae_downstream_loss",
+        "sae_influence_scores",
+        "fgaa_steering_vector",
+        "rlace_erase",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

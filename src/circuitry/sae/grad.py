@@ -21,8 +21,10 @@ SUPPORTED_SAE_ARCHITECTURES = frozenset({
     "topk",
     "jumprelu",
     "gated",
-    "matryoshka",   # Bussmann et al. 2025, arxiv:2503.17547
-    "batch_topk",   # batch-level TopK; gradient path identical to topk
+    "matryoshka",       # Bussmann et al. 2025, arxiv:2503.17547
+    "batch_topk",       # batch-level TopK; gradient path identical to topk
+    "p_anneal",         # p-annealing ReLU; inference pass identical to standard
+    "hierarchical_topk", # HierarchicalTopK; inference pass identical to topk
 })
 
 _BLOCKED_ARCHITECTURES = frozenset({
@@ -96,6 +98,62 @@ def decode_features(sae: Any, f: Tensor) -> Tensor:
     Calls sae.decode under normal autograd — NO inference_mode / no_grad / detach.
     """
     return sae.decode(f)
+
+
+def sae_influence_scores(
+    sae: Any,
+    x: Tensor,
+    loss_fn: "Callable[[Tensor], Tensor]",
+) -> Tensor:
+    """GradSAE per-feature influence scores: ``|∂loss/∂f_i| · |f_i|``.
+
+    Weights feature activation magnitude by the magnitude of the output-side
+    gradient.  This filters "active but irrelevant" features (high ``|f_i|``
+    but near-zero gradient, e.g. punctuation or positional features) and
+    surfaces features that causally drive the loss objective.
+
+    Args:
+        sae:     SAE object with ``.encode`` / ``.decode``.
+        x:       ``(n, d_model)`` or ``(b, s, d_model)`` activation tensor.
+                 Must require grad or be leaf; the function enables grad internally.
+        loss_fn: callable ``(x_hat: Tensor) → scalar Tensor``.  The loss is
+                 evaluated on the SAE reconstruction of ``x``.  Example:
+                 ``lambda x_hat: F.cross_entropy(model(x_hat), labels)``.
+
+    Returns:
+        ``(n_features,)`` float tensor of influence scores (mean over batch /
+        sequence positions).  Detached CPU float32.
+
+    Reference: arXiv:2505.08080 "GradSAE: Gradient-Weighted SAE Features".
+    """
+    from collections.abc import Callable  # local import avoids circular at top level
+
+    x_in = _device_dtype_align(x, sae)
+    if not x_in.requires_grad:
+        x_in = x_in.detach().requires_grad_(True)
+
+    f = sae.encode(x_in)           # (... d_sae)
+    x_hat = sae.decode(f)          # (... d_model)
+    loss = loss_fn(x_hat)
+    loss.backward()
+
+    # ∂loss/∂f via chain rule: ∂loss/∂x_hat is x_in.grad (since x_hat = decode(f)
+    # and f = encode(x_in)). But we need the gradient w.r.t. f directly.
+    # Rerun with f requiring grad.
+    x_in2 = x_in.detach()
+    f2 = sae.encode(x_in2)
+    f2 = f2.detach().requires_grad_(True)
+    x_hat2 = sae.decode(f2)
+    loss2 = loss_fn(x_hat2)
+    loss2.backward()
+
+    grad_f = f2.grad  # (... d_sae)
+    f_detached = f2.detach()
+
+    # influence = |∂loss/∂f_i| * |f_i|, mean over all positions
+    scores = (grad_f.abs() * f_detached.abs())
+    flat = scores.reshape(-1, scores.shape[-1])
+    return flat.mean(0).detach().cpu().float()
 
 
 def sae_decompose(sae: Any, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:

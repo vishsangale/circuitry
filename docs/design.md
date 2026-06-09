@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-08
+**Last updated:** 2026-06-09
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -234,18 +234,27 @@ probe.mass_mean_probe(acts: Tensor, labels: Tensor) -> MassMeanProbe  # Marks & 
 # linear representation verification (v1.29)
 probe.verify_linear_representation(probe, steer_vec: Tensor) -> float  # Park et al. arXiv:2311.03658; cosine(probe.direction(), steer_vec); handles dimension mismatch by truncation
 
-# concept erasure / LEACE (v1.24)
+# concept erasure / LEACE (v1.24) / RLACE (v1.31)
 from circuitry.core import erase
 erase.leace_erase(acts: Tensor, labels: Tensor) -> EraseProjection  # Park et al. 2023 LEACE
 # binary: d = μ₁−μ₀ normalised, P = I − d_hat d_hat^T
 # multiclass: first right singular vector of between-class mean matrix
 # EraseProjection: .P (Tensor), .direction (Tensor), .apply(acts) → Tensor (broadcast to (..., d_model))
+erase.rlace_erase(acts: Tensor, labels: Tensor, *, rank: int = 1) -> EraseProjection  # (v1.31) Ravfogel et al. ICML 2022 RLACE
+# rank-k adversarial concept erasure: P = I − U Uᵀ where U spans top-rank eigenvectors of
+# between-class scatter B = M_c^T M_c; rank=1 recovers the LEACE direction;
+# .direction = first erased direction (leading eigenvector)
 
 # SAE workflow (v0.9)
 from circuitry import sae
 sae.load_sae(release: str, sae_id: str, device: str = "cpu")
 sae.sae_reconstruction_error(x: Tensor, sae) -> dict[str, float]
 sae.metrics.superposition_index(feature_acts: Tensor) -> float  # (v1.29) exp(H(|feature_acts|.flatten())); >> n_neurons → superposition; 1.0 if all zero or single feature active; arXiv:2512.13568
+sae.metrics.UNRELIABLE_METRICS: frozenset  # (v1.31) frozenset{"tpp", "scr"} — metrics whose estimates have high variance on standard SAE benchmarks
+sae.metrics.warn_if_unreliable(metric_name: str)  # (v1.31) emits UserWarning if metric_name ∈ UNRELIABLE_METRICS
+sae.metrics.sae_downstream_loss(sae, model, tokens, *, site: Site, resolver=None) -> dict[str, float]  # (v1.31) KL-faithfulness: run model clean + with SAE hook; returns {"kl_divergence", "ce_delta", "l0"}
+sae.grad.sae_influence_scores(sae, x: Tensor, loss_fn: Callable[[Tensor], Tensor]) -> Tensor  # (v1.31) GradSAE |∂loss/∂f_i|·|f_i|; mean over batch/positions; arXiv:2505.08080
+sae.steer.fgaa_steering_vector(sae, positive_acts: Tensor, negative_acts: Tensor, *, n_features: int = 10) -> Tensor  # (v1.31) FGAA steering: top-n discriminative decoder columns weighted by signed mean diff; (d_model,) CPU float32; arXiv:2501.09929
 
 # SAE feature attribution — differentiable encode/decode helpers (v1.5)
 # These wrap sae.encode / sae.decode under NORMAL autograd (no inference_mode/detach),
@@ -253,7 +262,7 @@ sae.metrics.superposition_index(feature_acts: Tensor) -> float  # (v1.29) exp(H(
 sae.encode_features(sae, x: Tensor) -> Tensor
 sae.decode_features(sae, f: Tensor) -> Tensor
 sae.sae_decompose(sae, x: Tensor) -> tuple[Tensor, Tensor, Tensor]   # (f, x_hat, eps=(x-x_hat).detach())
-sae.assert_supported_sae(sae) -> None                                # gate: standard/topk/jumprelu/gated/matryoshka/batch_topk (v1.26); raw crosscoder blocked — use CrosscoderWrapper
+sae.assert_supported_sae(sae) -> None                                # gate: standard/topk/jumprelu/gated/matryoshka/batch_topk/p_anneal/hierarchical_topk (v1.31); raw crosscoder blocked — use CrosscoderWrapper
 sae.load_gemma_scope(model_size: str, layer: int, width: int, *, site: str = "res", average_l0=None, device: str = "cpu")  # (v1.26) convenience wrapper for Gemma Scope JumpReLU SAEs (Lieberum et al. arxiv:2408.05147)
 sae.load_llama_scope(layer: int, width: int, *, device: str = "cpu")  # (v1.26) convenience wrapper for Llama Scope JumpReLU SAEs
 
