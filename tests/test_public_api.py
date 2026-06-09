@@ -98,6 +98,11 @@ def test_public_surface():
         "HyperDASNet",
         "HyperDASResult",
         "HyperDASRunner",
+        # Logit Decomposition + Causal Tracing (v1.36)
+        "LogitDecompositionResult",
+        "logit_decomposition",
+        "CausalTraceResult",
+        "CausalTraceRunner",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

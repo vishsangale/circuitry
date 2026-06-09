@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] — 2026-06-09
+
+**Logit decomposition + causal tracing.**
+
+### Added
+- **`core/decompose.py`** (new module) — `logit_decomposition(components, unembed, token_a, token_b, *, position, ln_scale, ln_bias) → LogitDecompositionResult`:
+  decomposes `logit[token_a] − logit[token_b]` into per-component contributions by
+  projecting each residual-stream component onto the logit-difference direction
+  `W_U[:,token_a] − W_U[:,token_b]`.  Optional linear LayerNorm approximation via
+  `ln_scale`.  Components sum exactly to the true logit diff (no LN) or approximately
+  with LN folding.  `LogitDecompositionResult` exposes `.ranked()`, `.top_k(k)`,
+  `.to_markdown()`.  Based on the Transformer Circuits framework
+  (Elhage et al. 2021).  12 new tests in `tests/core/test_logit_decompose.py`.
+- **`patching/causal_trace.py`** (new module) — `CausalTraceRunner(model, *, modules,
+  module_names, module_pattern)`, `CausalTraceResult`: implements the ROME causal
+  tracing experiment (Meng et al. NeurIPS 2022, arXiv:2202.05262).  For each candidate
+  module, patches the clean hidden state back into the corrupted forward pass and
+  measures metric recovery, normalised to `(patched − corrupted) / (clean − corrupted)`.
+  Accepts either an explicit module list or a regex `module_pattern`.
+  `CausalTraceResult` exposes `.top_layers(k)`, `.to_markdown()`.
+  12 new tests in `tests/patching/test_causal_trace.py`.
+
 ## [1.35.0] — 2026-06-09
 
 **DAAM cross-attention attribution + HyperDAS input-conditioned alignment search.**

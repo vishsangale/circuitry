@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from circuitry.patching.acdc import ACDCResult, ACDCRunner
 from circuitry.patching.atp import AtPNode, AtPResult, AtPRunner
+from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
 from circuitry.patching.cd import CDResult, cd_token_contributions
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
@@ -37,6 +38,8 @@ __all__ = [
     "AtPNode",
     "AtPResult",
     "AtPRunner",
+    "CausalTraceResult",
+    "CausalTraceRunner",
     "CDResult",
     "CLTEdge",
     "CLTGraphResult",

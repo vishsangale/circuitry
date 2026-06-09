@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-09 (v1.35.0)
+**Last updated:** 2026-06-09 (v1.36.0)
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -350,6 +350,25 @@ clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
 #   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
 # Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
 # arXiv:2603.21014 (Anthropic attribution graphs)
+
+# Logit Decomposition (v1.36)
+from circuitry.core.decompose import logit_decomposition, LogitDecompositionResult
+logit_decomposition(components, unembed, token_a, token_b, *, position=-1, ln_scale=None, ln_bias=None) -> LogitDecompositionResult
+# components: dict[name -> (batch, seq, d_model) or (batch, d_model)]  residual-stream contributions
+# Projects each component onto W_U[:,token_a] - W_U[:,token_b]; sum == true logit diff (no LN)
+# Optional linear LN approximation via ln_scale (d_model,)
+# LogitDecompositionResult: .scores {str: float}, .ranked(), .top_k(k), .to_markdown()
+# Elhage et al. 2021, https://transformer-circuits.pub/2021/framework/index.html
+
+# Causal Tracing (v1.36)
+from circuitry.patching.causal_trace import CausalTraceRunner, CausalTraceResult
+CausalTraceRunner(model, *, modules=list[nn.Module] | None, module_names=list[str] | None, module_pattern=str | None)
+# .run(clean_inputs, corrupted_inputs, metric) -> CausalTraceResult
+# For each module: patch clean hidden state into corrupted run, measure metric recovery
+# recovery[i] = (patched_score - corrupted_score) / (clean_score - corrupted_score)
+# CausalTraceResult: .recovery (n_layers,), .layer_names, .clean_score, .corrupted_score
+#   .top_layers(k), .to_markdown()
+# Meng et al. 2022 NeurIPS, arXiv:2202.05262
 
 # DAAM cross-attention attribution (v1.35)
 from circuitry.core.attention import daam_attribution
