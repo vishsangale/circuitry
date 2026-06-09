@@ -80,6 +80,14 @@ def test_public_surface():
         "ReLPRunner",
         "CertifiedCircuitResult",
         "CertifiedCircuitRunner",
+        # ITI + CD-T + sharpness (v1.33)
+        "ITIConfig",
+        "fit_iti",
+        "apply_iti",
+        "CDResult",
+        "cd_token_contributions",
+        "critical_sharpness",
+        "gradient_subspace_saturation",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

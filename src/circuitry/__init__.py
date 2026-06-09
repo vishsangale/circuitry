@@ -18,7 +18,11 @@ UNRELIABLE_METRICS guard.
 v1.32 added attribution quality: ReLPRunner (LRP-epsilon edge attribution, arXiv:2508.21258),
 CertifiedCircuitRunner/CertifiedCircuitResult (randomised subsampling stability, arXiv:2602.22968),
 and MIB benchmark additions: load_ravel, load_arithmetic, load_mcqa, mib_circuit_f1,
-mib_iia_score (Mueller et al. ICML 2025).)
+mib_iia_score (Mueller et al. ICML 2025).
+v1.33 added: ITIConfig/fit_iti/apply_iti (Inference-Time Intervention, arXiv:2306.03341),
+CDResult/cd_token_contributions (CD-T contextual decomposition, arXiv:2407.00886),
+critical_sharpness (Hessian sharpness via HVP power iteration, arXiv:2601.16979),
+gradient_subspace_saturation (gradient subspace saturation diagnostic, arXiv:2508.07370).)
 """
 
 from circuitry.core.activation import (
@@ -53,11 +57,15 @@ from circuitry.core.spectral import spectral_edge_gap
 from circuitry.core.steer import directional_ablation, repe_direction, steer_vector
 from circuitry.core.weight import (
     FinetuningDeltaResult,
+    critical_sharpness,
     direction_cosine,
     finetuning_delta_svd,
+    gradient_subspace_saturation,
     update_delta,
     update_weight_ratio,
 )
+from circuitry.patching.cd import CDResult, cd_token_contributions
+from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
@@ -76,13 +84,15 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.32.0"
+__version__ = "1.33.0"
 
 __all__ = [
+    "CDResult",
     "CausalScrubResult",
     "CausalScrubRunner",
     "CertifiedCircuitResult",
     "CertifiedCircuitRunner",
+    "ITIConfig",
     "CircuitHypothesis",
     "CrosscoderWrapper",
     "DASResult",
@@ -107,7 +117,12 @@ __all__ = [
     "EdgePruningRunner",
     "HAPRunner",
     "apply_ablation",
+    "apply_iti",
     "apply_steer",
+    "cd_token_contributions",
+    "critical_sharpness",
+    "fit_iti",
+    "gradient_subspace_saturation",
     "attention_rollout",
     "build_report",
     "direction_cosine",

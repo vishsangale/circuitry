@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] — 2026-06-09
+
+**Inference-Time Diagnostics & Deeper Attribution.**
+
+### Added
+- **`patching/iti.py`** (new module) — `ITIConfig`, `fit_iti(head_acts, labels, *, coeff=15.0)`,
+  `apply_iti(model, config, *, attn_modules, resolver)`: Inference-Time Intervention.
+  Trains per-(layer, head) mass-mean probes on labelled activation data; at inference adds
+  `coeff × direction` to each head's output slice. Direct integration of existing
+  `mass_mean_probe` primitive (arXiv:2306.03341, Li et al.).
+- **`patching/cd.py`** (new module) — `CDResult`, `cd_token_contributions(attn_weights, *,
+  head_agg, add_residual)`: CD-T contextual decomposition. Propagates per-source-token
+  contribution scores through the attention stack via iterative left-multiplication of the
+  aggregated attention matrix; optional 50/50 residual blend models skip connections.
+  Returns `contributions[q, s]` = fraction of position *q* attributable to source *s*
+  (arXiv:2407.00886, Jain et al. ICLR 2025).
+- **`core/weight.py`** additions:
+  - `critical_sharpness(model, loss_fn, *, n_iters=20, tol=1e-4) → float`: largest Hessian
+    eigenvalue λ_max via power iteration using double backpropagation (HVP). High sharpness
+    correlates with poor generalisation (arXiv:2601.16979, Damian et al.).
+  - `gradient_subspace_saturation(grad_history, *, k=10) → float`: fraction of the current
+    gradient lying in the top-*k* principal directions of historical gradients. High
+    saturation = gradient has settled into a low-rank subspace (plasticity loss signal)
+    (arXiv:2508.07370, Chen et al.).
+- 34 new tests across `tests/patching/test_iti.py`, `tests/patching/test_cd.py`,
+  `tests/core/test_critical_sharpness.py`.
+
 ## [1.32.0] — 2026-06-09
 
 **Attribution Quality.**

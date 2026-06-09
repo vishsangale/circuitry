@@ -317,6 +317,26 @@ benchmarks.load_arithmetic(n, *, op, modulus, seed, vocab_size, seq_len) -> MIBT
 benchmarks.load_mcqa(n, *, n_choices, seed, vocab_size, seq_len) -> MIBTask  # multiple-choice Q&A
 benchmarks.mib_circuit_f1(circuit_edges, ground_truth_edges) -> float  # edge-set F1 for MIB localisation leaderboard
 benchmarks.mib_iia_score(das_result, *, threshold=0.5) -> float  # IIA-at-threshold for causal variable localisation
+
+# Inference-Time Intervention + CD-T + sharpness (v1.33)
+from circuitry.patching import iti, cd
+iti.ITIConfig  # dataclass: head_directions {(layer,head): (d_head,) direction}, d_head, coeff
+iti.fit_iti(head_acts, labels, *, coeff=15.0) -> ITIConfig  # train per-head mass-mean probes
+iti.apply_iti(model, config, *, attn_modules, resolver)  # context manager; steers head slices
+# arXiv:2306.03341 Li et al. "Inference-Time Intervention"
+
+cd.CDResult  # .contributions: (seq, seq) tensor — contributions[q, s] = fraction of q from source s
+cd.cd_token_contributions(attn_weights, *, head_agg="mean", add_residual=True) -> CDResult
+# attn_weights: list of (n_heads, seq, seq) or (batch, n_heads, seq, seq) per layer
+# Propagates per-token contributions through attention stack with optional residual blending
+# arXiv:2407.00886 Jain et al. "CD-T: Contextual Decomposition for Transformers" ICLR 2025
+
+from circuitry.core import weight
+weight.critical_sharpness(model, loss_fn, *, n_iters=20, tol=1e-4) -> float
+# Largest Hessian eigenvalue λ_max via power iteration (double backprop / HVP); arXiv:2601.16979
+weight.gradient_subspace_saturation(grad_history, *, k=10) -> float
+# Fraction of current gradient in top-k historical gradient subspace;
+# high = plasticity loss, low = still exploring; arXiv:2508.07370
 ```
 
 Invariants for everything in `core/`:
