@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] — 2026-06-09
+
+**Activation Patch Grid + Gradient-Based Input Attribution.**
+
+### Added
+- **`patching/patch_grid.py`** (new module) — `PatchGridRunner(model, *, modules,
+  module_names, module_pattern)`, `PatchGridResult`: runs activation patching across all
+  `(layer, position)` pairs and returns a `(n_layers, seq_len)` recovery heatmap.  For
+  each cell `(l, p)` the runner patches only position `p` of layer `l`'s output from the
+  clean run into the corrupted forward pass, then measures normalised metric recovery
+  `(patched − corrupted) / (clean − corrupted)`.  `PatchGridResult` exposes `.top_sites(k)`,
+  `.to_markdown()`.  Directly implements the residual-stream patching grid used in circuit
+  papers (Wang et al. 2022 IOI, Hanna et al. 2023 greater-than).  12 new tests in
+  `tests/patching/test_patch_grid.py`.
+- **`core/attribution.py`** (new module):
+  - `gradient_input_attribution(grads, embeds, *, reduction="l2") → Tensor` — per-token
+    gradient × input attribution.  Accepts pre-computed gradient and embedding tensors of
+    shape `(batch, seq, d_model)` or `(batch, d_model)`; reduces over `d_model` via
+    `"l2"` (default, always ≥ 0), `"dot"` (signed), `"abs"` / `"l1"` (sum of absolutes).
+    One backward pass by the caller; pure function here.
+  - `integrated_gradients(model_fn, embeds, *, baseline, n_steps=50, reduction="dot") → Tensor`
+    — Sundararajan et al. 2017 IG (arXiv:1703.01365).  Integrates the gradient of
+    `model_fn` along the path from `baseline` (default: zeros) to `embeds` and multiplies
+    by `embeds − baseline`.  With `reduction="dot"` satisfies the completeness axiom:
+    `attribution.sum() ≈ model_fn(embeds) − model_fn(baseline)`.  `n_steps` trapezoidal
+    integration steps.  13 new tests in `tests/core/test_attribution.py`.
+
 ## [1.36.0] — 2026-06-09
 
 **Logit decomposition + causal tracing.**

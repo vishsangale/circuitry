@@ -103,6 +103,11 @@ def test_public_surface():
         "logit_decomposition",
         "CausalTraceResult",
         "CausalTraceRunner",
+        # Patch Grid + Gradient Attribution (v1.37)
+        "PatchGridResult",
+        "PatchGridRunner",
+        "gradient_input_attribution",
+        "integrated_gradients",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

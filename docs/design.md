@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-09 (v1.36.0)
+**Last updated:** 2026-06-09 (v1.37.0)
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -350,6 +350,30 @@ clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
 #   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
 # Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
 # arXiv:2603.21014 (Anthropic attribution graphs)
+
+# Gradient-Based Token Attribution (v1.37)
+from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
+gradient_input_attribution(grads, embeds, *, reduction="l2") -> Tensor  # (batch, seq)
+# grads: (batch, seq, d_model) gradient w.r.t. embedding output
+# embeds: (batch, seq, d_model) embedding vectors
+# reduction: "l2" (default, ≥0) | "dot" (signed) | "abs"/"l1" (≥0)
+# Per-token ‖grad ⊙ embed‖ — one caller backward pass, pure function here
+# Simonyan 2013 gradient saliency; Shrikumar 2016 gradient×input
+
+integrated_gradients(model_fn, embeds, *, baseline=None, n_steps=50, reduction="dot") -> Tensor  # (batch, seq)
+# model_fn: (batch, seq, d_model) -> (batch,) scalar
+# baseline: defaults to zeros_like(embeds)
+# completeness with reduction="dot": sum over tokens ≈ model_fn(embeds) - model_fn(baseline)
+# arXiv:1703.01365 (Sundararajan et al. 2017)
+
+# Activation Patch Grid (v1.37)
+from circuitry.patching.patch_grid import PatchGridRunner, PatchGridResult
+PatchGridRunner(model, *, modules=list[nn.Module] | None, module_names=None, module_pattern=str | None)
+# .run(clean_inputs, corrupted_inputs, metric) -> PatchGridResult
+# For each (layer, position): patch clean act[:, pos, :] into corrupted run
+# PatchGridResult: .recovery (n_layers, seq_len), .layer_names, .clean_score, .corrupted_score
+#   .top_sites(k), .to_markdown()
+# Wang et al. 2022 IOI / Hanna et al. 2023 greater-than circuit paper pattern
 
 # Logit Decomposition (v1.36)
 from circuitry.core.decompose import logit_decomposition, LogitDecompositionResult

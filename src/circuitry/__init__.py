@@ -40,6 +40,7 @@ from circuitry.core.activation import (
     token_similarity,
 )
 from circuitry.core.attention import attention_rollout, daam_attribution
+from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
 from circuitry.core.decompose import LogitDecompositionResult, logit_decomposition
 from circuitry.core.dynamics import (
     emergence_score,
@@ -72,6 +73,7 @@ from circuitry.core.weight import (
 )
 from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
 from circuitry.patching.cd import CDResult, cd_token_contributions
+from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
 from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
 from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
@@ -93,7 +95,7 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.36.0"
+__version__ = "1.37.0"
 
 __all__ = [
     "CDResult",
@@ -109,6 +111,8 @@ __all__ = [
     "CausalTraceResult",
     "CausalTraceRunner",
     "CertifiedCircuitResult",
+    "PatchGridResult",
+    "PatchGridRunner",
     "CertifiedCircuitRunner",
     "ITIConfig",
     "CircuitHypothesis",
@@ -145,6 +149,8 @@ __all__ = [
     "build_report",
     "LogitDecompositionResult",
     "daam_attribution",
+    "gradient_input_attribution",
+    "integrated_gradients",
     "logit_decomposition",
     "direction_cosine",
     "directional_ablation",
