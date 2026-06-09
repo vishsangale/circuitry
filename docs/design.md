@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-09 (v1.37.0)
+**Last updated:** 2026-06-09 (v1.38.0)
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -350,6 +350,16 @@ clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
 #   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
 # Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
 # arXiv:2603.21014 (Anthropic attribution graphs)
+
+# Transformer Circuit Primitives (v1.38)
+from circuitry.core.circuits import ov_matrix, qk_matrix, head_composition_score, composition_scores, top_logit_tokens, top_embedding_tokens
+ov_matrix(W_V, W_O) -> Tensor         # (..., d_model, d_head) x (..., d_head, d_model) -> (..., d_model, d_model)
+qk_matrix(W_Q, W_K) -> Tensor         # (..., d_model, d_head) x (..., d_model, d_head) -> (..., d_model, d_model)  [W_Q @ W_K.T]
+head_composition_score(W_OV, W_dest) -> float   # ‖W_OV @ W_dest‖_F / (‖W_OV‖_F · ‖W_dest‖_F) ∈ [0,1]
+composition_scores(W_OV_src, W_dest) -> Tensor  # (n_heads_src, n_heads_dst) score matrix
+top_logit_tokens(direction, W_U, *, k=10) -> (list[int], list[float])   # direction @ W_U → top-k token ids
+top_embedding_tokens(direction, W_E, *, k=10) -> (list[int], list[float])  # W_E @ direction → top-k token ids
+# All pure functions; no forward passes. Elhage et al. 2021 transformer circuits
 
 # Gradient-Based Token Attribution (v1.37)
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients

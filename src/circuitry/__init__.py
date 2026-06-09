@@ -41,6 +41,14 @@ from circuitry.core.activation import (
 )
 from circuitry.core.attention import attention_rollout, daam_attribution
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
+from circuitry.core.circuits import (
+    composition_scores,
+    head_composition_score,
+    ov_matrix,
+    qk_matrix,
+    top_embedding_tokens,
+    top_logit_tokens,
+)
 from circuitry.core.decompose import LogitDecompositionResult, logit_decomposition
 from circuitry.core.dynamics import (
     emergence_score,
@@ -95,7 +103,7 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.37.0"
+__version__ = "1.38.0"
 
 __all__ = [
     "CDResult",
@@ -111,6 +119,12 @@ __all__ = [
     "CausalTraceResult",
     "CausalTraceRunner",
     "CertifiedCircuitResult",
+    "composition_scores",
+    "head_composition_score",
+    "ov_matrix",
+    "qk_matrix",
+    "top_embedding_tokens",
+    "top_logit_tokens",
     "PatchGridResult",
     "PatchGridRunner",
     "CertifiedCircuitRunner",

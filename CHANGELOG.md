@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.0] — 2026-06-09
+
+**Transformer circuit primitives — QK/OV weight-space analysis.**
+
+### Added
+- **`core/circuits.py`** (new module) — pure weight-matrix analysis functions:
+  - `ov_matrix(W_V, W_O) → Tensor` — computes `W_V @ W_O` per head; shape
+    ``(..., d_model, d_head) × (..., d_head, d_model) → (..., d_model, d_model)``.
+    The OV circuit captures what each head writes to the residual stream.
+  - `qk_matrix(W_Q, W_K) → Tensor` — computes `W_Q @ W_K.T` per head; shape
+    ``(..., d_model, d_head) × (..., d_model, d_head) → (..., d_model, d_model)``.
+    The QK circuit captures what positions each head attends between.
+  - `head_composition_score(W_OV, W_dest) → float` — Frobenius-norm normalised
+    composition score `‖W_OV @ W_dest‖_F / (‖W_OV‖_F · ‖W_dest‖_F)` ∈ [0, 1].
+    Measures how strongly one head's output feeds into another's Q/K/V.
+  - `composition_scores(W_OV_src, W_dest) → Tensor` — batched composition score
+    matrix for all `(n_heads_src, n_heads_dst)` pairs.
+  - `top_logit_tokens(direction, W_U, *, k=10) → (ids, scores)` — top-k tokens
+    promoted by a residual-space direction via `direction @ W_U`.
+  - `top_embedding_tokens(direction, W_E, *, k=10) → (ids, scores)` — top-k tokens
+    whose embeddings are most aligned with a direction via `W_E @ direction`.
+  All pure functions; no forward passes. 14 new tests in `tests/core/test_circuits.py`.
+  Reference: Elhage et al. 2021 "A Mathematical Framework for Transformer Circuits".
+
 ## [1.37.0] — 2026-06-09
 
 **Activation Patch Grid + Gradient-Based Input Attribution.**

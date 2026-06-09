@@ -108,6 +108,13 @@ def test_public_surface():
         "PatchGridRunner",
         "gradient_input_attribution",
         "integrated_gradients",
+        # QK/OV circuits + token direction analysis (v1.38)
+        "ov_matrix",
+        "qk_matrix",
+        "head_composition_score",
+        "composition_scores",
+        "top_logit_tokens",
+        "top_embedding_tokens",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual
