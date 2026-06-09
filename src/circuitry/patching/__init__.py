@@ -24,6 +24,8 @@ from circuitry.patching.eap import EAPResult, EAPRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.graph import Edge, Node
 from circuitry.patching.hap import HAPRunner
+from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
 from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
 from circuitry.patching.intervene import PatchHandle, patch_site
 from circuitry.patching.relp import ReLPRunner
@@ -64,6 +66,10 @@ __all__ = [
     "EdgePruningRunner",
     "FeatureACDCRunner",
     "HAPRunner",
+    "HeadKnockoutResult",
+    "HeadKnockoutRunner",
+    "compute_mean_activation",
+    "mean_ablation",
     "HyperDASNet",
     "HyperDASResult",
     "HyperDASRunner",

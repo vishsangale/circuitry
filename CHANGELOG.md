@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] — 2026-06-09
+
+**Mean ablation + feature geometry.**
+
+### Added
+- **`patching/mean_ablation.py`** (new module):
+  - `compute_mean_activation(model, module, dataset_inputs) → Tensor` — runs the
+    model on a list of inputs, captures the target module's output, and returns the
+    mean activation (averaged over both batch and dataset).  Used to pre-compute the
+    reference activation for mean ablation.
+  - `mean_ablation(model, module, mean_act)` — context manager that replaces the
+    module's output with *mean_act* (broadcast to match the live batch shape) on every
+    forward pass inside the context.  Provides a more in-distribution null hypothesis
+    than zero ablation.  No hooks remain after the context exits.
+    12 new tests in `tests/patching/test_mean_ablation.py`.
+- **`core/feature_geometry.py`** (new module):
+  - `feature_interference(feature_dirs, *, normalize=True) → Tensor` — ``(n, n)``
+    pairwise cosine-similarity matrix between feature directions.  High off-diagonal
+    values indicate redundant or competing features.
+  - `feature_coverage(feature_dirs, acts, *, k=None) → float` — fraction of
+    activation variance explained by the feature directions (all, or top-k by
+    explained variance).  In ``[0, 1]``.
+  - `feature_spread(feature_dirs, *, normalize=True) → float` — mean pairwise
+    angular distance in radians.  Near π/2 ≈ high diversity; near 0 ≈ redundant set.
+    13 new tests in `tests/core/test_feature_geometry.py`.
+
+## [1.39.0] — 2026-06-09
+
+**Head knockout + neuron statistics.**
+
+### Added
+- **`patching/head_knockout.py`** (new module) — `HeadKnockoutRunner(model,
+  head_modules, *, layer_names)`, `HeadKnockoutResult`: ablates individual attention
+  heads by zeroing each head module's output and measures the metric drop.  Returns an
+  ``(n_layers, n_heads)`` importance matrix where
+  ``importance[l, h] = clean_score − knockout_score[l, h]``.  Positive = head was
+  helping; negative = head was hurting.  `HeadKnockoutResult` exposes `.top_heads(k)`,
+  `.to_markdown()`.  Based on Michel et al. 2019 / Voita et al. 2019.
+  12 new tests in `tests/patching/test_head_knockout.py`.
+- **`core/neuron.py`** (new module) — `neuron_stats(acts, *, threshold=0.0) →
+  NeuronStats`: fast vectorised per-neuron statistics over any ``(..., d)`` activation
+  tensor (leading dims flattened): mean, std, max, dead fraction (fraction of neurons
+  whose max < threshold), and excess kurtosis.  `NeuronStats` is a plain dataclass.
+  12 new tests in `tests/core/test_neuron.py`.
+
 ## [1.38.0] — 2026-06-09
 
 **Transformer circuit primitives — QK/OV weight-space analysis.**

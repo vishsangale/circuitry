@@ -115,6 +115,17 @@ def test_public_surface():
         "composition_scores",
         "top_logit_tokens",
         "top_embedding_tokens",
+        # Head knockout + neuron stats (v1.39)
+        "HeadKnockoutResult",
+        "HeadKnockoutRunner",
+        "NeuronStats",
+        "neuron_stats",
+        # Mean ablation + feature geometry (v1.40)
+        "compute_mean_activation",
+        "mean_ablation",
+        "feature_interference",
+        "feature_coverage",
+        "feature_spread",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

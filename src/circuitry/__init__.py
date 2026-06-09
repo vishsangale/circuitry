@@ -41,6 +41,11 @@ from circuitry.core.activation import (
 )
 from circuitry.core.attention import attention_rollout, daam_attribution
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
+from circuitry.core.feature_geometry import (
+    feature_coverage,
+    feature_interference,
+    feature_spread,
+)
 from circuitry.core.circuits import (
     composition_scores,
     head_composition_score,
@@ -59,6 +64,7 @@ from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase, rlace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
+from circuitry.core.neuron import NeuronStats, neuron_stats
 from circuitry.core.probe import (
     LinearProbe,
     MDLResult,
@@ -80,6 +86,8 @@ from circuitry.core.weight import (
     update_weight_ratio,
 )
 from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
+from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
 from circuitry.patching.cd import CDResult, cd_token_contributions
 from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
@@ -103,7 +111,7 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.38.0"
+__version__ = "1.40.0"
 
 __all__ = [
     "CDResult",
@@ -152,6 +160,15 @@ __all__ = [
     "EdgePruningResult",
     "EdgePruningRunner",
     "HAPRunner",
+    "HeadKnockoutResult",
+    "HeadKnockoutRunner",
+    "NeuronStats",
+    "neuron_stats",
+    "compute_mean_activation",
+    "feature_coverage",
+    "feature_interference",
+    "feature_spread",
+    "mean_ablation",
     "apply_ablation",
     "apply_iti",
     "apply_steer",

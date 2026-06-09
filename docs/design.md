@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-09 (v1.38.0)
+**Last updated:** 2026-06-09 (v1.40.0)
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -350,6 +350,31 @@ clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
 #   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
 # Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
 # arXiv:2603.21014 (Anthropic attribution graphs)
+
+# Mean Ablation (v1.40)
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
+compute_mean_activation(model, module, dataset_inputs) -> Tensor  # mean over dataset
+mean_ablation(model, module, mean_act)  # context manager; replaces output with mean_act
+# More in-distribution null than zero ablation; no hooks after context exits
+
+# Feature Geometry (v1.40)
+from circuitry.core.feature_geometry import feature_interference, feature_coverage, feature_spread
+feature_interference(feature_dirs, *, normalize=True) -> Tensor  # (n,n) cosine-sim matrix
+feature_coverage(feature_dirs, acts, *, k=None) -> float         # fraction variance explained [0,1]
+feature_spread(feature_dirs, *, normalize=True) -> float         # mean pairwise angle (radians)
+
+# Head Knockout (v1.39)
+from circuitry.patching.head_knockout import HeadKnockoutRunner, HeadKnockoutResult
+HeadKnockoutRunner(model, head_modules: list[list[nn.Module]], *, layer_names=None)
+# .run(inputs, metric) -> HeadKnockoutResult
+# importance[l,h] = clean_score - knockout_score[l,h]  (zero-ablate each head's module output)
+# HeadKnockoutResult: .importance (n_layers,n_heads), .top_heads(k), .to_markdown()
+# Michel et al. 2019 NeurIPS / Voita et al. 2019 ACL
+
+# Neuron Statistics (v1.39)
+from circuitry.core.neuron import neuron_stats, NeuronStats
+neuron_stats(acts, *, threshold=0.0) -> NeuronStats  # acts: (..., d) → stats over (d,)
+# NeuronStats: .mean (d,), .std (d,), .max (d,), .dead_fraction float, .kurtosis (d,)
 
 # Transformer Circuit Primitives (v1.38)
 from circuitry.core.circuits import ov_matrix, qk_matrix, head_composition_score, composition_scores, top_logit_tokens, top_embedding_tokens
