@@ -93,6 +93,11 @@ def test_public_surface():
         "CLTEdge",
         "CLTGraphResult",
         "CLTGraphRunner",
+        # DAAM + HyperDAS (v1.35)
+        "daam_attribution",
+        "HyperDASNet",
+        "HyperDASResult",
+        "HyperDASRunner",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

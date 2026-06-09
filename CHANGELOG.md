@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — 2026-06-09
+
+**DAAM cross-attention attribution + HyperDAS input-conditioned alignment search.**
+
+### Added
+- **`core/attention.py`** addition — `daam_attribution(attn_maps, *, head_agg, normalize,
+  spatial_shape) → Tensor`: aggregates per-step cross-attention maps from diffusion models
+  into a `(seq_len, n_patches)` attribution heatmap. Averages over denoising steps and
+  batch; aggregates heads by mean or max; optional L1 normalisation per token; optional
+  reshape to `(seq_len, H, W)` for a spatial grid (arXiv:2210.04885, Tang et al. ICCV 2023).
+  14 new tests in `tests/core/test_daam.py`.
+- **`patching/hyperdas.py`** (new module) — `HyperDASNet(d_model, subspace_dim, hidden_dim)`,
+  `HyperDASResult`, `HyperDASRunner(model, module, *, d_model, subspace_dim, hidden_dim)`:
+  input-conditioned alignment search via hypernetwork. Extends DAS by replacing the
+  global fixed rotation R with a hypernetwork H: activation → orthonormal subspace basis
+  (differentiable Gram-Schmidt). Training objective: cross-entropy under interchange
+  intervention; gradients flow through `basis = hyper_net(h_base_pooled)` while
+  base/source activations are detached (frozen model). Returns trained network, IIA score,
+  and per-step losses (arXiv:2503.10894). 12 new tests in `tests/patching/test_hyperdas.py`.
+
 ## [1.34.0] — 2026-06-09
 
 **CLT Attribution Graphs.**

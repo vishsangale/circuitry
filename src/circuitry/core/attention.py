@@ -312,3 +312,84 @@ def attention_rollout(
 
     # Return saliency: first row = CLS→all tokens
     return result[:, 0, :]  # (B, T)
+
+
+def daam_attribution(
+    attn_maps: list[Any],
+    *,
+    head_agg: str = "mean",
+    normalize: bool = True,
+    spatial_shape: tuple[int, int] | None = None,
+) -> torch.Tensor:
+    """DAAM: aggregate cross-attention maps across denoising steps.
+
+    Computes per-token attribution heatmaps by averaging cross-attention maps
+    over all denoising steps, then optionally normalising each token's map to
+    sum to 1.  Suitable for diffusion-model interpretability where each step
+    produces a set of cross-attention maps.
+
+    Args:
+        attn_maps:     List of per-step cross-attention tensors, each of shape
+                       ``(n_heads, n_patches, seq_len)`` or
+                       ``(batch, n_heads, n_patches, seq_len)``.  Batch
+                       dimensions are averaged before step aggregation.
+        head_agg:      How to aggregate over the head axis — ``"mean"``
+                       (default) or ``"max"``.
+        normalize:     If True, L1-normalise each token's attribution map so
+                       that its values sum to 1 (makes tokens comparable
+                       independent of raw attention scale).
+        spatial_shape: Optional ``(H, W)`` to reshape the patch axis into a 2-D
+                       spatial grid.  Must satisfy ``H * W == n_patches``.
+
+    Returns:
+        ``(seq_len, n_patches)`` float tensor (or ``(seq_len, H, W)`` when
+        ``spatial_shape`` is supplied).
+
+    Reference:
+        Tang et al. 2023, ICCV "What the DAAM: Interpreting Stable Diffusion
+        Using Cross Attention".  https://arxiv.org/abs/2210.04885
+    """
+    if not attn_maps:
+        raise ValueError("daam_attribution: attn_maps must be non-empty")
+    if head_agg not in ("mean", "max"):
+        raise ValueError(f"daam_attribution: head_agg must be 'mean' or 'max', got {head_agg!r}")
+
+    aggregated: list[torch.Tensor] = []
+    for step_map in attn_maps:
+        t = torch.as_tensor(step_map).detach().to(torch.float32)
+        if t.ndim == 3:
+            t = t.unsqueeze(0)  # (1, n_heads, n_patches, seq_len)
+        elif t.ndim != 4:
+            raise ValueError(
+                f"daam_attribution: each attn_map must be 3-D or 4-D, got {t.ndim}-D"
+            )
+        # Average over batch
+        t = t.mean(dim=0)  # (n_heads, n_patches, seq_len)
+        # Aggregate heads
+        if head_agg == "mean":
+            t = t.mean(dim=0)  # (n_patches, seq_len)
+        else:
+            t = t.max(dim=0).values  # (n_patches, seq_len)
+        aggregated.append(t)
+
+    # Average over steps → (n_patches, seq_len)
+    result = torch.stack(aggregated, dim=0).mean(dim=0)
+
+    # Transpose → (seq_len, n_patches)
+    result = result.transpose(0, 1)
+
+    if normalize:
+        row_sum = result.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        result = result / row_sum
+
+    if spatial_shape is not None:
+        H, W = spatial_shape
+        seq_len, n_patches = result.shape
+        if H * W != n_patches:
+            raise ValueError(
+                f"daam_attribution: spatial_shape {spatial_shape} requires "
+                f"H*W={H*W} but got {n_patches} patches"
+            )
+        result = result.reshape(seq_len, H, W)
+
+    return result

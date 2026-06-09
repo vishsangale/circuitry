@@ -22,7 +22,12 @@ mib_iia_score (Mueller et al. ICML 2025).
 v1.33 added: ITIConfig/fit_iti/apply_iti (Inference-Time Intervention, arXiv:2306.03341),
 CDResult/cd_token_contributions (CD-T contextual decomposition, arXiv:2407.00886),
 critical_sharpness (Hessian sharpness via HVP power iteration, arXiv:2601.16979),
-gradient_subspace_saturation (gradient subspace saturation diagnostic, arXiv:2508.07370).)
+gradient_subspace_saturation (gradient subspace saturation diagnostic, arXiv:2508.07370).
+v1.34 added CLT Attribution Graphs: CLTNode, CLTEdge, CLTGraphResult, CLTGraphRunner
+(feature-level EAP over lossless-spliced transcoders, arXiv:2503.10474).
+v1.35 added: daam_attribution (DAAM cross-attention aggregation, arXiv:2210.04885),
+HyperDASNet/HyperDASResult/HyperDASRunner (input-conditioned alignment search via
+hypernetworks, arXiv:2503.10894).
 """
 
 from circuitry.core.activation import (
@@ -34,7 +39,7 @@ from circuitry.core.activation import (
     spectral_collapse_rank,
     token_similarity,
 )
-from circuitry.core.attention import attention_rollout
+from circuitry.core.attention import attention_rollout, daam_attribution
 from circuitry.core.dynamics import (
     emergence_score,
     fourier_feature_alignment,
@@ -66,6 +71,7 @@ from circuitry.core.weight import (
 )
 from circuitry.patching.cd import CDResult, cd_token_contributions
 from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
+from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
 from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.das import DASResult, DASRunner
@@ -85,11 +91,14 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.34.0"
+__version__ = "1.35.0"
 
 __all__ = [
     "CDResult",
     "CLTEdge",
+    "HyperDASNet",
+    "HyperDASResult",
+    "HyperDASRunner",
     "CLTGraphResult",
     "CLTGraphRunner",
     "CLTNode",
@@ -130,6 +139,7 @@ __all__ = [
     "gradient_subspace_saturation",
     "attention_rollout",
     "build_report",
+    "daam_attribution",
     "direction_cosine",
     "directional_ablation",
     "discover",

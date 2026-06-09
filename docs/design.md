@@ -1,6 +1,6 @@
 # circuitry — design spec
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-09 (v1.35.0)
 **Status:** as-implemented (living document; tracks shipped releases — see [`CHANGELOG.md`](../CHANGELOG.md))
 **Owner:** Vishwanath Sangale
 
@@ -350,6 +350,25 @@ clt.CLTGraphRunner(model, layer_transcoders: dict[int, transcoder])
 #   .top_k(k), .threshold(tau), .to_markdown(), .layer_order, .n_features
 # Transcoder protocol: .encode(x: Tensor) -> Tensor, .decode(f: Tensor) -> Tensor
 # arXiv:2603.21014 (Anthropic attribution graphs)
+
+# DAAM cross-attention attribution (v1.35)
+from circuitry.core.attention import daam_attribution
+daam_attribution(attn_maps, *, head_agg="mean", normalize=True, spatial_shape=None) -> Tensor
+# attn_maps: list of (n_heads, n_patches, seq_len) or (batch, n_heads, n_patches, seq_len) per step
+# Returns (seq_len, n_patches) or (seq_len, H, W) attribution heatmap
+# Aggregates over denoising steps and batch; head_agg ∈ {"mean","max"}
+# Optional L1 normalisation; optional spatial reshape; arXiv:2210.04885
+
+# HyperDAS: input-conditioned alignment search via hypernetwork (v1.35)
+from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
+HyperDASNet(d_model, subspace_dim, hidden_dim=64)
+# forward(h: (batch, d_model)) -> (batch, subspace_dim, d_model) orthonormal rows
+# MLP + differentiable Gram-Schmidt orthonormalization
+HyperDASRunner(model, module, *, d_model, subspace_dim=1, hidden_dim=64)
+# .run(base_inputs, source_inputs, labels, *, n_steps=200, lr=1e-3, loss_fn=None) -> HyperDASResult
+# Train H: activation → orthonormal basis via interchange-intervention cross-entropy
+# Gradients flow: loss → h_int → basis = hyper_net(h_base_pooled) → hyper_net.parameters()
+# arXiv:2503.10894
 ```
 
 Invariants for everything in `core/`:
