@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] — 2026-06-09
+
+**Attribution Quality.**
+
+### Added
+- **`patching/relp.py`** (new module) — `ReLPRunner(model, resolver, *, eps=1e-6)`:
+  RelP attribution — replaces EAP's gradient term with an LRP-epsilon residual-stream
+  coefficient `lrp_coeff_w = act_clean_w / (|Σ_w act_clean_w| + eps)`. Same 2-forward + 1-backward
+  cost as EAP; Pearson correlation to ground-truth patching = 0.956 vs 0.006 for EAP on
+  GPT-2 IOI. Returns `EAPResult` for drop-in compatibility (arXiv:2508.21258).
+- **`patching/certified.py`** (new module) — `CertifiedCircuitRunner(base_runner, *,
+  n_subsamples=20, confidence=0.95, subsample_frac=0.5)`: wraps any attribution runner
+  with randomised batch subsampling — an edge is "certified" (stable) if it appears in the
+  top-K of ≥ ``confidence × n_subsamples`` subsets; otherwise "abstained".
+  Returns `CertifiedCircuitResult` with `.certified_edges`, `.abstained_edges`,
+  `.vote_counts`, `.certified_set()`, `.n_certified()`, `.n_abstained()` (arXiv:2602.22968).
+- **`benchmarks/mib.py`** — three new synthetic task loaders:
+  `load_ravel(n, *, entity_type, attribute)` (RAVEL entity-attribute disentanglement;
+  arXiv:2402.17700), `load_arithmetic(n, *, op, modulus)` (addition / modular addition
+  circuits), `load_mcqa(n, *, n_choices)` (multiple-choice Q&A). Plus two evaluation
+  helpers: `mib_circuit_f1(circuit_edges, gt_edges) → float` (edge-set F1 for the MIB
+  localisation leaderboard) and `mib_iia_score(das_result, *, threshold=0.5) → float`
+  (IIA-at-threshold for causal variable localisation). All MIB arXiv:2504.13151.
+- `ReLPRunner`, `CertifiedCircuitResult`, `CertifiedCircuitRunner` exported at `circuitry.*`;
+  version bumped to `1.32.0`.
+- Tests: ~40 new tests across test_relp, test_certified, test_mib_v132, test_public_api.
+
+---
+
 ## [1.31.0] — 2026-06-09
 
 **SAE Quality & Steering.**

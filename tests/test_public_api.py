@@ -76,6 +76,10 @@ def test_public_surface():
         "sae_influence_scores",
         "fgaa_steering_vector",
         "rlace_erase",
+        # attribution quality (v1.32)
+        "ReLPRunner",
+        "CertifiedCircuitResult",
+        "CertifiedCircuitRunner",
     }
     actual = set(circuitry.__all__)
     missing = expected - actual

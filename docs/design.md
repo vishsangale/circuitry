@@ -296,6 +296,27 @@ scrubbing.CausalScrubRunner(model).run(clean_inputs, corrupted_inputs, metric,
 # CircuitHypothesis: .circuit_modules (list[nn.Module]), .node_labels (dict[nn.Module, str])
 # CausalScrubResult: .faithfulness, .scrubbed_metric, .clean_metric, .corrupted_metric,
 #   .per_module_delta (dict[str, float])
+
+# Attribution quality (v1.32)
+from circuitry.patching import relp, certified
+relp.ReLPRunner(model, resolver=None, *, eps=1e-6)  # drop-in for EAPRunner; returns EAPResult
+# Replaces EAP gradient term with LRP-epsilon residual-stream coefficient
+# lrp_coeff_w = act_clean_w / (|Σ_w act_clean_w| + eps); same cost as EAP
+# Pearson corr to ground-truth patching = 0.956 vs 0.006 for EAP (arXiv:2508.21258)
+
+certified.CertifiedCircuitRunner(base_runner, *, n_subsamples=20, confidence=0.95, subsample_frac=0.5, seed=0)
+# .run(clean, corrupted, metric, *, top_k=10) -> CertifiedCircuitResult
+# Wraps any runner with randomised batch subsampling; certifies edges stable in ≥ confidence fraction
+# CertifiedCircuitResult: .certified_edges, .abstained_edges, .vote_counts,
+#   .certified_set(), .n_certified(), .n_abstained() (arXiv:2602.22968)
+
+# MIB benchmarks (v1.32 additions)
+from circuitry import benchmarks
+benchmarks.load_ravel(n, *, entity_type, attribute, seed, vocab_size, seq_len) -> MIBTask  # RAVEL entity-attribute task (arXiv:2402.17700)
+benchmarks.load_arithmetic(n, *, op, modulus, seed, vocab_size, seq_len) -> MIBTask  # op ∈ {"add","mod_add"}; modular arithmetic circuits
+benchmarks.load_mcqa(n, *, n_choices, seed, vocab_size, seq_len) -> MIBTask  # multiple-choice Q&A
+benchmarks.mib_circuit_f1(circuit_edges, ground_truth_edges) -> float  # edge-set F1 for MIB localisation leaderboard
+benchmarks.mib_iia_score(das_result, *, threshold=0.5) -> float  # IIA-at-threshold for causal variable localisation
 ```
 
 Invariants for everything in `core/`:

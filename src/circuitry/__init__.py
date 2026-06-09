@@ -14,7 +14,11 @@ spectral_edge_gap, neural_collapse_score, spectral_collapse_rank, emergence_scor
 and attention_rollout.
 v1.31 added SAE quality & steering: sae_downstream_loss, sae_influence_scores,
 fgaa_steering_vector, rlace_erase, p_anneal/hierarchical_topk arch support, and
-UNRELIABLE_METRICS guard.)
+UNRELIABLE_METRICS guard.
+v1.32 added attribution quality: ReLPRunner (LRP-epsilon edge attribution, arXiv:2508.21258),
+CertifiedCircuitRunner/CertifiedCircuitResult (randomised subsampling stability, arXiv:2602.22968),
+and MIB benchmark additions: load_ravel, load_arithmetic, load_mcqa, mib_circuit_f1,
+mib_iia_score (Mueller et al. ICML 2025).)
 """
 
 from circuitry.core.activation import (
@@ -54,9 +58,11 @@ from circuitry.core.weight import (
     update_delta,
     update_weight_ratio,
 )
+from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.hap import HAPRunner
+from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
 from circuitry.patching.steer import apply_ablation, apply_steer
 from circuitry.recipes import Recipe, register_recipe
@@ -70,11 +76,13 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.31.0"
+__version__ = "1.32.0"
 
 __all__ = [
     "CausalScrubResult",
     "CausalScrubRunner",
+    "CertifiedCircuitResult",
+    "CertifiedCircuitRunner",
     "CircuitHypothesis",
     "CrosscoderWrapper",
     "DASResult",
@@ -91,6 +99,7 @@ __all__ = [
     "ParameterRecord",
     "Recipe",
     "Recorder",
+    "ReLPRunner",
     "StepContext",
     "TensorSource",
     "__version__",

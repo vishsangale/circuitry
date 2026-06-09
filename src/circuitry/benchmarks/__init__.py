@@ -10,6 +10,11 @@ from circuitry.benchmarks.mib import (
     MIBTask,
     load_ioi,
     load_greater_than,
+    load_ravel,
+    load_arithmetic,
+    load_mcqa,
+    mib_circuit_f1,
+    mib_iia_score,
 )
 
 from circuitry.benchmarks.saebench import (
@@ -26,6 +31,11 @@ __all__ = [
     "MIBTask",
     "load_ioi",
     "load_greater_than",
+    "load_ravel",
+    "load_arithmetic",
+    "load_mcqa",
+    "mib_circuit_f1",
+    "mib_iia_score",
     "SAEBenchResult",
     "l0_sparsity",
     "explained_variance",

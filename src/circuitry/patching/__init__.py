@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from circuitry.patching.acdc import ACDCResult, ACDCRunner
 from circuitry.patching.atp import AtPNode, AtPResult, AtPRunner
+from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.graph import Edge, Node
 from circuitry.patching.hap import HAPRunner
 from circuitry.patching.intervene import PatchHandle, patch_site
+from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.runner import PatchResult, PatchRunner
 from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
 from circuitry.patching.sites import Site
@@ -33,6 +35,8 @@ __all__ = [
     "AtPRunner",
     "CausalScrubResult",
     "CausalScrubRunner",
+    "CertifiedCircuitResult",
+    "CertifiedCircuitRunner",
     "CircuitHypothesis",
     "CrosscoderWrapper",
     "DASResult",
@@ -48,6 +52,7 @@ __all__ = [
     "PatchHandle",
     "PatchResult",
     "PatchRunner",
+    "ReLPRunner",
     "SAEFeatureCircuit",
     "SAEFeatureEdge",
     "SAEFeatureEdgeGraph",
