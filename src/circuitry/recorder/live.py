@@ -815,7 +815,7 @@ class Recorder:
         except TypeError:
             return self.model(probe)
 
-    def _get_probe_attn(self, ctx: "StepContext") -> dict[str, "torch.Tensor"]:
+    def _get_probe_attn(self, ctx: StepContext) -> dict[str, torch.Tensor]:
         """Return {module_name: attn_tensor} from the induction probe forward.
 
         Lazily runs the probe pass once per step and caches the result so that
@@ -1358,6 +1358,7 @@ class Recorder:
                 # shape (..., n_experts)); other captured activations are
                 # ignored so the diagnostic can coexist with the stock hooks.
                 import re as _re_moe
+
                 from circuitry.core import moe as _moe
                 rx = _re_moe.compile(self.recipe.moe_router_pattern)
                 top1_per_layer: list[torch.Tensor] = []

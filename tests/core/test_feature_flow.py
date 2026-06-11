@@ -81,6 +81,7 @@ def _three_layer_decoders():
 class TestFeatureFlowGraph:
     def test_edges_and_similarities(self):
         g = feature_flow_graph(_three_layer_decoders(), threshold=0.9)
+        assert isinstance(g, FeatureFlowGraph)
         # layer0 -> layer1: perfect permutation, 4 edges at cosine 1
         l01 = {e: s for e, s in g.scores.items() if e.src_layer == 0}
         assert len(l01) == 4
@@ -105,7 +106,7 @@ class TestFeatureFlowGraph:
         g = feature_flow_graph(_three_layer_decoders(), threshold=0.9)
         # e1 lives at: layer0 feature 1 -> layer1 feature 0 -> layer2 feature 0
         path = g.path_from(0, 1)
-        assert [(l, f) for l, f, _ in path] == [(0, 1), (1, 0), (2, 0)]
+        assert [(layer, f) for layer, f, _ in path] == [(0, 1), (1, 0), (2, 0)]
         assert path[0][2] == pytest.approx(1.0)
         assert math.isnan(path[-1][2])  # chain ends at the last layer
 
@@ -113,7 +114,7 @@ class TestFeatureFlowGraph:
         g = feature_flow_graph(_three_layer_decoders(), threshold=0.9)
         # layer1 feature 1 (= e0) has no match in layer 2
         path = g.path_from(1, 1)
-        assert [(l, f) for l, f, _ in path] == [(1, 1)]
+        assert [(layer, f) for layer, f, _ in path] == [(1, 1)]
         assert math.isnan(path[0][2])
 
     def test_born_at(self):

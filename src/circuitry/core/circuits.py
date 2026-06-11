@@ -237,7 +237,7 @@ def top_virtual_connections(
     flat_idx = v.abs().flatten().topk(k).indices
     rows = (flat_idx // v.shape[1]).tolist()
     cols = (flat_idx % v.shape[1]).tolist()
-    return [(i, j, float(v[i, j])) for i, j in zip(rows, cols)]
+    return [(i, j, float(v[i, j])) for i, j in zip(rows, cols, strict=True)]
 
 
 def feature_token_alignment(

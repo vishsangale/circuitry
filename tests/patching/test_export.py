@@ -148,7 +148,7 @@ def test_clt_influence_from_node_scores(clt_result):
 
 def test_clt_link_weights_match_scores(clt_result):
     g = to_neuronpedia_graph(clt_result, slug="s", scan="m")
-    weights = {(l["source"], l["target"]): l["weight"] for l in g["links"]}
+    weights = {(lk["source"], lk["target"]): lk["weight"] for lk in g["links"]}
     assert weights[("0_3_0", "1_1_0")] == 0.9
     assert weights[("0_7_0", "1_4_0")] == 0.02
 
@@ -206,7 +206,7 @@ def test_unsupported_type_raises():
 def test_top_k_filters_edges(clt_result):
     g = to_neuronpedia_graph(clt_result, slug="s", scan="m", top_k=2)
     assert len(g["links"]) == 2
-    assert {abs(l["weight"]) for l in g["links"]} == {0.9, 0.5}
+    assert {abs(lk["weight"]) for lk in g["links"]} == {0.9, 0.5}
 
 
 def test_node_threshold_filters_edges(clt_result):

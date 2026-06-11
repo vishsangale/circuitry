@@ -63,7 +63,7 @@ class CircuitConsensus:
         tau: float | None = None,
         top_k: int | None = None,
         names: list[str] | None = None,
-    ) -> "CircuitConsensus":
+    ) -> CircuitConsensus:
         """Build a consensus from scored results, binarized uniformly.
 
         Each result is reduced to an edge set via ``result.threshold(tau)``
@@ -86,7 +86,7 @@ class CircuitConsensus:
             )
         return cls({
             name: _binarize(r, tau=tau, top_k=top_k)
-            for name, r in zip(names, results)
+            for name, r in zip(names, results, strict=True)
         })
 
     def agreement(self) -> dict[Any, float]:
