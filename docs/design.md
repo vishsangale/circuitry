@@ -62,7 +62,8 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy, head_specialization
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae; load_gemma_scope, load_llama_scope (v1.26)
-│   │   └── metrics.py      # sae_reconstruction_error; superposition_index (v1.29)
+│   │   ├── metrics.py      # sae_reconstruction_error; superposition_index (v1.29)
+│   │   └── labeling.py     # FeatureEvidence / describe_features — pluggable auto-interp labels (v1.42)
 │   ├── benchmarks/         # v1.27: synthetic MIB tasks + SAEBench metrics
 │   │   ├── __init__.py
 │   │   ├── mib.py          # MIBTask, load_ioi, load_greater_than (Mueller et al. ICML 2025)
@@ -75,6 +76,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── edge_pruning.py # EdgePruningRunner / EdgePruningResult — mask-logit L0 pruning (v1.25)
 │   │   ├── hap.py          # HAPRunner — EAP pre-filter + EdgePruningRunner (v1.25)
 │   │   ├── das.py          # DASRunner / DASResult — interchange-intervention rotation learning (v1.28)
+│   │   ├── consensus.py    # CircuitConsensus — cross-method stability ensembles (v1.42)
 │   │   ├── export.py       # to_neuronpedia_graph / to_html + save_* — graph interchange (v1.41)
 │   │   └── scrubbing.py    # CausalScrubRunner / CircuitHypothesis / CausalScrubResult (v1.28)
 │   ├── recorder/           # opinionated training-time workflow
@@ -311,6 +313,21 @@ certified.CertifiedCircuitRunner(base_runner, *, n_subsamples=20, confidence=0.9
 # CertifiedCircuitResult: .certified_edges, .abstained_edges, .vote_counts,
 #   .certified_set(), .n_certified(), .n_abstained() (arXiv:2602.22968)
 
+consensus.CircuitConsensus({name: edge_set, ...})  # cross-METHOD stability (v1.42; CIRCUS arXiv:2603.00523)
+# .from_results(results, *, tau=None, top_k=None, names=None) — binarize scored results uniformly
+# .agreement() -> {edge: fraction}; .consensus_edges(min_agreement=1.0) -> set
+# .pairwise_jaccard() -> {(name_a, name_b): float}; .to_markdown(top_k=20)
+# Complements CertifiedCircuitRunner: certified = one method across data subsamples;
+# consensus = many methods on the same task. Pure aggregation; no forward passes.
+
+# Auto-interp labeling (v1.42) — sae/labeling.py; pluggable, no API dependency
+from circuitry.sae.labeling import FeatureEvidence, describe_features
+FeatureEvidence(layer, feature, top_tokens=(), top_logit_tokens=(), activation_stats={}, notes="")
+#   .to_prompt() -> str — renders the evidence prompt for one feature
+describe_features(evidence, label_fn) -> {(layer, feature): str}
+# label_fn: Callable[[str], str] — the USER brings the LLM call (invariant #3: circuitry
+# never imports a downstream API client). Output plugs into to_neuronpedia_graph/to_html labels=.
+
 # MIB benchmarks (v1.32 additions)
 from circuitry import benchmarks
 benchmarks.load_ravel(n, *, entity_type, attribute, seed, vocab_size, seq_len) -> MIBTask  # RAVEL entity-attribute task (arXiv:2402.17700)
@@ -386,6 +403,14 @@ composition_scores(W_OV_src, W_dest) -> Tensor  # (n_heads_src, n_heads_dst) sco
 top_logit_tokens(direction, W_U, *, k=10) -> (list[int], list[float])   # direction @ W_U → top-k token ids
 top_embedding_tokens(direction, W_E, *, k=10) -> (list[int], list[float])  # W_E @ direction → top-k token ids
 # All pure functions; no forward passes. Elhage et al. 2021 transformer circuits
+
+# Weight-Based Transcoder Analysis (v1.42) — input-independent connectivity maps
+from circuitry.core.circuits import transcoder_virtual_weights, top_virtual_connections, feature_token_alignment
+transcoder_virtual_weights(W_dec_up, W_enc_down) -> Tensor  # (f_up, d) @ (d, f_down) -> (f_up, f_down) virtual weights
+top_virtual_connections(V, *, k=20) -> list[(i, j, w)]      # strongest entries by |w|
+feature_token_alignment(W_dec, W_U, *, k=10) -> (Tensor, Tensor)  # per-feature top-k logit tokens; (n_features, k)
+# Global (all-input) feature→feature circuit map from weights alone; complements per-prompt
+# CLT attribution graphs. Circuit Insights arXiv:2510.14936; arXiv:2501.18823.
 
 # Gradient-Based Token Attribution (v1.37)
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients

@@ -10,6 +10,13 @@ Implements the core building blocks from the Transformer Circuits framework
   top_logit_tokens        — which tokens does a residual-space direction promote?
   top_embedding_tokens    — which token embeddings are most aligned with a direction?
 
+v1.42 adds weight-based (input-independent) transcoder analysis (Circuit Insights,
+arXiv:2510.14936; "Transcoders Beat Sparse Autoencoders", arXiv:2501.18823):
+
+  transcoder_virtual_weights — W_dec_up @ W_enc_down: global feature→feature connectivity
+  top_virtual_connections   — strongest entries of a virtual-weight matrix
+  feature_token_alignment   — per-feature top-k promoted logit tokens (decoder @ W_U)
+
 All functions are pure; no forward passes, no hooks.  Inputs are weight matrices
 extracted from the model (e.g. via `model.named_parameters()`).
 """
@@ -172,3 +179,90 @@ def top_embedding_tokens(
     scores = we @ d                           # (vocab_size,)
     topk = scores.topk(k)
     return topk.indices.tolist(), topk.values.tolist()
+
+
+def transcoder_virtual_weights(W_dec_up: Any, W_enc_down: Any) -> Tensor:
+    """Input-independent feature→feature connectivity between two transcoders.
+
+    Composes the upstream transcoder's decoder with the downstream transcoder's
+    encoder: ``V = W_dec_up @ W_enc_down``.  ``V[i, j]`` is the weight-derived
+    ("virtual") connection strength from upstream feature ``i`` to downstream
+    feature ``j`` — the contribution feature ``i`` makes to feature ``j``'s
+    pre-activation, before any input-dependent gating.  This is the global
+    connectivity map that complements per-prompt attribution graphs: it depends
+    only on weights, so it covers all inputs at once and costs one matmul.
+
+    Args:
+        W_dec_up:   ``(n_features_up, d_model)`` upstream decoder matrix.
+        W_enc_down: ``(d_model, n_features_down)`` downstream encoder matrix.
+
+    Returns:
+        ``(n_features_up, n_features_down)`` float32 virtual-weight matrix.
+
+    Reference:
+        Circuit Insights (arXiv:2510.14936); Paulo et al.,
+        "Transcoders Beat Sparse Autoencoders for Interpretability"
+        (arXiv:2501.18823).
+    """
+    dec = torch.as_tensor(W_dec_up).detach().to(torch.float32)
+    enc = torch.as_tensor(W_enc_down).detach().to(torch.float32)
+    if dec.shape[-1] != enc.shape[0]:
+        raise ValueError(
+            f"d_model mismatch: W_dec_up has {dec.shape[-1]} columns but "
+            f"W_enc_down has {enc.shape[0]} rows"
+        )
+    return dec @ enc
+
+
+def top_virtual_connections(
+    V: Any,
+    *,
+    k: int = 20,
+) -> list[tuple[int, int, float]]:
+    """Strongest entries of a virtual-weight matrix by ``|weight|``.
+
+    Args:
+        V: ``(n_features_up, n_features_down)`` virtual-weight matrix (from
+           :func:`transcoder_virtual_weights`).
+        k: Number of connections to return (default 20; capped at ``V.numel()``).
+
+    Returns:
+        List of ``(upstream_feature, downstream_feature, weight)`` triples
+        sorted by ``|weight|`` descending.
+    """
+    v = torch.as_tensor(V).detach().to(torch.float32)
+    if v.ndim != 2:
+        raise ValueError(f"V must be 2-D, got ndim={v.ndim}")
+    k = min(k, v.numel())
+    flat_idx = v.abs().flatten().topk(k).indices
+    rows = (flat_idx // v.shape[1]).tolist()
+    cols = (flat_idx % v.shape[1]).tolist()
+    return [(i, j, float(v[i, j])) for i, j in zip(rows, cols)]
+
+
+def feature_token_alignment(
+    W_dec: Any,
+    W_U: Any,
+    *,
+    k: int = 10,
+) -> tuple[Tensor, Tensor]:
+    """Per-feature top-k promoted logit tokens via decoder → unembedding.
+
+    Weight-only "what does this feature do": projects every decoder row through
+    the unembedding (``W_dec @ W_U``) and returns each feature's top-k promoted
+    tokens.  The batched, all-features analogue of :func:`top_logit_tokens`.
+
+    Args:
+        W_dec: ``(n_features, d_model)`` decoder matrix (SAE or transcoder).
+        W_U:   ``(d_model, vocab_size)`` unembedding matrix.
+        k:     Number of top tokens per feature (default 10).
+
+    Returns:
+        ``(token_ids, scores)`` — int64 / float32 tensors, each of shape
+        ``(n_features, k)``, row ``f`` sorted by score descending.
+    """
+    dec = torch.as_tensor(W_dec).detach().to(torch.float32)
+    wu = torch.as_tensor(W_U).detach().to(torch.float32)
+    logits = dec @ wu                         # (n_features, vocab_size)
+    topk = logits.topk(min(k, logits.shape[-1]), dim=-1)
+    return topk.indices, topk.values

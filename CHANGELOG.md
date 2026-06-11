@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.0] — 2026-06-11
+
+**Weight-based transcoder analysis, cross-method consensus, pluggable
+auto-interp labeling.** Second milestone of `docs/plan-sota-3.md`.
+
+### Added
+- **`core/circuits.py`** — weight-based (input-independent) transcoder
+  analysis (Circuit Insights arXiv:2510.14936; arXiv:2501.18823):
+  - `transcoder_virtual_weights(W_dec_up, W_enc_down) → Tensor` —
+    `(f_up, d) @ (d, f_down)` global feature→feature connectivity from
+    weights alone; complements per-prompt CLT attribution graphs.
+  - `top_virtual_connections(V, *, k=20) → list[(i, j, w)]` — strongest
+    virtual connections by `|w|`.
+  - `feature_token_alignment(W_dec, W_U, *, k=10) → (ids, scores)` —
+    per-feature top-k promoted logit tokens, the batched all-features
+    analogue of `top_logit_tokens`. 12 new tests in
+    `tests/core/test_circuits.py`.
+- **`patching/consensus.py`** (new module) — `CircuitConsensus`
+  (CIRCUS-style cross-method stability ensembles; arXiv:2603.00523):
+  per-edge `agreement()`, `consensus_edges(min_agreement)`,
+  `pairwise_jaccard()`, `to_markdown()`, and
+  `CircuitConsensus.from_results(results, *, tau|top_k, names)` to
+  binarize scored results uniformly. Complements
+  `CertifiedCircuitRunner` (one method across data subsamples) with
+  many-methods-one-task agreement. Pure aggregation; no forward passes.
+  11 new tests in `tests/patching/test_consensus.py`.
+- **`sae/labeling.py`** (new module) — pluggable auto-interp labeling
+  (SAGE arXiv:2511.20820 / ADAG arXiv:2604.07615 workflows without an
+  API dependency): `FeatureEvidence` (per-feature evidence bundle with
+  `.to_prompt()`) and `describe_features(evidence, label_fn) →
+  {(layer, feature): str}` where `label_fn: Callable[[str], str]` is
+  user-supplied (their LLM call / cache / human). Output plugs directly
+  into the v1.41 exporters' `labels=` kwarg. 6 new tests in
+  `tests/sae/test_labeling.py`.
+- All new names exported at top level and via their packages.
+
 ## [1.41.0] — 2026-06-11
 
 **Graph export & interchange — Neuronpedia JSON + self-contained HTML.**

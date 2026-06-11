@@ -33,6 +33,13 @@ def test_public_surface():
         "save_neuronpedia_graph",
         "to_html",
         "to_neuronpedia_graph",
+        # weight-based transcoder analysis / consensus / labeling (v1.42)
+        "CircuitConsensus",
+        "FeatureEvidence",
+        "describe_features",
+        "feature_token_alignment",
+        "top_virtual_connections",
+        "transcoder_virtual_weights",
         "CircuitHypothesis",
         "CrosscoderWrapper",
         "DASResult",

@@ -171,3 +171,76 @@ def test_top_embedding_tokens_correctness():
     W_E[3, 0] = 5.0
     token_ids, scores = top_embedding_tokens(direction, W_E, k=1)
     assert token_ids[0] == 3
+
+
+# ---------------------------------------------------------------------------
+# v1.42 — weight-based transcoder analysis
+# ---------------------------------------------------------------------------
+
+from circuitry.core import circuits  # noqa: E402
+
+
+class TestTranscoderVirtualWeights:
+    def test_shape_and_value(self):
+        dec = torch.randn(6, 4)
+        enc = torch.randn(4, 8)
+        v = circuits.transcoder_virtual_weights(dec, enc)
+        assert v.shape == (6, 8)
+        torch.testing.assert_close(v, dec @ enc)
+
+    def test_identity_composition(self):
+        # decoder rows == encoder columns -> V is the Gram matrix
+        w = torch.eye(3)
+        v = circuits.transcoder_virtual_weights(w, w)
+        torch.testing.assert_close(v, torch.eye(3))
+
+    def test_d_model_mismatch_raises(self):
+        with pytest.raises(ValueError, match="d_model mismatch"):
+            circuits.transcoder_virtual_weights(torch.randn(6, 4), torch.randn(5, 8))
+
+    def test_float32_output(self):
+        v = circuits.transcoder_virtual_weights(
+            torch.randn(2, 3, dtype=torch.float64), torch.randn(3, 2)
+        )
+        assert v.dtype == torch.float32
+
+
+class TestTopVirtualConnections:
+    def test_orders_by_abs_weight(self):
+        v = torch.tensor([[0.1, -5.0], [2.0, 0.0]])
+        conns = circuits.top_virtual_connections(v, k=3)
+        assert conns[0] == (0, 1, -5.0)
+        assert conns[1] == (1, 0, 2.0)
+        assert conns[2] == (0, 0, pytest.approx(0.1))
+
+    def test_k_capped_at_numel(self):
+        v = torch.ones(2, 2)
+        assert len(circuits.top_virtual_connections(v, k=100)) == 4
+
+    def test_non_2d_raises(self):
+        with pytest.raises(ValueError, match="2-D"):
+            circuits.top_virtual_connections(torch.ones(2, 2, 2))
+
+
+class TestFeatureTokenAlignment:
+    def test_shapes(self):
+        ids, scores = circuits.feature_token_alignment(
+            torch.randn(5, 4), torch.randn(4, 11), k=3
+        )
+        assert ids.shape == (5, 3) and scores.shape == (5, 3)
+        assert ids.dtype == torch.int64
+
+    def test_matches_top_logit_tokens_per_row(self):
+        dec = torch.randn(3, 4)
+        wu = torch.randn(4, 9)
+        ids, scores = circuits.feature_token_alignment(dec, wu, k=4)
+        for f in range(3):
+            ref_ids, ref_scores = circuits.top_logit_tokens(dec[f], wu, k=4)
+            assert ids[f].tolist() == ref_ids
+            torch.testing.assert_close(scores[f], torch.tensor(ref_scores))
+
+    def test_k_capped_at_vocab(self):
+        ids, _ = circuits.feature_token_alignment(
+            torch.randn(2, 4), torch.randn(4, 3), k=10
+        )
+        assert ids.shape == (2, 3)

@@ -18,6 +18,7 @@ from circuitry.patching.cd import CDResult, cd_token_contributions
 from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
+from circuitry.patching.consensus import CircuitConsensus
 from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
@@ -61,6 +62,7 @@ __all__ = [
     "CausalScrubRunner",
     "CertifiedCircuitResult",
     "CertifiedCircuitRunner",
+    "CircuitConsensus",
     "CircuitHypothesis",
     "CrosscoderWrapper",
     "DASResult",

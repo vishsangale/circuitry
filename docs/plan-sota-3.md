@@ -61,7 +61,7 @@ no external URLs, CLI smoke.
 
 ---
 
-## Milestone v1.42 — Weight-based transcoder analysis, consensus, labeling hooks
+## Milestone v1.42 — Weight-based transcoder analysis, consensus, labeling hooks — SHIPPED 2026-06-11
 
 **Theme:** The three cheapest method stragglers. All respect invariant #3 (no API
 dependencies — labeling is a user-supplied callable).

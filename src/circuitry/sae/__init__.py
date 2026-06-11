@@ -11,6 +11,7 @@ from circuitry.sae.grad import (
     sae_decompose,
     sae_influence_scores,
 )
+from circuitry.sae.labeling import FeatureEvidence, describe_features
 from circuitry.sae.loader import load_gemma_scope, load_llama_scope, load_sae
 from circuitry.sae.metrics import (
     UNRELIABLE_METRICS,
@@ -24,7 +25,9 @@ __all__ = [
     "SUPPORTED_SAE_ARCHITECTURES",
     "UNRELIABLE_METRICS",
     "assert_supported_sae",
+    "FeatureEvidence",
     "decode_features",
+    "describe_features",
     "encode_features",
     "fgaa_steering_vector",
     "load_gemma_scope",
