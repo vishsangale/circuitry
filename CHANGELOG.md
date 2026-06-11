@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] — 2026-06-11
+
+**Multi-process foundation — `core/distributed.py` (design §11, first
+increment).** Fifth milestone of `docs/plan-sota-3.md`, started: the pure
+reduce helpers the Recorder will call before primitives so `core/`
+primitives never know about ranks. User-facing semantics are unchanged in
+this release — circuitry still no-ops on non-zero ranks and FSDP-sharded
+params still produce wrong rank-0 numbers (README warning stands); the
+`TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` recorder integration lands
+in a follow-up.
+
+### Added
+- **`core/distributed.py`** (new module):
+  - `is_distributed()` / `world_size()` / `is_main_process()` — process
+    group introspection; single-process defaults (`False` / `1` / `True`).
+  - `all_gather_concat(t, *, dim=0, group=None) → Tensor` — activation-side
+    reduce: all-gather + concat along the batch dim; passthrough (returns
+    the same object) when not distributed.
+  - `full_tensor(param) → Tensor` — weight-side reduce: DTensor
+    (FSDP2 / TP) params gathered via `.full_tensor()`; plain tensors pass
+    through. FSDP1 flat-param gathering is explicitly out of scope here
+    (recorder-side `summon_full_params` work; design §11).
+  - 7 new tests in `tests/core/test_distributed.py`, including a real
+    2-process gloo group via `torch.multiprocessing.spawn` validating
+    gather shape/order and rank-0 semantics.
+
 ## [1.44.0] — 2026-06-11
 
 **MoE routing diagnostics.** Fourth milestone of `docs/plan-sota-3.md`:

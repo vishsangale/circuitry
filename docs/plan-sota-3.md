@@ -124,15 +124,18 @@ as `core/weight.py::gradient_subspace_saturation`.)
 
 ---
 
-## Milestone v1.45 — Multi-process (DDP / FSDP) [XL]
+## Milestone v1.45 — Multi-process (DDP / FSDP) [XL] — IN PROGRESS (item 1 shipped 2026-06-11 as v1.45.0)
 
 **Theme:** The moat. Implements the design §11 additive path so training-time
 diagnostics are correct at real scale. Likely split into sub-releases.
 
 ### Items (per design §11 contract)
 
-1. `core/distributed.py` — pure reduce helpers (`all_gather_concat`, sharded-SVD
-   composition where exact, documented approximations where not).
+1. ~~`core/distributed.py` — reduce helpers~~ **SHIPPED v1.45.0**: `is_distributed`,
+   `world_size`, `is_main_process`, `all_gather_concat` (activation-side),
+   DTensor-aware `full_tensor` (weight-side; FSDP1 flat-param gathering is
+   recorder-side work in item 4). 2-process gloo tests in
+   `tests/core/test_distributed.py`.
 2. `TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` — hook-level sources that gather
    before computing, with budget guards.
 3. DDP: rank-0 emission with optional cross-rank activation stats reduction.

@@ -56,6 +56,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── spectral.py
 │   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); fourier_feature_alignment, information_bottleneck_score (v1.27)
 │   │   ├── moe.py          # routing_entropy, expert_load_balance, pathway_complexity (v1.44)
+│   │   ├── distributed.py  # §11 reduce helpers: all_gather_concat, full_tensor (v1.45)
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl; logit_lens_distributions, future_lens_kl (v1.23–v1.24)
 │   │   ├── steer.py        # steer_vector (v1.23); repe_direction, directional_ablation (v1.29)
 │   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24); mdl_probe/MDLResult, mass_mean_probe/MassMeanProbe, verify_linear_representation (v1.29)
@@ -932,7 +933,7 @@ Current releases are single-process. This section locks in *what circuitry does 
 To enable multi-process diagnostics in a future release without changing the current API surface:
 
 - `HookPoint` already takes a `source` enum; the future release adds `TensorSource.WEIGHT_FULL` and `ACTIVATION_FULL` variants that trigger an `all_gather_into_tensor` before passing to the primitive. The pattern / modules / selector escape hatches are unchanged.
-- `core/` primitives stay single-tensor in / single-float out. The future release adds a small `core/distributed.py` with helpers (`all_gather_sharded_param(param) -> Tensor`) that the recorder calls before the primitive; primitives themselves never know about ranks.
+- `core/` primitives stay single-tensor in / single-float out. The future release adds a small `core/distributed.py` with helpers (`all_gather_sharded_param(param) -> Tensor`) that the recorder calls before the primitive; primitives themselves never know about ranks. **Status: the helper module shipped in v1.45.0** (`is_distributed` / `world_size` / `is_main_process` / `all_gather_concat` / DTensor-aware `full_tensor`; single-process passthrough semantics; 2-process gloo tests). The recorder integration (`WEIGHT_FULL` / `ACTIVATION_FULL` sources, FSDP1 `summon_full_params` gathering, all-rank collective participation with rank-0-only writes) remains the follow-up.
 - `MetricWriter` gains an optional `rank: int` constructor argument; the default tensorboard adapter writes from rank 0 only (current behavior). A new `DDPMetricWriter` aggregates histogram tensors across ranks before writing.
 - The `StepContext.gradients` / `activations` / `weights` dicts gain a "gathered" status flag; built-in diagnostics ignore it (they only see post-gather tensors), but custom diagnostics that want raw shards can opt in.
 

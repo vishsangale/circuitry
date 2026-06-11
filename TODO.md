@@ -46,6 +46,11 @@ CI-enforced invariant.
   non-zero ranks no-op and FSDP-sharded params give wrong rank-0 diagnostics. The upgrade
   path is additive (`TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` + `core/distributed.py`
   reduce helpers) with no existing-API rewrite. See design §11 for the contract.
+  **Progress (v1.45.0):** `core/distributed.py` shipped (`all_gather_concat`,
+  DTensor-aware `full_tensor`, rank introspection; 2-process gloo tests). Remaining:
+  the `TensorSource` integration, FSDP1 `summon_full_params` gathering, all-rank
+  collective participation with rank-0-only writes, and a 2-process CI job.
+  See `docs/plan-sota-3.md` v1.45.
 
 ---
 
