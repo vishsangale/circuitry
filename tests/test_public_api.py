@@ -49,6 +49,9 @@ def test_public_surface():
         "patch_site_steps",
         "prepare_generation_attribution",
         "trace_generation",
+        # stochastic parameter decomposition (v1.48)
+        "SPDResult",
+        "SPDRunner",
         # cross-layer feature flow (v1.47)
         "FeatureFlowGraph",
         "FlowEdge",

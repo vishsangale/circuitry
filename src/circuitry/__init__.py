@@ -130,6 +130,7 @@ from circuitry.patching.export import (
     to_html,
     to_neuronpedia_graph,
 )
+from circuitry.patching.spd import SPDResult, SPDRunner
 from circuitry.patching.steer import apply_ablation, apply_steer
 from circuitry.recipes import Recipe, register_recipe
 from circuitry.recipes._discovery import discover
@@ -143,7 +144,7 @@ from circuitry.sae.labeling import FeatureEvidence, describe_features
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.47.0"
+__version__ = "1.48.0"
 
 __all__ = [
     "CDResult",
@@ -162,6 +163,8 @@ __all__ = [
     "CircuitConsensus",
     "GenerationAttributionSetup",
     "GenerationTrace",
+    "SPDResult",
+    "SPDRunner",
     "StepRecord",
     "FeatureEvidence",
     "FeatureFlowGraph",

@@ -82,6 +82,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── consensus.py    # CircuitConsensus — cross-method stability ensembles (v1.42)
 │   │   ├── export.py       # to_neuronpedia_graph / to_html + save_* — graph interchange (v1.41)
 │   │   ├── generation.py   # trace_generation, apply_steer_steps/patch_site_steps, generation_attribution (v1.43)
+│   │   ├── spd.py          # SPDRunner / SPDResult — stochastic parameter decomposition (v1.48)
 │   │   └── scrubbing.py    # CausalScrubRunner / CircuitHypothesis / CausalScrubResult (v1.28)
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
@@ -350,6 +351,20 @@ prepare_generation_attribution(model, clean_ids, corrupted_ids, *, target_step) 
 # Greedy-generates the realized sequence, teacher-forces the realized prefix onto BOTH prompts,
 # metric = last-position logit of the realized target token → feed to any clean/corrupted runner.
 generation_attribution(..., runner="causal_trace"|"patch_grid", modules|module_pattern=...) -> CausalTraceResult | PatchGridResult
+
+# Stochastic Parameter Decomposition (v1.48) — patching/spd.py (arXiv:2506.20790)
+from circuitry.patching.spd import SPDRunner, SPDResult
+SPDRunner(model, module: nn.Linear, *, n_components, importance_hidden=64, seed=0)
+# .run(batches, *, n_steps=500, lr=1e-3, coeff_faith, coeff_stoch, coeff_imp,
+#      output_loss="mse"|"kl", forward_fn=None) -> SPDResult
+# Rank-one subcomponents V (d_in, C) / U (C, d_out) with V @ U ≈ W.T; hook swaps the
+# module output for ((x @ V) * m) @ U + bias during training. Masks m = ci + (1-ci)·U(0,1)
+# (uniform in [ci, 1]); ci(x) from a small MLP on the module input (original APD/SPD
+# formulation; the reference repo's CI-transformer is an LM-scale upgrade). Losses:
+# faithfulness ‖W.T − V@U‖² + stochastic output reconstruction + mean(ci) minimality.
+# Model frozen during run() and fully restored (weights/grad flags/mode/hooks).
+# SPDResult: .U, .V, .faithfulness_error, .losses, .importance(x), .active_components(x,
+#   threshold), .component_weight(c) -> (d_out, d_in), .reconstructed_weight(), .to_markdown()
 
 # MIB benchmarks (v1.32 additions)
 from circuitry import benchmarks

@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] — 2026-06-11
+
+**Stochastic Parameter Decomposition.** Second loose-end milestone
+(plan-sota-3 addendum): the parameter-space interpretability pillar
+(Bushnaq et al., arXiv:2506.20790; reference implementation
+github.com/goodfire-ai/spd; successor to APD arXiv:2501.14926).
+
+### Added
+- **`patching/spd.py`** (new module):
+  - `SPDRunner(model, module, *, n_components, importance_hidden=64,
+    seed=0)` — decomposes one `nn.Linear`'s weight into `C` rank-one
+    subcomponents (`V (d_in, C)`, `U (C, d_out)`; `V @ U ≈ W.T`).
+    Hook-based — during training a forward hook swaps the module output
+    for the masked component forward (`((x @ V) * m) @ U + bias`); no
+    model surgery, model frozen and fully restored after `run()`.
+  - Training mirrors the reference mechanics: stochastic masks
+    `m = ci + (1 − ci) · Uniform(0, 1)` (uniform in `[ci, 1]`), causal
+    importance `ci(x)` from a small MLP on the module input (the
+    original APD/SPD formulation; the reference repo uses a
+    CI-transformer at LM scale — documented), and three losses:
+    faithfulness `‖W.T − V @ U‖²`, stochastic reconstruction (output
+    MSE, or softmax-KL via `output_loss="kl"`), and importance
+    minimality (`mean(ci)`; the reference adds a log-scaled term —
+    simplification documented). `forward_fn=` escape hatch for
+    non-standard forwards.
+  - `SPDResult` — `.U` / `.V`, `.faithfulness_error` (relative),
+    per-step `.losses`, `.importance(x)`, `.active_components(x,
+    threshold)`, `.component_weight(c)` (rank-one `(d_out, d_in)`),
+    `.reconstructed_weight()`, `.to_markdown(x=...)`.
+  - Convergence verified in tests (relative faithfulness error < 0.05
+    on a toy Linear); model-hygiene tests assert weights, grad flags,
+    train mode, and hooks are untouched after `run()`. 16 new tests in
+    `tests/patching/test_spd.py`.
+- `SPDRunner` / `SPDResult` exported at top level and via
+  `circuitry.patching`.
+
 ## [1.47.0] — 2026-06-11
 
 **Cross-layer feature flow.** First loose-end milestone (plan-sota-3

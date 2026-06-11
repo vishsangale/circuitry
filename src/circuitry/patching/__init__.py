@@ -49,6 +49,7 @@ from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.runner import PatchResult, PatchRunner
 from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
 from circuitry.patching.sites import Site
+from circuitry.patching.spd import SPDResult, SPDRunner
 from circuitry.patching.steer import apply_steer, steer_vector
 from circuitry.patching.tl_bridge import to_hooked_transformer
 
@@ -104,6 +105,8 @@ __all__ = [
     "SAEFeatureEdgeRunner",
     "SAEFeatureRunner",
     "SAEFeatureTemporalRunner",
+    "SPDResult",
+    "SPDRunner",
     "Site",
     "StepRecord",
     "TemporalAtPResult",
