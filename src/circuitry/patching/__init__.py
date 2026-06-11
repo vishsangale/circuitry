@@ -29,6 +29,16 @@ from circuitry.patching.export import (
     to_html,
     to_neuronpedia_graph,
 )
+from circuitry.patching.generation import (
+    GenerationAttributionSetup,
+    GenerationTrace,
+    StepRecord,
+    apply_steer_steps,
+    generation_attribution,
+    patch_site_steps,
+    prepare_generation_attribution,
+    trace_generation,
+)
 from circuitry.patching.graph import Edge, Node
 from circuitry.patching.hap import HAPRunner
 from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
@@ -73,6 +83,8 @@ __all__ = [
     "EdgePruningResult",
     "EdgePruningRunner",
     "FeatureACDCRunner",
+    "GenerationAttributionSetup",
+    "GenerationTrace",
     "HAPRunner",
     "HeadKnockoutResult",
     "HeadKnockoutRunner",
@@ -93,17 +105,23 @@ __all__ = [
     "SAEFeatureRunner",
     "SAEFeatureTemporalRunner",
     "Site",
+    "StepRecord",
     "TemporalAtPResult",
     "TranscoderWrapper",
     "apply_iti",
     "apply_steer",
+    "apply_steer_steps",
     "cd_token_contributions",
     "fit_iti",
+    "generation_attribution",
     "patch_site",
+    "patch_site_steps",
+    "prepare_generation_attribution",
     "save_html",
     "save_neuronpedia_graph",
     "steer_vector",
     "to_hooked_transformer",
+    "trace_generation",
     "to_html",
     "to_neuronpedia_graph",
 ]

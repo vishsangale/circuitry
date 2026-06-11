@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.0] — 2026-06-11
+
+**Generation-time analysis.** Third milestone of `docs/plan-sota-3.md`:
+trace, steer, and patch across multi-token decoding, not just one forward
+pass. Model contract: anything causal-LM-shaped (`model(ids)` → logits
+tensor or `.logits` object, or a custom `logits_fn`); HF or hand-rolled.
+
+### Added
+- **`patching/generation.py`** (new module):
+  - `trace_generation(model, input_ids, *, n_steps, modules, logits_fn,
+    next_token_fn, top_k, stop_token_id) → GenerationTrace` — drives a
+    greedy (or custom) decode loop, teacher-forced full-prefix re-runs
+    (exact, KV-cache-free), recording per step: chosen token, top-k
+    logits, next-token entropy, and per-site activation stats
+    (`norm`/`mean`/`std` of the last position) for any `{name: module}`
+    map. `GenerationTrace` exposes `.token_ids`, `.entropy_series()`,
+    `.site_series(name, stat)`, `.to_markdown()`.
+  - `apply_steer_steps(model, module, vector, *, steps, coeff)` /
+    `patch_site_steps(model, module, value, *, steps, position=-1)` —
+    step-indexed interventions: active only on the selected decode
+    steps. The step clock counts top-level model forwards (prefill =
+    step 0), so both context managers also work inside an external
+    KV-cached `model.generate` loop. Tuple outputs handled; hooks
+    always removed.
+  - `prepare_generation_attribution(model, clean_ids, corrupted_ids, *,
+    target_step) → GenerationAttributionSetup` — attributes a
+    *generated* token: greedy-generates the realized sequence, appends
+    the realized prefix to both prompts (teacher-forced), and exposes
+    `.metric` (last-position logit of the realized target token) —
+    exactly the single-forward shape every existing runner expects.
+  - `generation_attribution(..., runner="causal_trace"|"patch_grid")` —
+    convenience wrapper running the setup through `CausalTraceRunner`
+    or `PatchGridRunner`.
+  - All names exported at top level and via `circuitry.patching`.
+    25 new tests in `tests/patching/test_generation.py`.
+
 ## [1.42.0] — 2026-06-11
 
 **Weight-based transcoder analysis, cross-method consensus, pluggable

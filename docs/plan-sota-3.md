@@ -83,7 +83,7 @@ dependencies — labeling is a user-supplied callable).
 
 ---
 
-## Milestone v1.43 — Generation-time analysis
+## Milestone v1.43 — Generation-time analysis — SHIPPED 2026-06-11
 
 **Theme:** Patch, steer, and trace across multi-token decoding, not just one forward
 pass. Hook-based and model-agnostic (works with HF `generate` or a hand-rolled decode
@@ -96,7 +96,7 @@ loop); KV-cache-aware (hooks stay armed across steps; per-step seq-len of 1 hand
 | `patching/generation.py::GenerationTrace` | Per-decode-step capture: chosen token, top-k logits, per-site activation stats (entropy, norm), optional logit-lens KL per step. `.to_markdown()`, export hook. |
 | `patching/generation.py::trace_generation(model, step_fn \| generate_fn, *, sites, n_steps)` | Drives or observes a decode loop; returns `GenerationTrace`. |
 | `patching/generation.py::apply_steer_steps(model, site, vector, *, steps)` / `patch_site_steps(...)` | Step-indexed interventions: active only on decode steps in `steps` (e.g. steer only after step 10). Builds on existing `apply_steer` / `patch_site` context managers. |
-| `patching/generation.py::generation_attribution(model, prompt, *, target_step, method='atp')` | Attribute a *generated* token at step t back through the prompt + earlier generated tokens (re-runs teacher-forced forward over the realized sequence, then delegates to existing runners). |
+| `patching/generation.py::prepare_generation_attribution(...)` + `generation_attribution(model, clean, corrupted, *, target_step, runner='causal_trace'\|'patch_grid')` | Attribute a *generated* token at step t back through the prompt + earlier generated tokens (re-runs teacher-forced forward over the realized sequence, then delegates to existing runners). |
 
 ### Tests
 ~25 tests with a tiny decode loop over the existing test transformer.

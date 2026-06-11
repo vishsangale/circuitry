@@ -78,6 +78,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── das.py          # DASRunner / DASResult — interchange-intervention rotation learning (v1.28)
 │   │   ├── consensus.py    # CircuitConsensus — cross-method stability ensembles (v1.42)
 │   │   ├── export.py       # to_neuronpedia_graph / to_html + save_* — graph interchange (v1.41)
+│   │   ├── generation.py   # trace_generation, apply_steer_steps/patch_site_steps, generation_attribution (v1.43)
 │   │   └── scrubbing.py    # CausalScrubRunner / CircuitHypothesis / CausalScrubResult (v1.28)
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
@@ -327,6 +328,25 @@ FeatureEvidence(layer, feature, top_tokens=(), top_logit_tokens=(), activation_s
 describe_features(evidence, label_fn) -> {(layer, feature): str}
 # label_fn: Callable[[str], str] — the USER brings the LLM call (invariant #3: circuitry
 # never imports a downstream API client). Output plugs into to_neuronpedia_graph/to_html labels=.
+
+# Generation-time analysis (v1.43) — patching/generation.py
+from circuitry.patching.generation import (
+    trace_generation, GenerationTrace, StepRecord,
+    apply_steer_steps, patch_site_steps,
+    prepare_generation_attribution, generation_attribution,
+)
+trace_generation(model, input_ids, *, n_steps, modules=None, logits_fn=None, next_token_fn=None, top_k=5, stop_token_id=None) -> GenerationTrace
+# Teacher-forced full-prefix decode loop (exact; no KV cache needed). Per step records token,
+# top-k logits, next-token entropy, and per-site last-position stats for {name: module}.
+# GenerationTrace: .records, .token_ids, .entropy_series(), .site_series(name, stat), .to_markdown()
+apply_steer_steps(model, module, vector, *, steps, coeff=1.0)   # steer only on selected decode steps
+patch_site_steps(model, module, value, *, steps, position=-1)   # replace last-position activation on selected steps
+# Step clock = top-level forwards of `model` (prefill = step 0) — also correct inside an
+# external KV-cached generate loop. Tuple outputs handled; hooks removed on exit.
+prepare_generation_attribution(model, clean_ids, corrupted_ids, *, target_step) -> GenerationAttributionSetup
+# Greedy-generates the realized sequence, teacher-forces the realized prefix onto BOTH prompts,
+# metric = last-position logit of the realized target token → feed to any clean/corrupted runner.
+generation_attribution(..., runner="causal_trace"|"patch_grid", modules|module_pattern=...) -> CausalTraceResult | PatchGridResult
 
 # MIB benchmarks (v1.32 additions)
 from circuitry import benchmarks

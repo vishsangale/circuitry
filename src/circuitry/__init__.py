@@ -103,6 +103,16 @@ from circuitry.patching.hap import HAPRunner
 from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
 from circuitry.patching.consensus import CircuitConsensus
+from circuitry.patching.generation import (
+    GenerationAttributionSetup,
+    GenerationTrace,
+    StepRecord,
+    apply_steer_steps,
+    generation_attribution,
+    patch_site_steps,
+    prepare_generation_attribution,
+    trace_generation,
+)
 from circuitry.patching.export import (
     save_html,
     save_neuronpedia_graph,
@@ -122,7 +132,7 @@ from circuitry.sae.labeling import FeatureEvidence, describe_features
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.42.0"
+__version__ = "1.43.0"
 
 __all__ = [
     "CDResult",
@@ -139,6 +149,9 @@ __all__ = [
     "CausalTraceRunner",
     "CertifiedCircuitResult",
     "CircuitConsensus",
+    "GenerationAttributionSetup",
+    "GenerationTrace",
+    "StepRecord",
     "FeatureEvidence",
     "composition_scores",
     "describe_features",
@@ -223,6 +236,10 @@ __all__ = [
     "register_recipe",
     "repe_direction",
     "repr_drift",
+    "apply_steer_steps",
+    "generation_attribution",
+    "patch_site_steps",
+    "prepare_generation_attribution",
     "save_html",
     "save_neuronpedia_graph",
     "scan_run",
@@ -232,6 +249,7 @@ __all__ = [
     "superposition_index",
     "to_html",
     "to_neuronpedia_graph",
+    "trace_generation",
     "token_similarity",
     "train_linear_probe",
     "update_delta",
