@@ -75,6 +75,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── edge_pruning.py # EdgePruningRunner / EdgePruningResult — mask-logit L0 pruning (v1.25)
 │   │   ├── hap.py          # HAPRunner — EAP pre-filter + EdgePruningRunner (v1.25)
 │   │   ├── das.py          # DASRunner / DASResult — interchange-intervention rotation learning (v1.28)
+│   │   ├── export.py       # to_neuronpedia_graph / to_html + save_* — graph interchange (v1.41)
 │   │   └── scrubbing.py    # CausalScrubRunner / CircuitHypothesis / CausalScrubResult (v1.28)
 │   ├── recorder/           # opinionated training-time workflow
 │   │   ├── live.py         # LiveRecorder
@@ -93,7 +94,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   └── null.py
 │   └── cli/
 │       ├── __init__.py
-│       └── main.py         # circuitry scan / report / compare / list-recipes / fit-tuned-lens
+│       └── main.py         # circuitry scan / report / compare / list-recipes / fit-tuned-lens / export-graph
 ├── tests/
 │   ├── core/
 │   ├── recorder/
@@ -503,9 +504,10 @@ circuitry compare run_a run_b [--out path] [--compact]
 circuitry circuit-compare A.json B.json [--out path]
 circuitry list-recipes
 circuitry fit-tuned-lens --model pkg.mod:make_model --batches pkg.mod:make_batches --out lens.pt [--layers 0 1 2] [--steps N] [--lr LR] [--weight-decay WD] [--device DEV]
+circuitry export-graph circuit.json --format neuronpedia|html --out PATH [--slug SLUG] [--scan MODEL] [--top-k K]
 ```
 
-`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2). `scan --model-factory` (v1.17) accepts a `package.module:attr` entry point (zero-arg factory returning the model), enabling retrospective analysis on saved checkpoints without writing a custom script; `--out` overrides the default `<run>/scan_report` output directory. `circuit-compare A.json B.json` (v1.17) diffs two circuit JSON files (EAP or ACDC format) by edge-set, printing added / removed / shared edge counts; `--out path` writes the diff table to a file. `fit-tuned-lens` (v1.10) resolves `--model` / `--batches` as `package.module:attr` entry points (zero-arg factories returning the model and an iterable of inputs), fits per-layer tuned-lens translators post-hoc, and writes a `TunedLens` to `--out`; load it into `recipe.tuned_lens` and add `"tuned_lens_kl"` to `activation_diagnostics` to emit the diagnostic.
+`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2). `scan --model-factory` (v1.17) accepts a `package.module:attr` entry point (zero-arg factory returning the model), enabling retrospective analysis on saved checkpoints without writing a custom script; `--out` overrides the default `<run>/scan_report` output directory. `circuit-compare A.json B.json` (v1.17) diffs two circuit JSON files (EAP or ACDC format) by edge-set, printing added / removed / shared edge counts; `--out path` writes the diff table to a file. `fit-tuned-lens` (v1.10) resolves `--model` / `--batches` as `package.module:attr` entry points (zero-arg factories returning the model and an iterable of inputs), fits per-layer tuned-lens translators post-hoc, and writes a `TunedLens` to `--out`; load it into `recipe.tuned_lens` and add `"tuned_lens_kl"` to `activation_diagnostics` to emit the diagnostic. `export-graph` (v1.41) re-serializes a saved circuit JSON file (`EAPResult.save()`) to the circuit-tracer / Neuronpedia attribution-graph JSON schema (`--format neuronpedia`; uploadable to neuronpedia.org) or to a dependency-free single-file HTML report (`--format html`); the underlying `patching/export.py` functions (`to_neuronpedia_graph` / `to_html` / `save_*`) additionally accept `CLTGraphResult` and `SAEFeatureCircuit` directly and a `labels={(layer, feature): str}` mapping written to node `clerp` fields. Export is pure serialization (stdlib `json` only; no forward passes; the HTML embeds inline SVG + vanilla JS with no external fetches).
 
 **Static vs trajectory diagnostics on a scan.** *Static* weight diagnostics (`effective_rank`, `stable_rank`, `condition_number`, `heavy_tail_alpha`, `sv_histogram`) work on a single checkpoint. *Trajectory* diagnostics (`update_delta`, `rank_trajectory`, `direction_cosine`) compare consecutive emitted snapshots and produce nothing until ≥2 (≥3 for `direction_cosine`) checkpoints are scanned. A single-snapshot `scan_run` emits only the static families and warns once when trajectory diagnostics are requested with fewer than two checkpoints.
 

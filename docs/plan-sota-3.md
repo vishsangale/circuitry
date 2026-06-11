@@ -38,7 +38,7 @@ arXiv:2506.21551.
 
 ---
 
-## Milestone v1.41 — Graph export & interchange (output layer)
+## Milestone v1.41 — Graph export & interchange (output layer) — SHIPPED 2026-06-11
 
 **Theme:** Make every circuitry graph result exchangeable with the existing
 visualization ecosystem instead of competing with it. Pure serialization; stdlib-only
@@ -103,10 +103,12 @@ loop); KV-cache-aware (hooks stay armed across steps; per-step seq-len of 1 hand
 
 ---
 
-## Milestone v1.44 — MoE routing diagnostics + gradient subspace saturation
+## Milestone v1.44 — MoE routing diagnostics
 
-**Theme:** Close the last two deferred items from plan-sota-next; MoE is the dominant
-2026 frontier architecture and the Recorder has no routing story.
+**Theme:** Close the last deferred item from plan-sota-next; MoE is the dominant
+2026 frontier architecture and the Recorder has no routing story. (Gradient
+subspace saturation, originally listed here, turned out to have already shipped
+as `core/weight.py::gradient_subspace_saturation`.)
 
 ### Items
 
@@ -115,8 +117,7 @@ loop); KV-cache-aware (hooks stay armed across steps; per-step seq-len of 1 hand
 | `core/moe.py::routing_entropy(gate_probs) → float` | Mean per-token entropy of router distribution. | arXiv:2506.21551 |
 | `core/moe.py::expert_load_balance(expert_ids, n_experts) → float` | Normalized load-balance score (1 = uniform). | Shazeer 2017; arXiv:2506.21551 |
 | `core/moe.py::pathway_complexity(expert_ids_per_layer) → float` | Effective number of distinct expert paths (exp of path-distribution entropy) per sample batch. | arXiv:2506.21551 |
-| `core/gradient.py::gradient_subspace_saturation(grad_history, *, k) → float` | Fraction of gradient energy in the top-k subspace of buffered per-layer gradients across steps; saturation → training in a low-dim subspace. | arXiv:2508.07370 |
-| Recorder wiring | Opt-in `"moe_routing"` diagnostic (captures gate outputs via existing hook strategies; emits `moe/routing_entropy/<module>` etc.); opt-in bounded-buffer gradient-subspace diagnostic with explicit memory budget. | — |
+| Recorder wiring | Opt-in `"moe_routing"` diagnostic (captures gate outputs via existing hook strategies; emits `moe/routing_entropy/<module>` etc.). | — |
 
 ### Tests
 ~25 tests; OLMoE eval script extension under `scripts/`.

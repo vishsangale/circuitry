@@ -28,6 +28,11 @@ def test_public_surface():
         # patching
         "CausalScrubResult",
         "CausalScrubRunner",
+        # graph export (v1.41)
+        "save_html",
+        "save_neuronpedia_graph",
+        "to_html",
+        "to_neuronpedia_graph",
         "CircuitHypothesis",
         "CrosscoderWrapper",
         "DASResult",

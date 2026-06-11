@@ -138,3 +138,37 @@ def test_scan_bad_entry_point_exits_nonzero():
         capture_output=True, text=True,
     )
     assert result.returncode != 0
+
+
+def test_export_graph_html_and_neuronpedia(tmp_path):
+    from circuitry.patching.eap import EAPResult
+    from circuitry.patching.graph import build_graph
+
+    graph = build_graph(n_layers=1, n_heads=2)
+    result = EAPResult(
+        graph=graph,
+        scores={e: 0.1 * (i + 1) for i, e in enumerate(graph.edges)},
+    )
+    circuit_path = tmp_path / "circuit.json"
+    result.save(circuit_path)
+
+    html_out = tmp_path / "graph.html"
+    proc = subprocess.run(
+        [sys.executable, "-m", "circuitry.cli.main", "export-graph",
+         str(circuit_path), "--format", "html", "--out", str(html_out)],
+        capture_output=True, text=True, check=True,
+    )
+    assert str(html_out) in proc.stdout
+    assert html_out.read_text().startswith("<!DOCTYPE html>")
+
+    np_out = tmp_path / "graph.np.json"
+    subprocess.run(
+        [sys.executable, "-m", "circuitry.cli.main", "export-graph",
+         str(circuit_path), "--format", "neuronpedia",
+         "--slug", "smoke", "--scan", "tiny", "--out", str(np_out)],
+        capture_output=True, text=True, check=True,
+    )
+    import json as _json
+    data = _json.loads(np_out.read_text())
+    assert data["metadata"]["slug"] == "smoke"
+    assert len(data["links"]) == len(result.scores)

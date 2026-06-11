@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.0] — 2026-06-11
+
+**Graph export & interchange — Neuronpedia JSON + self-contained HTML.**
+First milestone of `docs/plan-sota-3.md`: circuitry graph results become
+exchangeable with the existing visualization ecosystem (Anthropic
+circuit-tracer / Neuronpedia) instead of terminating at `to_markdown()`.
+
+### Added
+- **`patching/export.py`** (new module) — pure serialization, stdlib `json` only:
+  - `to_neuronpedia_graph(result, *, slug, scan, prompt, prompt_tokens,
+    node_threshold, top_k, labels) → dict` — serializes `CLTGraphResult`,
+    `EAPResult`, or `SAEFeatureCircuit` to the circuit-tracer /
+    Neuronpedia attribution-graph JSON schema (`schema_version` 1:
+    `metadata` / `qParams` / `nodes` / `links`; node `feature_type` ∈
+    {feature, error, embedding, logit}), uploadable to neuronpedia.org.
+    `labels={(layer, feature): str}` writes human labels to node `clerp`
+    fields (auto-interp labeling lands in v1.42).
+  - `save_neuronpedia_graph(result, path, **kwargs) → str` — JSON file
+    wrapper; returns the absolute path.
+  - `to_html(result, *, title, top_k=50, node_threshold, labels) → str` —
+    dependency-free single-file HTML report: deterministic layered-DAG
+    inline SVG (edge width/colour by score, hover isolation via vanilla
+    JS, no external URL fetches) with the normalized graph embedded as
+    `<script type="application/json">` for downstream tooling.
+  - `save_html(result, path, **kwargs) → str`.
+  - All four exported at top level (`circuitry.*`) and via
+    `circuitry.patching`. `SAEFeatureCircuit` handling is duck-typed so
+    `export.py` stays importable without sae_lens.
+  - 29 new tests in `tests/patching/test_export.py`.
+- **CLI: `circuitry export-graph <circuit.json> --format neuronpedia|html
+  --out PATH [--slug --scan --top-k]`** — re-serializes a saved circuit
+  JSON file (`EAPResult.save()`) to either format. 1 new test in
+  `tests/test_cli.py`.
+
 ## [1.40.0] — 2026-06-09
 
 **Mean ablation + feature geometry.**

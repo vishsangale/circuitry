@@ -173,6 +173,23 @@ def _cmd_fit_tuned_lens(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_graph(args: argparse.Namespace) -> int:
+    from circuitry.patching.eap import EAPResult
+    from circuitry.patching.export import save_html, save_neuronpedia_graph
+
+    result = EAPResult.load(args.input)
+    if args.format == "neuronpedia":
+        out = save_neuronpedia_graph(
+            result, args.out, slug=args.slug, scan=args.scan, top_k=args.top_k,
+        )
+    else:
+        # Omit top_k when unset so save_html keeps its default (50).
+        kwargs = {} if args.top_k is None else {"top_k": args.top_k}
+        out = save_html(result, args.out, **kwargs)
+    print(f"wrote {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="circuitry")
     parser.add_argument(
@@ -248,6 +265,24 @@ def main(argv: list[str] | None = None) -> int:
     p_fit.add_argument("--weight-decay", type=float, default=1e-3, dest="weight_decay")
     p_fit.add_argument("--device", default=None, help="device to fit on (default: model's)")
     p_fit.set_defaults(func=_cmd_fit_tuned_lens)
+
+    p_export = sub.add_parser(
+        "export-graph",
+        help="export a saved circuit JSON (EAPResult.save) to Neuronpedia JSON or HTML (v1.41)",
+    )
+    p_export.add_argument("input", help="circuit JSON file written by EAPResult.save()")
+    p_export.add_argument(
+        "--format", choices=["neuronpedia", "html"], default="html",
+        help="output format (default: html)",
+    )
+    p_export.add_argument("--out", required=True, help="output file path")
+    p_export.add_argument("--slug", default="circuitry-graph", help="Neuronpedia graph slug")
+    p_export.add_argument("--scan", default="custom", help="Neuronpedia model id (scan)")
+    p_export.add_argument(
+        "--top-k", type=int, default=None, dest="top_k",
+        help="keep only the top-k edges by |score| (default: all for neuronpedia, 50 for html)",
+    )
+    p_export.set_defaults(func=_cmd_export_graph)
 
     args = parser.parse_args(argv)
     return args.func(args)

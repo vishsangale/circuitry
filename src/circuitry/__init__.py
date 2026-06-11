@@ -99,6 +99,12 @@ from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.hap import HAPRunner
 from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
+from circuitry.patching.export import (
+    save_html,
+    save_neuronpedia_graph,
+    to_html,
+    to_neuronpedia_graph,
+)
 from circuitry.patching.steer import apply_ablation, apply_steer
 from circuitry.recipes import Recipe, register_recipe
 from circuitry.recipes._discovery import discover
@@ -111,7 +117,7 @@ from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.40.0"
+__version__ = "1.41.0"
 
 __all__ = [
     "CDResult",
@@ -206,11 +212,15 @@ __all__ = [
     "register_recipe",
     "repe_direction",
     "repr_drift",
+    "save_html",
+    "save_neuronpedia_graph",
     "scan_run",
     "spectral_collapse_rank",
     "spectral_edge_gap",
     "steer_vector",
     "superposition_index",
+    "to_html",
+    "to_neuronpedia_graph",
     "token_similarity",
     "train_linear_probe",
     "update_delta",

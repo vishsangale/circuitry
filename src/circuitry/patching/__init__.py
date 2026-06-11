@@ -22,6 +22,12 @@ from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
+from circuitry.patching.export import (
+    save_html,
+    save_neuronpedia_graph,
+    to_html,
+    to_neuronpedia_graph,
+)
 from circuitry.patching.graph import Edge, Node
 from circuitry.patching.hap import HAPRunner
 from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
@@ -92,8 +98,12 @@ __all__ = [
     "cd_token_contributions",
     "fit_iti",
     "patch_site",
+    "save_html",
+    "save_neuronpedia_graph",
     "steer_vector",
     "to_hooked_transformer",
+    "to_html",
+    "to_neuronpedia_graph",
 ]
 
 _LAZY = {
