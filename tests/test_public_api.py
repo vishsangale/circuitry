@@ -49,6 +49,11 @@ def test_public_surface():
         "patch_site_steps",
         "prepare_generation_attribution",
         "trace_generation",
+        # cross-layer feature flow (v1.47)
+        "FeatureFlowGraph",
+        "FlowEdge",
+        "feature_flow_graph",
+        "match_features",
         # MoE routing diagnostics (v1.44)
         "expert_load_balance",
         "pathway_complexity",

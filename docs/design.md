@@ -57,6 +57,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); fourier_feature_alignment, information_bottleneck_score (v1.27)
 │   │   ├── moe.py          # routing_entropy, expert_load_balance, pathway_complexity (v1.44)
 │   │   ├── distributed.py  # §11 reduce helpers: all_gather_concat, full_tensor (v1.45)
+│   │   ├── feature_flow.py # match_features, feature_flow_graph / FeatureFlowGraph (v1.47)
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl; logit_lens_distributions, future_lens_kl (v1.23–v1.24)
 │   │   ├── steer.py        # steer_vector (v1.23); repe_direction, directional_ablation (v1.29)
 │   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24); mdl_probe/MDLResult, mass_mean_probe/MassMeanProbe, verify_linear_representation (v1.29)
@@ -434,6 +435,16 @@ feature_token_alignment(W_dec, W_U, *, k=10) -> (Tensor, Tensor)  # per-feature 
 # Global (all-input) feature→feature circuit map from weights alone; complements per-prompt
 # CLT attribution graphs. Circuit Insights arXiv:2510.14936; arXiv:2501.18823.
 
+# Cross-Layer Feature Flow (v1.47) — data-free SAE feature matching (arXiv:2502.03032)
+from circuitry.core.feature_flow import match_features, feature_flow_graph, FeatureFlowGraph, FlowEdge
+match_features(W_dec_a, W_dec_b, *, k=1) -> (indices, sims)  # per-feature top-k decoder-row cosine matches
+feature_flow_graph(decoders, *, layer_ids=None, threshold=0.5, k=1) -> FeatureFlowGraph
+# FeatureFlowGraph: .scores {FlowEdge: cosine}, .ranked(), .top_k(k),
+#   .path_from(layer, feature) — greedy argmax chain (feature "lifetime"),
+#   .born_at(layer) — features with no kept upstream match, .to_markdown()
+# Accepted by patching/export.py (to_neuronpedia_graph / to_html). Steering along a flow
+# path = pass each layer's decoder row to apply_steer / apply_steer_steps.
+
 # Gradient-Based Token Attribution (v1.37)
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
 gradient_input_attribution(grads, embeds, *, reduction="l2") -> Tensor  # (batch, seq)
@@ -554,7 +565,7 @@ circuitry fit-tuned-lens --model pkg.mod:make_model --batches pkg.mod:make_batch
 circuitry export-graph circuit.json --format neuronpedia|html --out PATH [--slug SLUG] [--scan MODEL] [--top-k K]
 ```
 
-`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2). `scan --model-factory` (v1.17) accepts a `package.module:attr` entry point (zero-arg factory returning the model), enabling retrospective analysis on saved checkpoints without writing a custom script; `--out` overrides the default `<run>/scan_report` output directory. `circuit-compare A.json B.json` (v1.17) diffs two circuit JSON files (EAP or ACDC format) by edge-set, printing added / removed / shared edge counts; `--out path` writes the diff table to a file. `fit-tuned-lens` (v1.10) resolves `--model` / `--batches` as `package.module:attr` entry points (zero-arg factories returning the model and an iterable of inputs), fits per-layer tuned-lens translators post-hoc, and writes a `TunedLens` to `--out`; load it into `recipe.tuned_lens` and add `"tuned_lens_kl"` to `activation_diagnostics` to emit the diagnostic. `export-graph` (v1.41) re-serializes a saved circuit JSON file (`EAPResult.save()`) to the circuit-tracer / Neuronpedia attribution-graph JSON schema (`--format neuronpedia`; uploadable to neuronpedia.org) or to a dependency-free single-file HTML report (`--format html`); the underlying `patching/export.py` functions (`to_neuronpedia_graph` / `to_html` / `save_*`) additionally accept `CLTGraphResult` and `SAEFeatureCircuit` directly and a `labels={(layer, feature): str}` mapping written to node `clerp` fields. Export is pure serialization (stdlib `json` only; no forward passes; the HTML embeds inline SVG + vanilla JS with no external fetches).
+`report` accepts either a live `metrics.jsonl` (written by the Recorder, no `scan` step) or a retrospective `metrics.jsonl` produced by `scan` with `writer="jsonl"`. `--compact` renders only the `## Summary` and `## Flags` blocks, suppressing per-tag tables (v1.2). `compare` loads `metrics.jsonl` from each run directory and writes a family/diagnostic-granular delta table (v1.2). `scan --model-factory` (v1.17) accepts a `package.module:attr` entry point (zero-arg factory returning the model), enabling retrospective analysis on saved checkpoints without writing a custom script; `--out` overrides the default `<run>/scan_report` output directory. `circuit-compare A.json B.json` (v1.17) diffs two circuit JSON files (EAP or ACDC format) by edge-set, printing added / removed / shared edge counts; `--out path` writes the diff table to a file. `fit-tuned-lens` (v1.10) resolves `--model` / `--batches` as `package.module:attr` entry points (zero-arg factories returning the model and an iterable of inputs), fits per-layer tuned-lens translators post-hoc, and writes a `TunedLens` to `--out`; load it into `recipe.tuned_lens` and add `"tuned_lens_kl"` to `activation_diagnostics` to emit the diagnostic. `export-graph` (v1.41) re-serializes a saved circuit JSON file (`EAPResult.save()`) to the circuit-tracer / Neuronpedia attribution-graph JSON schema (`--format neuronpedia`; uploadable to neuronpedia.org) or to a dependency-free single-file HTML report (`--format html`); the underlying `patching/export.py` functions (`to_neuronpedia_graph` / `to_html` / `save_*`) additionally accept `CLTGraphResult`, `SAEFeatureCircuit`, and `FeatureFlowGraph` (v1.47) directly and a `labels={(layer, feature): str}` mapping written to node `clerp` fields. Export is pure serialization (stdlib `json` only; no forward passes; the HTML embeds inline SVG + vanilla JS with no external fetches).
 
 **Static vs trajectory diagnostics on a scan.** *Static* weight diagnostics (`effective_rank`, `stable_rank`, `condition_number`, `heavy_tail_alpha`, `sv_histogram`) work on a single checkpoint. *Trajectory* diagnostics (`update_delta`, `rank_trajectory`, `direction_cosine`) compare consecutive emitted snapshots and produce nothing until ≥2 (≥3 for `direction_cosine`) checkpoints are scanned. A single-snapshot `scan_run` emits only the static families and warns once when trajectory diagnostics are requested with fewer than two checkpoints.
 

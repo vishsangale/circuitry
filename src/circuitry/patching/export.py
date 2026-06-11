@@ -25,6 +25,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from circuitry.core.feature_flow import FeatureFlowGraph
 from circuitry.patching.clt import CLTGraphResult
 from circuitry.patching.eap import EAPResult
 from circuitry.patching.graph import Node, _node_str
@@ -206,6 +207,37 @@ def _normalize_sae_circuit(
     return list(nodes.values()), links
 
 
+def _normalize_flow(
+    result: FeatureFlowGraph,
+    *,
+    top_k: int | None,
+    node_threshold: float | None,
+    labels: Labels | None,
+) -> tuple[list[_GNode], list[_GLink]]:
+    kept = _select_edges(result.scores, top_k=top_k, node_threshold=node_threshold)
+    nodes: dict[str, _GNode] = {}
+    links: list[_GLink] = []
+    for edge, sim in kept:
+        ids = []
+        for layer, feature in (
+            (edge.src_layer, edge.src_feature),
+            (edge.dst_layer, edge.dst_feature),
+        ):
+            nid = f"{layer}_{feature}_0"
+            if nid not in nodes:
+                nodes[nid] = _GNode(
+                    node_id=nid,
+                    layer=str(layer),
+                    feature=feature,
+                    ctx_idx=0,
+                    feature_type="feature",
+                    label=_label_for(labels, layer, feature, f"L{layer}/f{feature}"),
+                )
+            ids.append(nid)
+        links.append((ids[0], ids[1], float(sim)))
+    return list(nodes.values()), links
+
+
 def _normalize(
     result: Any,
     *,
@@ -217,13 +249,18 @@ def _normalize(
         return _normalize_clt(result, top_k=top_k, node_threshold=node_threshold, labels=labels)
     if isinstance(result, EAPResult):
         return _normalize_eap(result, top_k=top_k, node_threshold=node_threshold, labels=labels)
+    if isinstance(result, FeatureFlowGraph):
+        return _normalize_flow(
+            result, top_k=top_k, node_threshold=node_threshold, labels=labels
+        )
     if type(result).__name__ == "SAEFeatureCircuit":
         return _normalize_sae_circuit(
             result, top_k=top_k, node_threshold=node_threshold, labels=labels
         )
     raise TypeError(
         "unsupported result type for graph export: "
-        f"{type(result).__name__} (expected CLTGraphResult, EAPResult, or SAEFeatureCircuit)"
+        f"{type(result).__name__} (expected CLTGraphResult, EAPResult, "
+        "FeatureFlowGraph, or SAEFeatureCircuit)"
     )
 
 

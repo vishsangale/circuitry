@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.47.0] — 2026-06-11
+
+**Cross-layer feature flow.** First loose-end milestone (plan-sota-3
+addendum): data-free SAE feature matching across layers (Laptev et al.,
+arXiv:2502.03032).
+
+### Added
+- **`core/feature_flow.py`** (new module) — pure functions:
+  - `match_features(W_dec_a, W_dec_b, *, k=1) → (indices, sims)` —
+    per-feature top-k cosine matches between two decoder dictionaries
+    (`(n_features, d_model)` rows); scale-invariant, no forward passes.
+  - `feature_flow_graph(decoders, *, layer_ids, threshold=0.5, k=1) →
+    FeatureFlowGraph` — adjacent-layer match chains with edges kept at
+    `cosine ≥ threshold`. `FeatureFlowGraph` exposes `.ranked()` /
+    `.top_k()`, `.path_from(layer, feature)` (greedy argmax chain — a
+    feature's cross-layer "lifetime"), `.born_at(layer)` (features with
+    no upstream match), `.to_markdown()`; `FlowEdge` is the frozen edge
+    key. 18 new tests in `tests/core/test_feature_flow.py`.
+- **Exporters accept `FeatureFlowGraph`** — `to_neuronpedia_graph` /
+  `to_html` (and the `save_*` wrappers) render flow graphs alongside
+  CLT/EAP/SAE circuits; `labels=` works as elsewhere.
+- `match_features` / `feature_flow_graph` / `FeatureFlowGraph` /
+  `FlowEdge` exported at top level.
+
 ## [1.46.0] — 2026-06-11
 
 **Multi-process recorder integration — `WEIGHT_FULL` / `ACTIVATION_FULL`

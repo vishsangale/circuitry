@@ -151,6 +151,45 @@ before this milestone merges.
 
 ---
 
+## Addendum (2026-06-11): loose-end milestones v1.47–v1.48
+
+The two survey candidates originally deferred to "a plan-sota-4 survey" are
+promoted to milestones — both are implementable without hardware (pure
+functions + a small CPU-trainable optimization loop, with precedent in
+DASRunner / EdgePruningRunner).
+
+## Milestone v1.47 — Cross-layer feature flow — SHIPPED 2026-06-11
+
+**Theme:** Track how an SAE feature persists, transforms, or first appears
+across layers via data-free decoder matching (Laptev et al., arXiv:2502.03032:
+match feature i at layer A to argmax cosine among decoder rows at layer B).
+
+| Item | What |
+|------|------|
+| `core/feature_flow.py::match_features(W_dec_a, W_dec_b, *, k=1) → (indices, sims)` | Per-feature top-k cosine matches between two decoder dictionaries `(n_features, d_model)`. |
+| `core/feature_flow.py::feature_flow_graph(decoders, *, layer_ids=None, threshold=0.5) → FeatureFlowGraph` | Adjacent-layer match chains; edges kept at `sim ≥ threshold`. `FlowEdge` / `FeatureFlowGraph` with `.ranked()`, `.top_k()`, `.path_from(layer, feature)` (greedy argmax chain), `.born_at(layer)` (features with no upstream match), `.to_markdown()`. |
+| `patching/export.py` | `FeatureFlowGraph` accepted by `to_neuronpedia_graph` / `to_html` (patching may import core). |
+
+## Milestone v1.48 — Stochastic Parameter Decomposition (SPD) — SHIPPED 2026-06-11
+
+**Theme:** The parameter-space pillar (Bushnaq et al., arXiv:2506.20790;
+Apollo/Goodfire reference implementation github.com/goodfire-ai/spd).
+Decomposes one target Linear's weight into C rank-one subcomponents
+`V[:, c] ⊗ U[c, :]` trained so that (1) faithfulness: `V @ U ≈ Wᵀ`;
+(2) stochastic reconstruction: with masks `m = ci + (1 − ci)·U(0,1)`
+(uniform in `[ci, 1]`) on component activations, the model output matches
+the unmodified model; (3) minimality: mean causal importance is penalized.
+Causal importance `ci(x) ∈ [0,1]^C` is predicted by a small MLP on the
+module input (the nano implementation uses a CI-transformer at LM scale;
+the MLP is the original APD/SPD formulation and is documented as such).
+
+| Item | What |
+|------|------|
+| `patching/spd.py::SPDRunner(model, module, *, n_components, importance_hidden=64)` | `.run(batches, *, n_steps, lr, coeff_faith, coeff_stoch, coeff_imp, loss_fn) → SPDResult`. Hook-based: replaces the target Linear's output with the masked component forward during training; no model surgery. |
+| `SPDResult` | `.U (C, d_out)`, `.V (d_in, C)`, `.faithfulness_error`, `.importance(x) → (..., C)`, `.active_components(x, threshold)`, `.component_weight(c) → (d_out, d_in)`, `.to_markdown()`. |
+
+---
+
 ## Track D (parallel, not a version) — distribution
 
 Not library code; PRs alongside milestones as time allows:

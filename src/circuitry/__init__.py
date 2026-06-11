@@ -41,6 +41,12 @@ from circuitry.core.activation import (
 )
 from circuitry.core.attention import attention_rollout, daam_attribution
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
+from circuitry.core.feature_flow import (
+    FeatureFlowGraph,
+    FlowEdge,
+    feature_flow_graph,
+    match_features,
+)
 from circuitry.core.feature_geometry import (
     feature_coverage,
     feature_interference,
@@ -137,7 +143,7 @@ from circuitry.sae.labeling import FeatureEvidence, describe_features
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.46.0"
+__version__ = "1.47.0"
 
 __all__ = [
     "CDResult",
@@ -158,8 +164,11 @@ __all__ = [
     "GenerationTrace",
     "StepRecord",
     "FeatureEvidence",
+    "FeatureFlowGraph",
+    "FlowEdge",
     "composition_scores",
     "describe_features",
+    "feature_flow_graph",
     "feature_token_alignment",
     "head_composition_score",
     "ov_matrix",
@@ -239,6 +248,7 @@ __all__ = [
     "mdl_probe",
     "neural_collapse_score",
     "expert_load_balance",
+    "match_features",
     "pathway_complexity",
     "register_recipe",
     "routing_entropy",
