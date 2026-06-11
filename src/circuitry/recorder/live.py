@@ -1239,6 +1239,50 @@ class Recorder:
                             val, ctx.step,
                         )
                 continue
+            if name == "moe_routing":
+                # Opt-in (v1.44). Applies only to activations from modules
+                # matching recipe.moe_router_pattern (router/gate outputs of
+                # shape (..., n_experts)); other captured activations are
+                # ignored so the diagnostic can coexist with the stock hooks.
+                import re as _re_moe
+                from circuitry.core import moe as _moe
+                rx = _re_moe.compile(self.recipe.moe_router_pattern)
+                top1_per_layer: list[torch.Tensor] = []
+                for mod_name in sorted(ctx.activations):
+                    if not rx.search(mod_name):
+                        continue
+                    x = ctx.activations[mod_name]
+                    if x.ndim < 1 or x.shape[-1] < 2:
+                        logger.warning(
+                            "circuitry: moe_routing — %s output shape %s has no "
+                            "n_experts dim; skipping", mod_name, tuple(x.shape),
+                        )
+                        continue
+                    n_experts = x.shape[-1]
+                    top1 = x.reshape(-1, n_experts).argmax(dim=-1)
+                    self._writer.add_scalar(
+                        f"moe/routing_entropy/{mod_name}",
+                        _moe.routing_entropy(x), ctx.step,
+                    )
+                    self._writer.add_scalar(
+                        f"moe/expert_load_balance/{mod_name}",
+                        _moe.expert_load_balance(top1, n_experts), ctx.step,
+                    )
+                    top1_per_layer.append(top1)
+                if len(top1_per_layer) >= 2:
+                    n_tokens = {t.shape[0] for t in top1_per_layer}
+                    if len(n_tokens) == 1:
+                        self._writer.add_scalar(
+                            "moe/pathway_complexity",
+                            _moe.pathway_complexity(top1_per_layer), ctx.step,
+                        )
+                    else:
+                        logger.warning(
+                            "circuitry: moe_routing — router layers saw differing "
+                            "token counts %s; skipping pathway_complexity",
+                            sorted(n_tokens),
+                        )
+                continue
             if name == "logit_lens_kl":
                 resolved = self._lens_block_outputs(ctx)
                 if resolved is None:

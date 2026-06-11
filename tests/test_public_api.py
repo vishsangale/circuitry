@@ -49,6 +49,10 @@ def test_public_surface():
         "patch_site_steps",
         "prepare_generation_attribution",
         "trace_generation",
+        # MoE routing diagnostics (v1.44)
+        "expert_load_balance",
+        "pathway_complexity",
+        "routing_entropy",
         "CircuitHypothesis",
         "CrosscoderWrapper",
         "DASResult",

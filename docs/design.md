@@ -55,6 +55,7 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── gradient.py
 │   │   ├── spectral.py
 │   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); fourier_feature_alignment, information_bottleneck_score (v1.27)
+│   │   ├── moe.py          # routing_entropy, expert_load_balance, pathway_complexity (v1.44)
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl; logit_lens_distributions, future_lens_kl (v1.23–v1.24)
 │   │   ├── steer.py        # steer_vector (v1.23); repe_direction, directional_ablation (v1.29)
 │   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24); mdl_probe/MDLResult, mass_mean_probe/MassMeanProbe, verify_linear_representation (v1.29)
@@ -627,6 +628,21 @@ Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns
 > Because the probe requires a second forward pass, it adds overhead proportional to
 > the probe batch size. It is off by default so it adds zero overhead at default
 > settings; see §10 for measured overhead.
+
+> **MoE routing diagnostic (v1.44).** The opt-in `"moe_routing"` activation
+> diagnostic reads router/gate outputs of shape `(..., n_experts)` and emits per
+> emit step: `moe/routing_entropy/<module>` (mean per-token router entropy, nats),
+> `moe/expert_load_balance/<module>` (`exp(H(load))/n_experts` ∈ (0,1], 1 = uniform,
+> from top-1 assignments), and — when ≥ 2 router modules with equal token counts are
+> captured — a single `moe/pathway_complexity` scalar (effective number of distinct
+> cross-layer expert paths; arXiv:2506.21551). Only activations from modules matching
+> `Recipe.moe_router_pattern` (default `r".*\.mlp\.gate$"`, `re.search` semantics)
+> feed the diagnostic; all other captured activations are ignored, so it coexists
+> with the stock hooks. The `llm` recipe lists `"moe_routing"` with
+> `enabled={"moe_routing": False}` (dense models have no router) and carries an
+> optional `OUTPUT` HookPoint on `.*\.mlp\.gate$` so enabling it on an MoE model
+> requires no recipe surgery. Primitives live in `core/moe.py`
+> (`routing_entropy`, `expert_load_balance`, `pathway_complexity`) and are pure.
 
 > **ACDC run/sweep kwargs (v1.4).** `ACDCRunner.run()` and `.sweep()` gained two new
 > optional kwargs:

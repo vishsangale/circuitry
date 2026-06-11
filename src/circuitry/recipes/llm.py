@@ -24,6 +24,11 @@ RECIPE = Recipe(
         # expert axis and emits per-expert weight diagnostics.
         HookPoint(source=TensorSource.WEIGHT,
                   pattern=r".*\.mlp\.experts$", optional=True),
+        # MoE router OUTPUT (router logits, shape (..., n_experts)) for the
+        # opt-in ``moe_routing`` activation diagnostic (v1.44). Absent on
+        # dense models, hence optional.
+        HookPoint(source=TensorSource.OUTPUT,
+                  pattern=r".*\.mlp\.gate$", optional=True),
         # Attention submodule output. Covers HF (`self_attn`), HF-GPT-2 (`attn`),
         # and canonical LLaMA reference (`attention`).
         HookPoint(source=TensorSource.OUTPUT,
@@ -59,13 +64,16 @@ RECIPE = Recipe(
                             # v1.4 drift probe: default OFF; opt in via
                             # recipe.only(["drift_probe"]) or by clearing the
                             # disable and supplying a probe_batch.
-                            "drift_probe"],
+                            "drift_probe",
+                            # v1.44 MoE routing: default OFF (dense models
+                            # have no router); opt in on MoE models.
+                            "moe_routing"],
     gradient_diagnostics=["norms_per_param"],
     # drift_probe is expensive (second forward pass per emit step) so it is
     # gated OFF by default.  Users opt in via recipe.only(["drift_probe"]) or
     # dataclasses.replace(recipe, enabled={**recipe.enabled, "drift_probe": True},
     #                     probe_batch=my_tensor).
-    enabled={"drift_probe": False},
+    enabled={"drift_probe": False, "moe_routing": False},
 )
 
 

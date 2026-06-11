@@ -67,6 +67,11 @@ from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase, rlace_erase
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
+from circuitry.core.moe import (
+    expert_load_balance,
+    pathway_complexity,
+    routing_entropy,
+)
 from circuitry.core.neuron import NeuronStats, neuron_stats
 from circuitry.core.probe import (
     LinearProbe,
@@ -132,7 +137,7 @@ from circuitry.sae.labeling import FeatureEvidence, describe_features
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.43.0"
+__version__ = "1.44.0"
 
 __all__ = [
     "CDResult",
@@ -233,7 +238,10 @@ __all__ = [
     "mass_mean_probe",
     "mdl_probe",
     "neural_collapse_score",
+    "expert_load_balance",
+    "pathway_complexity",
     "register_recipe",
+    "routing_entropy",
     "repe_direction",
     "repr_drift",
     "apply_steer_steps",

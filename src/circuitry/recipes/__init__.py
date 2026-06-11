@@ -70,6 +70,11 @@ class Recipe:
     probe_batch: torch.Tensor | None = None
     drift_method: str = "linear_cka"
     drift_max_tokens: int | None = None
+    # v1.44 MoE routing: regex (re.search semantics, matching HookPoint
+    # patterns) selecting which captured activations are router/gate outputs
+    # of shape (..., n_experts). Only matching modules feed the opt-in
+    # ``moe_routing`` activation diagnostic; everything else is ignored.
+    moe_router_pattern: str = r".*\.mlp\.gate$"
 
     def with_prefix(self, prefix: str) -> Recipe:
         """Return a new Recipe scoped to ``prefix``.

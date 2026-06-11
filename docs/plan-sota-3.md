@@ -103,7 +103,7 @@ loop); KV-cache-aware (hooks stay armed across steps; per-step seq-len of 1 hand
 
 ---
 
-## Milestone v1.44 — MoE routing diagnostics
+## Milestone v1.44 — MoE routing diagnostics — SHIPPED 2026-06-11
 
 **Theme:** Close the last deferred item from plan-sota-next; MoE is the dominant
 2026 frontier architecture and the Recorder has no routing story. (Gradient

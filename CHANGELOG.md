@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.0] — 2026-06-11
+
+**MoE routing diagnostics.** Fourth milestone of `docs/plan-sota-3.md`:
+closes the last deferred item from the previous SOTA plan — MoE is the
+dominant 2026 frontier architecture and the Recorder had no routing story.
+
+### Added
+- **`core/moe.py`** (new module) — pure routing primitives (arXiv:2506.21551):
+  - `routing_entropy(gate_scores, *, from_logits=True) → float` — mean
+    per-token Shannon entropy (nats) of the router distribution over
+    `(..., n_experts)` outputs.
+  - `expert_load_balance(expert_ids, n_experts) → float` —
+    `exp(H(load)) / n_experts` ∈ (0, 1]; 1 = perfectly uniform expert
+    load, → `1/n_experts` on collapse. Accepts top-1 `(tokens,)` or
+    top-k `(tokens, k)` assignments.
+  - `pathway_complexity(expert_ids_per_layer) → float` — effective
+    number of distinct cross-layer expert paths (`exp(H)` of the
+    empirical path distribution; top-k sets order-normalised per layer).
+  13 new tests in `tests/core/test_moe.py`.
+- **Recorder: opt-in `"moe_routing"` activation diagnostic** — emits
+  `moe/routing_entropy/<module>` + `moe/expert_load_balance/<module>`
+  per router module and a single cross-layer `moe/pathway_complexity`
+  when ≥ 2 routers with equal token counts are captured. Only
+  activations from modules matching the new
+  `Recipe.moe_router_pattern` field (default `r".*\.mlp\.gate$"`,
+  `re.search` semantics) feed the diagnostic — everything else is
+  ignored so it coexists with stock hooks. 7 new tests in
+  `tests/recorder/test_moe_routing.py`.
+- **`llm` recipe** — lists `"moe_routing"` (disabled by default:
+  `enabled={"moe_routing": False}`; dense models have no router) and
+  gains an optional `OUTPUT` HookPoint on `.*\.mlp\.gate$` so enabling
+  the diagnostic on an MoE model needs no recipe surgery.
+- `routing_entropy` / `expert_load_balance` / `pathway_complexity`
+  exported at top level.
+
 ## [1.43.0] — 2026-06-11
 
 **Generation-time analysis.** Third milestone of `docs/plan-sota-3.md`:
