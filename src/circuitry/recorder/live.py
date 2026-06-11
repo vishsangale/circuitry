@@ -235,6 +235,17 @@ class Recorder:
         self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
+        # Multi-process *_FULL support (design §11, v1.46).
+        # _participant: True on non-zero ranks when the recipe carries
+        # WEIGHT_FULL / ACTIVATION_FULL HookPoints — the rank joins the emit
+        # collectives (so rank 0 sees full tensors) but computes/writes nothing.
+        # _full_weight_modules: matched WEIGHT_FULL module names (sorted
+        # iteration order is the cross-rank collective order for full_tensor).
+        # _gather_activation_names: matched ACTIVATION_FULL module names whose
+        # captures are all-gathered across ranks at emit time.
+        self._participant = False
+        self._full_weight_modules: set[str] = set()
+        self._gather_activation_names: set[str] = set()
         # Modules whose primary weight is a batched 3-D expert tensor (e.g.
         # OlmoeExperts.gate_up_proj / down_proj).  Populated at attach() time.
         # Maps module_name → list of param_names for all batched-expert params
@@ -329,6 +340,12 @@ class Recorder:
 
     def attach(self) -> None:
         if self._is_inactive_rank():
+            if any(
+                hp.source in (TensorSource.WEIGHT_FULL, TensorSource.ACTIVATION_FULL)
+                for hp in self.recipe.hook_points
+            ):
+                self._attach_participant()
+                return
             self._noop = True
             logger.info("circuitry: rank != 0 — Recorder is no-op")
             return
@@ -540,11 +557,15 @@ class Recorder:
                     raise RuntimeError(msg)
                 logger.warning("circuitry: %s", msg)
 
-            # For WEIGHT / GRAD HookPoints, resolve each matched module name
-            # to its primary weight Parameter via the inventory. Loud-on-fail:
-            # unresolvable matches WARN per module so wrapper-Linear classes
-            # don't silently drop diagnostics.
-            if hp.source in (TensorSource.WEIGHT, TensorSource.GRAD):
+            # For WEIGHT / WEIGHT_FULL / GRAD HookPoints, resolve each matched
+            # module name to its primary weight Parameter via the inventory.
+            # Loud-on-fail: unresolvable matches WARN per module so
+            # wrapper-Linear classes don't silently drop diagnostics.
+            if hp.source in (
+                TensorSource.WEIGHT, TensorSource.WEIGHT_FULL, TensorSource.GRAD
+            ):
+                if hp.source is TensorSource.WEIGHT_FULL:
+                    self._full_weight_modules.update(names)
                 unresolved = 0
                 for mn in names:
                     rec = self._inventory.find_primary_weight(mn)
@@ -681,9 +702,12 @@ class Recorder:
             _json.dumps(attach_summary, indent=2)
         )
 
-        # Install hooks for INPUT / OUTPUT sources (WEIGHT/GRAD read directly at step time).
+        # Install hooks for INPUT / OUTPUT / ACTIVATION_FULL sources
+        # (WEIGHT/GRAD read directly at step time).
         for idx, hp in enumerate(self.recipe.hook_points):
-            if hp.source is TensorSource.OUTPUT:
+            if hp.source in (TensorSource.OUTPUT, TensorSource.ACTIVATION_FULL):
+                if hp.source is TensorSource.ACTIVATION_FULL:
+                    self._gather_activation_names.update(self._matched[idx])
                 for n in self._matched[idx]:
                     handle = name_to_mod[n].register_forward_hook(self._mk_fwd_hook(n))
                     self._hook_handles.append(handle)
@@ -908,6 +932,77 @@ class Recorder:
             source.output_attentions = original
         self._output_attentions_restore.clear()
 
+    def _attach_participant(self) -> None:
+        """Minimal attach for non-zero ranks when the recipe carries *_FULL sources.
+
+        The rank registers only what it needs to join the emit-step collectives
+        (capture hooks for ACTIVATION_FULL, param resolution for WEIGHT_FULL).
+        No writer, no run-dir files, no diagnostics — rank 0 does all of that.
+        """
+        from circuitry.writers.null import NullWriter
+
+        self._participant = True
+        self._writer = NullWriter()
+        self._inventory = ModelInventory.build(self.model)
+        name_to_mod = dict(self.model.named_modules())
+        for hp in self.recipe.hook_points:
+            if hp.source not in (
+                TensorSource.WEIGHT_FULL, TensorSource.ACTIVATION_FULL
+            ):
+                continue
+            names = filtered_matches(self.model, hp, self.recipe)
+            if hp.source is TensorSource.WEIGHT_FULL:
+                for mn in names:
+                    rec = self._inventory.find_primary_weight(mn)
+                    if rec is not None:
+                        self._param_for_module.setdefault(mn, rec.name)
+                        self._full_weight_modules.add(mn)
+            else:
+                self._gather_activation_names.update(names)
+                for n in names:
+                    handle = name_to_mod[n].register_forward_hook(
+                        self._mk_fwd_hook(n)
+                    )
+                    self._hook_handles.append(handle)
+        logger.info(
+            "circuitry: rank != 0 — participant mode (joins *_FULL gathers, "
+            "writes nothing)"
+        )
+
+    def _join_full_gathers(
+        self, weights: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]:
+        """Run the *_FULL collectives in the cross-rank deterministic order.
+
+        Order contract (identical on every rank, every emit step): (1)
+        ``full_tensor`` per WEIGHT_FULL module in sorted-name order, (2) ONE
+        ``all_gather_named`` for the ACTIVATION_FULL captures. Rank 0 passes
+        a *weights* dict to receive the materialized full weights; participant
+        ranks pass None and discard results. Returns the gathered activations
+        (empty dict when there are no ACTIVATION_FULL names).
+        """
+        from circuitry.core import distributed as _dist
+
+        if self._full_weight_modules:
+            name_to_param = dict(self.model.named_parameters())
+            for mod_name in sorted(self._full_weight_modules):
+                param_name = self._param_for_module.get(mod_name)
+                if param_name is None:
+                    continue
+                p = name_to_param.get(param_name)
+                if not isinstance(p, torch.Tensor):
+                    continue
+                full = _dist.full_tensor(p).detach()
+                if weights is not None:
+                    weights[mod_name] = full
+        if not self._gather_activation_names:
+            return {}
+        local = {
+            n: t for n, t in self._captured_activations.items()
+            if n in self._gather_activation_names
+        }
+        return _dist.all_gather_named(local)
+
     def detach(self) -> None:
         for h in self._hook_handles:
             h.remove()
@@ -944,6 +1039,15 @@ class Recorder:
              loss_components: dict[str, float | torch.Tensor] | None = None,
              **user: Any) -> None:
         if self._noop:
+            return
+        if self._participant:
+            # Non-zero rank with *_FULL sources: join the collectives on emit
+            # steps (same cadence as rank 0 — every_n_steps must agree across
+            # ranks, and every rank must call step() with the same step values),
+            # then discard. No diagnostics, no writes.
+            if self._should_capture(int(step)):
+                self._join_full_gathers(None)
+                self._captured_activations.clear()
             return
         self._current_step = int(step)
         assert self._writer is not None, "Recorder.step called before attach()"
@@ -999,10 +1103,19 @@ class Recorder:
                     if p.grad is not None:
                         gradients[mod_name] = p.grad.detach()
 
+        # *_FULL gathers (design §11, v1.46): materialize DTensor-sharded
+        # WEIGHT_FULL params and all-gather ACTIVATION_FULL captures across
+        # ranks. Single-process: pure passthrough (WEIGHT_FULL == WEIGHT,
+        # ACTIVATION_FULL == OUTPUT). Participant ranks mirror this exact
+        # collective order in their step() short-circuit above.
+        activations = dict(self._captured_activations)
+        if self._full_weight_modules or self._gather_activation_names:
+            activations.update(self._join_full_gathers(weights))
+
         ctx = StepContext(
             step=self._current_step,
             model=self.model,
-            activations=dict(self._captured_activations),
+            activations=activations,
             gradients=gradients,
             weights=weights,
             loss=loss,

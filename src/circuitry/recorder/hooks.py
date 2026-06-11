@@ -29,6 +29,14 @@ class TensorSource(str, Enum):
     # e.g. ``nn.MultiheadAttention.in_proj_weight`` (a direct Parameter on the
     # module, not a child Linear's ``.weight``). Pattern only; ≥2-D params only.
     NAMED_PARAM = "named_param"
+    # Multi-process variants (design §11, v1.46). Identical to WEIGHT / OUTPUT
+    # in a single-process run; in a torch.distributed run the recorder gathers
+    # the full tensor before any primitive sees it: WEIGHT_FULL materializes
+    # DTensor-sharded params via full_tensor(), ACTIVATION_FULL all-gathers the
+    # captured activation across ranks (concat on the batch dim). Non-zero
+    # ranks participate in the collectives but emit nothing (rank-0 writes).
+    WEIGHT_FULL = "weight_full"
+    ACTIVATION_FULL = "activation_full"
 
 
 @dataclass

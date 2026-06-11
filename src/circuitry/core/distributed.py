@@ -22,6 +22,7 @@ __all__ = [
     "world_size",
     "is_main_process",
     "all_gather_concat",
+    "all_gather_named",
     "full_tensor",
 ]
 
@@ -83,6 +84,47 @@ def all_gather_concat(t: Tensor, *, dim: int = 0, group: Any = None) -> Tensor:
     gathered = [torch.empty_like(local) for _ in range(ws)]
     dist.all_gather(gathered, local, group=group)
     return torch.cat(gathered, dim=dim)
+
+
+def all_gather_named(
+    named: dict[str, Tensor], *, dim: int = 0, group: Any = None
+) -> dict[str, Tensor]:
+    """All-gather a ``{name: tensor}`` dict across ranks; concat per name.
+
+    The recorder-facing activation reduce (``ACTIVATION_FULL``, design §11).
+    Uses ``all_gather_object`` — one collective per call regardless of how
+    many names are present — so it tolerates per-rank shape differences
+    (e.g. uneven batch shards) and names captured on only a subset of ranks
+    (those are concatenated over the ranks that have them). Tensors travel as
+    detached CPU copies; this runs at emit cadence, not in the hot path.
+
+    Every rank must call this the same number of times per emit step (it is
+    a collective); the result is symmetric — all ranks receive the full
+    concatenation. Passthrough when not distributed or ``world_size == 1``.
+
+    Args:
+        named: this rank's local ``{name: tensor}`` contribution (may be
+            empty — the rank still participates).
+        dim: concatenation dimension (default 0, the batch dim).
+        group: optional process group.
+
+    Returns:
+        ``{name: concatenated tensor}`` over rank order.
+    """
+    if world_size() == 1:
+        return named
+    import torch.distributed as dist
+
+    local = {
+        name: t.detach().to("cpu", copy=True) for name, t in named.items()
+    }
+    gathered: list[dict[str, Tensor] | None] = [None] * world_size()
+    dist.all_gather_object(gathered, local, group=group)
+    out: dict[str, list[Tensor]] = {}
+    for rank_dict in gathered:
+        for name, t in (rank_dict or {}).items():
+            out.setdefault(name, []).append(t)
+    return {name: torch.cat(parts, dim=dim) for name, parts in out.items()}
 
 
 def full_tensor(param: Any) -> Tensor:

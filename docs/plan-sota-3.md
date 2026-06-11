@@ -136,9 +136,12 @@ diagnostics are correct at real scale. Likely split into sub-releases.
    DTensor-aware `full_tensor` (weight-side; FSDP1 flat-param gathering is
    recorder-side work in item 4). 2-process gloo tests in
    `tests/core/test_distributed.py`.
-2. `TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` — hook-level sources that gather
-   before computing, with budget guards.
-3. DDP: rank-0 emission with optional cross-rank activation stats reduction.
+2. ~~`TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL`~~ **SHIPPED v1.46.0** — passthrough
+   single-process; DTensor `full_tensor` + `all_gather_named` in distributed runs.
+3. ~~DDP: rank-0 emission with cross-rank activation gathering~~ **SHIPPED v1.46.0** —
+   participant mode on non-zero ranks (join collectives, write nothing); legacy
+   recipes keep the v0.x no-op contract. 2-process gloo tests in
+   `tests/recorder/test_full_sources.py`.
 4. FSDP: full-param gather at emit steps (summon_full_params-style) behind an explicit
    opt-in flag with wall-clock budget enforcement (§10 still applies).
 5. Validation scripts under `scripts/` (2-process CPU gloo CI job).

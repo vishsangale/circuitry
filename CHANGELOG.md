@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] — 2026-06-11
+
+**Multi-process recorder integration — `WEIGHT_FULL` / `ACTIVATION_FULL`
+(design §11, second increment).** Opt-in multi-process diagnostics: same
+recipes, same primitives, same `Recorder` constructor — only the `source`
+enum gains values, exactly as §11 specified.
+
+### Added
+- **`TensorSource.WEIGHT_FULL` / `TensorSource.ACTIVATION_FULL`** — pure
+  passthroughs single-process (identical to `WEIGHT` / `OUTPUT`); in a
+  `torch.distributed` run the recorder gathers the full tensor before any
+  primitive sees it: `WEIGHT_FULL` materializes DTensor-sharded params via
+  `core.distributed.full_tensor()`, `ACTIVATION_FULL` all-gathers captured
+  activations across ranks (concat on the batch dim).
+- **Participant mode** — when a recipe carries either `*_FULL` source,
+  non-zero ranks no longer fully no-op at `attach()`: they register only
+  the capture hooks / param resolution needed to join the emit-step
+  collectives (deterministic order: sorted `WEIGHT_FULL` module names,
+  then ONE activation gather), compute nothing, and write nothing (no
+  run-dir files; internal `NullWriter`). Rank-0-only writes unchanged.
+  Contract: all ranks construct the `Recorder` with the same recipe and
+  `every_n_steps`, run the same forwards, and call `step()` with the same
+  step values. Recipes **without** `*_FULL` sources keep the v0.x
+  behaviour exactly (non-zero ranks fully no-op).
+- **`core/distributed.py::all_gather_named(named, *, dim=0, group=None)`**
+  — `{name: tensor}` all-gather via one `all_gather_object` collective;
+  tolerant of per-rank shape differences and names captured on only a
+  subset of ranks (emit cadence, not hot path).
+- 5 new tests in `tests/recorder/test_full_sources.py`, including two
+  real 2-process gloo runs: rank 0 observes the cross-rank concatenated
+  activation batch (4 rows from 2×2-row shards) and emits `WEIGHT_FULL`
+  weight diagnostics; rank 1 writes nothing and creates no files; legacy
+  recipes keep the rank-0 no-op contract.
+
+### Known limitation
+- FSDP1 flat-param sharding is still not handled — FSDP1-sharded
+  parameters produce incorrect rank-0 diagnostics (README warning
+  updated). FSDP1 `summon_full_params` gathering and `DDPMetricWriter`
+  histogram aggregation remain on the §11 follow-up list.
+
 ## [1.45.0] — 2026-06-11
 
 **Multi-process foundation — `core/distributed.py` (design §11, first

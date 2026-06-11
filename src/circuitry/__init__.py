@@ -137,7 +137,7 @@ from circuitry.sae.labeling import FeatureEvidence, describe_features
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 
-__version__ = "1.45.0"
+__version__ = "1.46.0"
 
 __all__ = [
     "CDResult",

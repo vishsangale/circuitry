@@ -664,7 +664,7 @@ Use `Recipe.disable(names)` (v1.2) to drop specific diagnostics by name; returns
 ```python
 @dataclass
 class HookPoint:
-    source: TensorSource                          # WEIGHT, INPUT, OUTPUT, GRAD, or NAMED_PARAM
+    source: TensorSource                          # WEIGHT, INPUT, OUTPUT, GRAD, NAMED_PARAM, WEIGHT_FULL, ACTIVATION_FULL
     pattern: str | None = None                    # regex against named_modules() (recipe default)
     modules: list[nn.Module] | None = None        # explicit instances (advanced)
     selector: Callable[[nn.Module], list[str]] | None = None  # programmatic name selector
@@ -679,6 +679,8 @@ This gives three matching modes:
 3. **Programmatic selector** — a function that walks `model` and returns module names. Use when the right hook set depends on runtime structure (e.g. only experts that fired this step).
 
 `source=TensorSource.NAMED_PARAM` is a special case: its `pattern` matches against **parameter** names (`dict(model.named_parameters()).keys()`), not module names, and the matched ≥2-D parameter is fed to the weight diagnostics keyed by its parameter name. Use it to reach a fused parameter that the `WEIGHT` source can't resolve — e.g. `nn.MultiheadAttention.in_proj_weight`, a direct `Parameter` on the module rather than a child `Linear`'s `.weight` (the module owns two 2-D params, so the WEIGHT primary-weight resolver returns nothing). Non-≥2-D matches (e.g. a 1-D bias) are skipped with a warning, mirroring the WEIGHT source's 2-D guarantee.
+
+`WEIGHT_FULL` / `ACTIVATION_FULL` (v1.46, design §11) are the multi-process variants: identical to `WEIGHT` / `OUTPUT` in a single-process run (pure passthrough), but in a `torch.distributed` run the recorder gathers the full tensor before any primitive sees it. `WEIGHT_FULL` materializes DTensor-sharded params via `core.distributed.full_tensor()`; `ACTIVATION_FULL` all-gathers the captured activation across ranks (`core.distributed.all_gather_named`, one `all_gather_object` collective per emit step, concat on the batch dim — tolerant of per-rank shape differences). When a recipe carries either source, **non-zero ranks attach in participant mode**: they register only the capture hooks / param resolution needed to join the emit-step collectives (deterministic order: sorted `WEIGHT_FULL` module names first, then the single activation gather), and they compute and write nothing — rank-0-only writes are unchanged. Contract: every rank must construct the `Recorder` with the same recipe and `every_n_steps`, run the same forwards, and call `step()` with the same step values, or the collectives desynchronize. Recipes without `*_FULL` sources keep the v0.x behavior exactly (non-zero ranks fully no-op).
 
 Brittleness mitigation (addressing recipe-matched-wrong-subset failure mode):
 
@@ -932,7 +934,7 @@ Current releases are single-process. This section locks in *what circuitry does 
 
 To enable multi-process diagnostics in a future release without changing the current API surface:
 
-- `HookPoint` already takes a `source` enum; the future release adds `TensorSource.WEIGHT_FULL` and `ACTIVATION_FULL` variants that trigger an `all_gather_into_tensor` before passing to the primitive. The pattern / modules / selector escape hatches are unchanged.
+- `HookPoint` already takes a `source` enum; the future release adds `TensorSource.WEIGHT_FULL` and `ACTIVATION_FULL` variants that trigger an `all_gather_into_tensor` before passing to the primitive. The pattern / modules / selector escape hatches are unchanged. **Status: shipped in v1.46.0.** Implementation note: the activation gather uses `all_gather_object` of `{name: cpu tensor}` dicts (one collective per emit step) rather than `all_gather_into_tensor` — it tolerates per-rank shape differences and missing captures without shape-negotiation collectives, and emit cadence is not a hot path. Non-zero ranks attach in *participant mode* (join the collectives, write nothing); recipes without `*_FULL` sources keep the v0.x no-op contract. See §4.4 for the user-facing contract.
 - `core/` primitives stay single-tensor in / single-float out. The future release adds a small `core/distributed.py` with helpers (`all_gather_sharded_param(param) -> Tensor`) that the recorder calls before the primitive; primitives themselves never know about ranks. **Status: the helper module shipped in v1.45.0** (`is_distributed` / `world_size` / `is_main_process` / `all_gather_concat` / DTensor-aware `full_tensor`; single-process passthrough semantics; 2-process gloo tests). The recorder integration (`WEIGHT_FULL` / `ACTIVATION_FULL` sources, FSDP1 `summon_full_params` gathering, all-rank collective participation with rank-0-only writes) remains the follow-up.
 - `MetricWriter` gains an optional `rank: int` constructor argument; the default tensorboard adapter writes from rank 0 only (current behavior). A new `DDPMetricWriter` aggregates histogram tensors across ranks before writing.
 - The `StepContext.gradients` / `activations` / `weights` dicts gain a "gathered" status flag; built-in diagnostics ignore it (they only see post-gather tensors), but custom diagnostics that want raw shards can opt in.
@@ -941,7 +943,7 @@ Net result: same recipes, same primitives, same `Recorder` constructor signature
 
 ### README MUST state
 
-> "v0.x supports single-process training only. In a multi-rank DDP/FSDP run, `circuitry` no-ops on non-zero ranks; FSDP-sharded parameters will produce incorrect diagnostics on rank 0. Multi-process support is planned for a future release; see §11 of the design spec for the upgrade path."
+> "Default recipes are single-process: in a multi-rank DDP/FSDP run `circuitry` no-ops on non-zero ranks. Opt-in multi-process support (v1.46): `TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` HookPoints gather DTensor-sharded weights and cross-rank activation batches at emit steps (all ranks must attach and step; rank 0 writes). FSDP1 flat-param sharding is NOT yet handled — FSDP1-sharded parameters still produce incorrect diagnostics on rank 0; see §11 of the design spec."
 
 ## 12. Open questions
 

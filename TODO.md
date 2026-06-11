@@ -47,9 +47,11 @@ CI-enforced invariant.
   path is additive (`TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` + `core/distributed.py`
   reduce helpers) with no existing-API rewrite. See design §11 for the contract.
   **Progress (v1.45.0):** `core/distributed.py` shipped (`all_gather_concat`,
-  DTensor-aware `full_tensor`, rank introspection; 2-process gloo tests). Remaining:
-  the `TensorSource` integration, FSDP1 `summon_full_params` gathering, all-rank
-  collective participation with rank-0-only writes, and a 2-process CI job.
+  DTensor-aware `full_tensor`, rank introspection; 2-process gloo tests).
+  **Progress (v1.46.0):** `TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` shipped with
+  participant mode on non-zero ranks (all-rank collectives, rank-0-only writes;
+  2-process gloo recorder tests). Remaining: FSDP1 `summon_full_params` gathering,
+  `DDPMetricWriter` cross-rank histogram aggregation, and a 2-process CI job.
   See `docs/plan-sota-3.md` v1.45.
 
 ---
