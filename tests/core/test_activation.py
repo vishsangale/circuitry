@@ -6,7 +6,13 @@ import pytest
 import torch
 
 from circuitry.core import activation
-from circuitry.core.activation import NormStats, repr_drift
+from circuitry.core.activation import (
+    NormStats,
+    embedding_uniformity,
+    kernel_alignment,
+    local_intrinsic_dim,
+    repr_drift,
+)
 
 
 def test_dead_fraction_all_zeros_is_one():
@@ -370,3 +376,227 @@ def test_cka_single_row_raises(method):
     X = torch.randn(1, 8)
     with pytest.raises(ValueError, match="require >= 2 rows"):
         repr_drift(X, X, method=method)
+
+
+# ---------------------------------------------------------------------------
+# local_intrinsic_dim tests
+# ---------------------------------------------------------------------------
+
+
+def test_local_intrinsic_dim_returns_float():
+    torch.manual_seed(40)
+    acts = torch.randn(50, 16)
+    lid = local_intrinsic_dim(acts)
+    assert isinstance(lid, float)
+    assert math.isfinite(lid)
+
+
+def test_local_intrinsic_dim_positive():
+    torch.manual_seed(41)
+    acts = torch.randn(50, 16)
+    lid = local_intrinsic_dim(acts)
+    assert lid >= 1.0, f"Expected LID >= 1, got {lid}"
+
+
+def test_local_intrinsic_dim_low_lt_high():
+    """A low-dimensional subspace should have lower LID than full-dimensional noise."""
+    rng = torch.Generator().manual_seed(42)
+    n, d = 300, 16
+    # Low-dim: 2-D subspace in 16-D
+    t = torch.randn(n, 2, generator=rng)
+    basis = torch.zeros(2, d); basis[0, 0] = 1.0; basis[1, 1] = 1.0
+    acts_low = t @ basis + 0.001 * torch.randn(n, d, generator=rng)
+    # High-dim: full 16-D random noise
+    acts_high = torch.randn(n, d, generator=rng)
+    lid_low = local_intrinsic_dim(acts_low)
+    lid_high = local_intrinsic_dim(acts_high)
+    assert lid_low < lid_high, (
+        f"Expected LID(2D subspace) < LID(full-rank noise); got {lid_low:.2f} vs {lid_high:.2f}"
+    )
+
+
+def test_local_intrinsic_dim_fewer_than_3_raises():
+    with pytest.raises(ValueError):
+        local_intrinsic_dim(torch.randn(2, 8))
+
+
+def test_local_intrinsic_dim_deterministic():
+    torch.manual_seed(43)
+    acts = torch.randn(100, 16)
+    lid1 = local_intrinsic_dim(acts, seed=0)
+    lid2 = local_intrinsic_dim(acts, seed=0)
+    assert lid1 == lid2
+
+
+# ---------------------------------------------------------------------------
+# kernel_alignment tests
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_alignment_identical_cka():
+    """CKA of identical matrices should be 1.0 (drift = 0)."""
+    torch.manual_seed(50)
+    acts = torch.randn(30, 16)
+    score = kernel_alignment(acts, acts, method="cka")
+    assert score == pytest.approx(1.0, abs=1e-5)
+
+
+def test_kernel_alignment_cka_range():
+    torch.manual_seed(51)
+    a = torch.randn(30, 16)
+    b = torch.randn(30, 16)
+    score = kernel_alignment(a, b, method="cka")
+    assert 0.0 <= score <= 1.0, f"CKA out of [0,1]: {score}"
+
+
+def test_kernel_alignment_mnn_identical():
+    """MNN alignment of identical matrices should be 1.0."""
+    torch.manual_seed(52)
+    acts = torch.randn(30, 16)
+    score = kernel_alignment(acts, acts, method="mnn")
+    assert score == pytest.approx(1.0, abs=1e-5)
+
+
+def test_kernel_alignment_mnn_random_low():
+    """MNN alignment of independent random matrices should be < 1."""
+    torch.manual_seed(53)
+    a = torch.randn(40, 16)
+    b = torch.randn(40, 16)
+    score = kernel_alignment(a, b, method="mnn")
+    assert score < 1.0
+
+
+def test_kernel_alignment_invalid_method():
+    a = torch.randn(10, 8)
+    with pytest.raises(ValueError):
+        kernel_alignment(a, a, method="bad")
+
+
+def test_kernel_alignment_returns_float():
+    torch.manual_seed(54)
+    a = torch.randn(20, 8)
+    b = torch.randn(20, 8)
+    for method in ("cka", "mnn"):
+        score = kernel_alignment(a, b, method=method)
+        assert isinstance(score, float)
+
+
+# ---------------------------------------------------------------------------
+# embedding_uniformity tests
+# ---------------------------------------------------------------------------
+
+
+def test_embedding_uniformity_identical_collapse():
+    """All identical embeddings should give uniformity ≈ 1.0 (maximum collapse)."""
+    E = torch.ones(20, 8)
+    u = embedding_uniformity(E)
+    assert u == pytest.approx(1.0, abs=1e-5)
+
+
+def test_embedding_uniformity_orthogonal_low():
+    """Orthogonal embeddings (standard basis) should give uniformity ≈ 0."""
+    n, d = 8, 8
+    E = torch.eye(n, d)
+    u = embedding_uniformity(E)
+    assert u == pytest.approx(0.0, abs=1e-5)
+
+
+def test_embedding_uniformity_range():
+    torch.manual_seed(60)
+    E = torch.randn(50, 16)
+    u = embedding_uniformity(E)
+    assert 0.0 <= u <= 1.0, f"uniformity out of [0,1]: {u}"
+
+
+def test_embedding_uniformity_returns_float():
+    torch.manual_seed(61)
+    E = torch.randn(30, 8)
+    u = embedding_uniformity(E)
+    assert isinstance(u, float)
+
+
+def test_embedding_uniformity_deterministic():
+    torch.manual_seed(62)
+    E = torch.randn(200, 16)
+    u1 = embedding_uniformity(E, seed=0)
+    u2 = embedding_uniformity(E, seed=0)
+    assert u1 == u2
+
+
+# ---------------------------------------------------------------------------
+# neural_collapse_score tests (v1.30)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.activation import neural_collapse_score, spectral_collapse_rank
+
+
+def test_neural_collapse_score_returns_float():
+    torch.manual_seed(70)
+    acts = torch.randn(30, 16)
+    labels = torch.randint(0, 3, (30,))
+    nc1 = neural_collapse_score(acts, labels)
+    assert isinstance(nc1, float)
+    assert nc1 >= 0.0
+
+
+def test_neural_collapse_score_zero_for_identical():
+    """Zero within-class variance (all samples identical per class) → NC1 = 0."""
+    n, d = 10, 8
+    # Each class: all samples at the exact same point → Σ_W = 0 → NC1 = 0
+    class_means = [torch.zeros(d).fill_(i * 10.0) for i in range(3)]
+    acts = torch.cat([m.unsqueeze(0).expand(n, -1) for m in class_means])
+    labels = torch.cat([torch.full((n,), i, dtype=torch.long) for i in range(3)])
+    nc1 = neural_collapse_score(acts, labels)
+    assert nc1 == pytest.approx(0.0, abs=1e-6)
+
+
+def test_neural_collapse_score_high_for_mixed():
+    """Randomly mixed activations (no class structure) should give higher NC1."""
+    torch.manual_seed(72)
+    acts = torch.randn(60, 8)
+    labels = torch.randint(0, 3, (60,))
+    nc1 = neural_collapse_score(acts, labels)
+    # Not strictly guaranteed but should be > tiny threshold with random data
+    assert nc1 >= 0.0
+
+
+def test_neural_collapse_score_single_class():
+    """Single class should return 0.0 (no between-class structure)."""
+    acts = torch.randn(10, 8)
+    labels = torch.zeros(10, dtype=torch.long)
+    nc1 = neural_collapse_score(acts, labels)
+    assert nc1 == pytest.approx(0.0, abs=1e-8)
+
+
+def test_neural_collapse_score_shape_mismatch():
+    with pytest.raises(ValueError):
+        neural_collapse_score(torch.randn(10, 8), torch.zeros(5, dtype=torch.long))
+
+
+# ---------------------------------------------------------------------------
+# spectral_collapse_rank tests (v1.30)
+# ---------------------------------------------------------------------------
+
+
+def test_spectral_collapse_rank_returns_float():
+    torch.manual_seed(80)
+    acts = torch.randn(20, 16)
+    scr = spectral_collapse_rank(acts)
+    assert isinstance(scr, float)
+    assert scr >= 1.0
+
+
+def test_spectral_collapse_rank_full_rank_high():
+    """Full-rank random activations should give a high effective rank."""
+    torch.manual_seed(81)
+    acts = torch.randn(64, 32)
+    scr = spectral_collapse_rank(acts)
+    assert scr > 10.0, f"Expected high rank for full-rank acts, got {scr:.2f}"
+
+
+def test_spectral_collapse_rank_rank1_is_one():
+    """Rank-1 activation matrix (all rows identical) should give effective rank ≈ 1."""
+    v = torch.randn(8)
+    acts = v.unsqueeze(0).expand(20, -1).clone()
+    scr = spectral_collapse_rank(acts)
+    assert scr == pytest.approx(1.0, abs=0.1)

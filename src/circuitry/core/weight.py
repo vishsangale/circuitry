@@ -6,10 +6,17 @@ See docs/design.md §4.1 for the contract.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+import torch.nn as nn
+
+if TYPE_CHECKING:
+    from torch import Tensor
 
 ArrayLike = torch.Tensor | np.ndarray
 
@@ -285,6 +292,33 @@ def update_delta(
     return out
 
 
+def relative_update_delta(
+    sd_now: Mapping[str, torch.Tensor],
+    sd_prev: Mapping[str, torch.Tensor],
+    eps: float = 1e-12,
+) -> dict[str, float]:
+    """Scale-invariant per-parameter update size: ``||ΔW|| / ||W_now||``.
+
+    The absolute :func:`update_delta` (``||ΔW||``) is scale-dependent — a healthy
+    step on a large matrix exceeds the same threshold a healthy step on a tiny
+    one falls below — which made the ``update_delta_vanishing`` report flag
+    unreliable (v1.3 review). This relative form is dimensionless, so a single
+    threshold means the same thing across parameter sizes.
+
+    Returns ``{name: ||sd_now-sd_prev|| / (||sd_now|| + eps)}`` for every name
+    present in both. Names missing from either side are skipped.
+    """
+    out: dict[str, float] = {}
+    for name in sd_now:
+        if name not in sd_prev:
+            continue
+        a = sd_now[name].to(torch.float32)
+        b = sd_prev[name].to(device=a.device, dtype=torch.float32)
+        denom = float(a.norm().item()) + eps
+        out[name] = float((a - b).norm().item()) / denom
+    return out
+
+
 def direction_cosine(
     sd_now: Mapping[str, torch.Tensor],
     sd_prev: Mapping[str, torch.Tensor],
@@ -362,3 +396,232 @@ def attention_head_rank(
             slice_i = t[:, i * head_dim : (i + 1) * head_dim]
         ranks.append(effective_rank(slice_i))
     return ranks
+
+
+def update_weight_ratio(
+    W_prev: ArrayLike,
+    W_curr: ArrayLike,
+    *,
+    eps: float = 1e-12,
+) -> float:
+    """Scale-invariant per-layer update size: ``‖W_curr − W_prev‖_F / ‖W_prev‖_F``.
+
+    The Frobenius-norm relative update is the μP / maximal-update-parametrisation
+    diagnostic: when the learning rate is properly scaled across widths, this ratio
+    is constant across layers and widths at each step.  Use it to verify μP scaling
+    or to detect vanishing/exploding updates layer-by-layer.
+
+    Unlike :func:`relative_update_delta` (which operates on full state dicts),
+    this operates on a single weight matrix so it can be used inline in a per-layer
+    loop.
+
+    Args:
+        W_prev: previous weight matrix (any shape ≥ 1-D).
+        W_curr: current weight matrix (same shape).
+        eps:    denominator guard against division by zero.
+
+    Returns:
+        ``‖ΔW‖_F / (‖W_prev‖_F + eps)`` as a float.
+
+    Reference: Yang et al. 2022 μP, arXiv:2203.03466; Yang & Hu 2021 maximal
+               update parametrisation; applied to diagnostics in arXiv:2510.19093.
+    """
+    a = torch.as_tensor(W_prev).to(torch.float32)
+    b = torch.as_tensor(W_curr).to(torch.float32)
+    delta_norm = float((b - a).norm().item())
+    prev_norm = float(a.norm().item())
+    return delta_norm / (prev_norm + eps)
+
+
+@dataclass(frozen=True)
+class FinetuningDeltaResult:
+    """SVD decomposition of a fine-tuning weight update.
+
+    Attributes:
+        sv_scale_factor:           ``sum(s_delta) / (sum(s_base) + eps)`` — fraction
+                                   of original singular-value mass captured by the
+                                   update.  High → large-magnitude change.
+        left_rotation_similarity:  mean |cos(U_delta_i, U_base_i)| across the min-rank
+                                   leading singular vectors.  1.0 = same left
+                                   subspace; 0.0 = orthogonal (pure rotation).
+        right_rotation_similarity: same for right singular vectors V.
+    """
+
+    sv_scale_factor: float
+    left_rotation_similarity: float
+    right_rotation_similarity: float
+
+
+def finetuning_delta_svd(
+    W_base: ArrayLike,
+    W_ft: ArrayLike,
+    *,
+    k: int | None = None,
+    eps: float = 1e-12,
+) -> FinetuningDeltaResult:
+    """SVD analysis of the fine-tuning update ``ΔW = W_ft − W_base``.
+
+    Computes:
+    - **sv_scale_factor**: total singular-value mass of ΔW relative to W_base.
+    - **left_rotation_similarity**: alignment of ΔW's left singular vectors with
+      W_base's — distinguishes geometry-changing (rotation) from geometry-preserving
+      (scaling) updates.
+    - **right_rotation_similarity**: same for right singular vectors.
+
+    A fine-tuned model that preserved the base geometry scores high on both
+    rotation similarities (LoRA-style updates do this by design).  A model that
+    underwent catastrophic forgetting scores low.
+
+    Args:
+        W_base: (m, n) base (pre-fine-tuning) weight matrix.
+        W_ft:   (m, n) fine-tuned weight matrix.
+        k:      number of leading singular vectors to compare.
+                Defaults to ``min(m, n, 32)``.
+        eps:    guard for near-zero denominators.
+
+    Returns:
+        :class:`FinetuningDeltaResult`.
+
+    Reference: arXiv:2509.17866 "Spectral Fingerprints of Fine-Tuning".
+    """
+    base = _as_2d(W_base).to(torch.float64)
+    ft = _as_2d(W_ft).to(torch.float64)
+    delta = ft - base
+
+    min_dim = min(base.shape)
+    if k is None:
+        k = min(min_dim, 32)
+    k = min(k, min_dim)
+
+    # SVD of base and delta (economy / thin)
+    U_b, s_b, Vh_b = torch.linalg.svd(base, full_matrices=False)
+    U_d, s_d, Vh_d = torch.linalg.svd(delta, full_matrices=False)
+
+    sv_scale_factor = float(s_d[:k].sum().item()) / (float(s_b[:k].sum().item()) + eps)
+
+    # Alignment: mean |cos| between corresponding leading singular vectors
+    k_cmp = min(k, U_b.shape[1], U_d.shape[1])
+    left_sim = float((U_b[:, :k_cmp] * U_d[:, :k_cmp]).sum(dim=0).abs().mean().item())
+    right_sim = float((Vh_b[:k_cmp] * Vh_d[:k_cmp]).sum(dim=1).abs().mean().item())
+
+    return FinetuningDeltaResult(
+        sv_scale_factor=sv_scale_factor,
+        left_rotation_similarity=left_sim,
+        right_rotation_similarity=right_sim,
+    )
+
+
+def critical_sharpness(
+    model: "nn.Module",
+    loss_fn: "Callable[[], Tensor]",
+    *,
+    n_iters: int = 20,
+    tol: float = 1e-4,
+) -> float:
+    """Largest Hessian eigenvalue λ_max (sharpness) via power iteration.
+
+    Uses double backpropagation (no full Hessian materialised) to estimate
+    the leading eigenvalue of the loss Hessian. High sharpness at the end of
+    training correlates with poor generalisation and instability under LR warmup
+    restarts (arXiv:2601.16979).
+
+    Args:
+        model:   PyTorch model.  Parameters that require grad are used.
+        loss_fn: No-argument callable returning a scalar loss tensor.
+            Must be differentiable through model's parameters.
+        n_iters: Maximum power-iteration steps.
+        tol:     Stop early when relative eigenvalue change < tol.
+
+    Returns:
+        Estimated λ_max as a float.
+
+    Reference: Damian et al. arXiv:2601.16979.
+    """
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        return 0.0
+
+    with torch.no_grad():
+        # Initialise a random unit vector matching the parameter shapes.
+        v = [torch.randn_like(p) for p in params]
+        v_norm = math.sqrt(sum(vi.pow(2).sum().item() for vi in v))
+        v = [vi / v_norm for vi in v]
+
+    eigenvalue = 0.0
+    for _ in range(n_iters):
+        with torch.enable_grad():
+            loss = loss_fn()
+            grads = torch.autograd.grad(loss, params, create_graph=True)
+            vg = sum((vi * gi).sum() for vi, gi in zip(v, grads))
+            hvp_raw = torch.autograd.grad(vg, params, retain_graph=False)
+
+        # Replace any None entries (disconnected params) with zeros.
+        hvp = [
+            (h if h is not None else torch.zeros_like(p))
+            for h, p in zip(hvp_raw, params)
+        ]
+
+        # New eigenvalue estimate: <Hv, v> / <v, v>  (v is already unit).
+        new_eig = sum((h * vi).sum().item() for h, vi in zip(hvp, v))
+
+        # Normalise Hv to get the new unit vector.
+        hv_norm = math.sqrt(sum(h.pow(2).sum().item() for h in hvp))
+        if hv_norm == 0.0:
+            break
+        with torch.no_grad():
+            v = [h / hv_norm for h in hvp]
+
+        # Convergence check.
+        if abs(eigenvalue) > 0 and abs(new_eig - eigenvalue) / (abs(eigenvalue) + 1e-30) < tol:
+            eigenvalue = new_eig
+            break
+        eigenvalue = new_eig
+
+    return float(eigenvalue)
+
+
+def gradient_subspace_saturation(
+    grad_history: "list[Tensor]",
+    *,
+    k: int = 10,
+) -> float:
+    """Fraction of the current gradient in the top-k historical gradient subspace.
+
+    High saturation means the gradient direction has settled into a low-rank
+    subspace (sign of plasticity loss / convergence). Low saturation means
+    the gradient is still exploring new directions.
+
+    Args:
+        grad_history: List of (d,) flattened gradient tensors, oldest first.
+            The last entry is the "current" gradient; the rest form the history.
+            Must contain at least 2 entries.
+        k: Number of principal directions of the history subspace (capped at
+            len(grad_history) - 1).
+
+    Returns:
+        ||proj_Vk(g_t)||² / ||g_t||² in [0, 1].
+        Returns 0.0 if fewer than 2 entries or if current gradient is zero.
+
+    Reference: Chen et al. arXiv:2508.07370.
+    """
+    if len(grad_history) < 2:
+        return 0.0
+
+    current = grad_history[-1].float().flatten()
+    current_norm_sq = current.pow(2).sum()
+    if current_norm_sq.item() == 0.0:
+        return 0.0
+
+    # Stack history (excluding current) into rows: shape (T-1, d).
+    # Economy SVD of (T-1, d) gives Vh of shape (min(T-1, d), d) — row vectors
+    # that span the column space of H and can project against current (shape d).
+    H = torch.stack([g.float().flatten() for g in grad_history[:-1]], dim=0)  # (T-1, d)
+
+    # Economy SVD; Vh has shape (min(T-1, d), d).
+    _, _, Vh = torch.linalg.svd(H, full_matrices=False)
+    # Cap k at the number of singular vectors actually returned.
+    k = min(k, Vh.shape[0])
+    Vk = Vh[:k]  # (k, d)
+
+    proj_sq = (Vk @ current).pow(2).sum()
+    return float((proj_sq / current_norm_sq.clamp_min(1e-24)).item())

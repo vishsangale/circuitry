@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -45,3 +47,49 @@ def test_esd_returns_consistent_devices_on_cuda():
     W = torch.randn(64, 64, device="cuda")
     edges, counts = spectral.esd(W, bins=20)
     assert edges.device == counts.device
+
+
+# ---------------------------------------------------------------------------
+# spectral_edge_gap tests (v1.30)
+# ---------------------------------------------------------------------------
+
+from circuitry.core.spectral import spectral_edge_gap
+
+
+def test_spectral_edge_gap_returns_float():
+    torch.manual_seed(10)
+    W1 = torch.randn(16, 16)
+    W2 = W1 + 0.1 * torch.randn(16, 16)
+    gap = spectral_edge_gap(W1, W2, k=3)
+    assert isinstance(gap, float)
+    assert math.isfinite(gap)
+    assert gap >= 0.0
+
+
+def test_spectral_edge_gap_low_rank_update_large_gap():
+    """A rank-1 update should produce a very large gap (singular values drop off sharply)."""
+    torch.manual_seed(11)
+    W = torch.randn(16, 16)
+    # Pure rank-1 update: outer product of two random vectors
+    u, v = torch.randn(16), torch.randn(16)
+    W2 = W + 3.0 * u.unsqueeze(1) * v.unsqueeze(0)
+    gap = spectral_edge_gap(W, W2, k=1)
+    assert gap > 2.0, f"Expected large gap for rank-1 update, got {gap:.3f}"
+
+
+def test_spectral_edge_gap_full_rank_update_near_one():
+    """A random full-rank update should produce a gap close to 1 (no special structure)."""
+    torch.manual_seed(12)
+    W = torch.randn(32, 32)
+    dW = torch.randn(32, 32) * 0.1  # random, full-rank
+    gap = spectral_edge_gap(W, W + dW, k=5)
+    # Gap should not be extreme for a structureless update
+    assert 0.5 < gap < 10.0, f"Expected moderate gap for full-rank update, got {gap:.3f}"
+
+
+def test_spectral_edge_gap_invalid_k_raises():
+    W = torch.randn(4, 4)
+    with pytest.raises(ValueError):
+        spectral_edge_gap(W, W, k=0)
+    with pytest.raises(ValueError):
+        spectral_edge_gap(W, W, k=4)  # k >= min(m,n)

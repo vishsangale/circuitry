@@ -2,6 +2,1108 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] — 2026-06-11
+
+**Stochastic Parameter Decomposition.** Second loose-end milestone
+(plan-sota-3 addendum): the parameter-space interpretability pillar
+(Bushnaq et al., arXiv:2506.20790; reference implementation
+github.com/goodfire-ai/spd; successor to APD arXiv:2501.14926).
+
+### Added
+- **`patching/spd.py`** (new module):
+  - `SPDRunner(model, module, *, n_components, importance_hidden=64,
+    seed=0)` — decomposes one `nn.Linear`'s weight into `C` rank-one
+    subcomponents (`V (d_in, C)`, `U (C, d_out)`; `V @ U ≈ W.T`).
+    Hook-based — during training a forward hook swaps the module output
+    for the masked component forward (`((x @ V) * m) @ U + bias`); no
+    model surgery, model frozen and fully restored after `run()`.
+  - Training mirrors the reference mechanics: stochastic masks
+    `m = ci + (1 − ci) · Uniform(0, 1)` (uniform in `[ci, 1]`), causal
+    importance `ci(x)` from a small MLP on the module input (the
+    original APD/SPD formulation; the reference repo uses a
+    CI-transformer at LM scale — documented), and three losses:
+    faithfulness `‖W.T − V @ U‖²`, stochastic reconstruction (output
+    MSE, or softmax-KL via `output_loss="kl"`), and importance
+    minimality (`mean(ci)`; the reference adds a log-scaled term —
+    simplification documented). `forward_fn=` escape hatch for
+    non-standard forwards.
+  - `SPDResult` — `.U` / `.V`, `.faithfulness_error` (relative),
+    per-step `.losses`, `.importance(x)`, `.active_components(x,
+    threshold)`, `.component_weight(c)` (rank-one `(d_out, d_in)`),
+    `.reconstructed_weight()`, `.to_markdown(x=...)`.
+  - Convergence verified in tests (relative faithfulness error < 0.05
+    on a toy Linear); model-hygiene tests assert weights, grad flags,
+    train mode, and hooks are untouched after `run()`. 16 new tests in
+    `tests/patching/test_spd.py`.
+- `SPDRunner` / `SPDResult` exported at top level and via
+  `circuitry.patching`.
+
+## [1.47.0] — 2026-06-11
+
+**Cross-layer feature flow.** First loose-end milestone (plan-sota-3
+addendum): data-free SAE feature matching across layers (Laptev et al.,
+arXiv:2502.03032).
+
+### Added
+- **`core/feature_flow.py`** (new module) — pure functions:
+  - `match_features(W_dec_a, W_dec_b, *, k=1) → (indices, sims)` —
+    per-feature top-k cosine matches between two decoder dictionaries
+    (`(n_features, d_model)` rows); scale-invariant, no forward passes.
+  - `feature_flow_graph(decoders, *, layer_ids, threshold=0.5, k=1) →
+    FeatureFlowGraph` — adjacent-layer match chains with edges kept at
+    `cosine ≥ threshold`. `FeatureFlowGraph` exposes `.ranked()` /
+    `.top_k()`, `.path_from(layer, feature)` (greedy argmax chain — a
+    feature's cross-layer "lifetime"), `.born_at(layer)` (features with
+    no upstream match), `.to_markdown()`; `FlowEdge` is the frozen edge
+    key. 18 new tests in `tests/core/test_feature_flow.py`.
+- **Exporters accept `FeatureFlowGraph`** — `to_neuronpedia_graph` /
+  `to_html` (and the `save_*` wrappers) render flow graphs alongside
+  CLT/EAP/SAE circuits; `labels=` works as elsewhere.
+- `match_features` / `feature_flow_graph` / `FeatureFlowGraph` /
+  `FlowEdge` exported at top level.
+
+## [1.46.0] — 2026-06-11
+
+**Multi-process recorder integration — `WEIGHT_FULL` / `ACTIVATION_FULL`
+(design §11, second increment).** Opt-in multi-process diagnostics: same
+recipes, same primitives, same `Recorder` constructor — only the `source`
+enum gains values, exactly as §11 specified.
+
+### Added
+- **`TensorSource.WEIGHT_FULL` / `TensorSource.ACTIVATION_FULL`** — pure
+  passthroughs single-process (identical to `WEIGHT` / `OUTPUT`); in a
+  `torch.distributed` run the recorder gathers the full tensor before any
+  primitive sees it: `WEIGHT_FULL` materializes DTensor-sharded params via
+  `core.distributed.full_tensor()`, `ACTIVATION_FULL` all-gathers captured
+  activations across ranks (concat on the batch dim).
+- **Participant mode** — when a recipe carries either `*_FULL` source,
+  non-zero ranks no longer fully no-op at `attach()`: they register only
+  the capture hooks / param resolution needed to join the emit-step
+  collectives (deterministic order: sorted `WEIGHT_FULL` module names,
+  then ONE activation gather), compute nothing, and write nothing (no
+  run-dir files; internal `NullWriter`). Rank-0-only writes unchanged.
+  Contract: all ranks construct the `Recorder` with the same recipe and
+  `every_n_steps`, run the same forwards, and call `step()` with the same
+  step values. Recipes **without** `*_FULL` sources keep the v0.x
+  behaviour exactly (non-zero ranks fully no-op).
+- **`core/distributed.py::all_gather_named(named, *, dim=0, group=None)`**
+  — `{name: tensor}` all-gather via one `all_gather_object` collective;
+  tolerant of per-rank shape differences and names captured on only a
+  subset of ranks (emit cadence, not hot path).
+- 5 new tests in `tests/recorder/test_full_sources.py`, including two
+  real 2-process gloo runs: rank 0 observes the cross-rank concatenated
+  activation batch (4 rows from 2×2-row shards) and emits `WEIGHT_FULL`
+  weight diagnostics; rank 1 writes nothing and creates no files; legacy
+  recipes keep the rank-0 no-op contract.
+
+### Known limitation
+- FSDP1 flat-param sharding is still not handled — FSDP1-sharded
+  parameters produce incorrect rank-0 diagnostics (README warning
+  updated). FSDP1 `summon_full_params` gathering and `DDPMetricWriter`
+  histogram aggregation remain on the §11 follow-up list.
+
+## [1.45.0] — 2026-06-11
+
+**Multi-process foundation — `core/distributed.py` (design §11, first
+increment).** Fifth milestone of `docs/plan-sota-3.md`, started: the pure
+reduce helpers the Recorder will call before primitives so `core/`
+primitives never know about ranks. User-facing semantics are unchanged in
+this release — circuitry still no-ops on non-zero ranks and FSDP-sharded
+params still produce wrong rank-0 numbers (README warning stands); the
+`TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` recorder integration lands
+in a follow-up.
+
+### Added
+- **`core/distributed.py`** (new module):
+  - `is_distributed()` / `world_size()` / `is_main_process()` — process
+    group introspection; single-process defaults (`False` / `1` / `True`).
+  - `all_gather_concat(t, *, dim=0, group=None) → Tensor` — activation-side
+    reduce: all-gather + concat along the batch dim; passthrough (returns
+    the same object) when not distributed.
+  - `full_tensor(param) → Tensor` — weight-side reduce: DTensor
+    (FSDP2 / TP) params gathered via `.full_tensor()`; plain tensors pass
+    through. FSDP1 flat-param gathering is explicitly out of scope here
+    (recorder-side `summon_full_params` work; design §11).
+  - 7 new tests in `tests/core/test_distributed.py`, including a real
+    2-process gloo group via `torch.multiprocessing.spawn` validating
+    gather shape/order and rank-0 semantics.
+
+## [1.44.0] — 2026-06-11
+
+**MoE routing diagnostics.** Fourth milestone of `docs/plan-sota-3.md`:
+closes the last deferred item from the previous SOTA plan — MoE is the
+dominant 2026 frontier architecture and the Recorder had no routing story.
+
+### Added
+- **`core/moe.py`** (new module) — pure routing primitives (arXiv:2506.21551):
+  - `routing_entropy(gate_scores, *, from_logits=True) → float` — mean
+    per-token Shannon entropy (nats) of the router distribution over
+    `(..., n_experts)` outputs.
+  - `expert_load_balance(expert_ids, n_experts) → float` —
+    `exp(H(load)) / n_experts` ∈ (0, 1]; 1 = perfectly uniform expert
+    load, → `1/n_experts` on collapse. Accepts top-1 `(tokens,)` or
+    top-k `(tokens, k)` assignments.
+  - `pathway_complexity(expert_ids_per_layer) → float` — effective
+    number of distinct cross-layer expert paths (`exp(H)` of the
+    empirical path distribution; top-k sets order-normalised per layer).
+  13 new tests in `tests/core/test_moe.py`.
+- **Recorder: opt-in `"moe_routing"` activation diagnostic** — emits
+  `moe/routing_entropy/<module>` + `moe/expert_load_balance/<module>`
+  per router module and a single cross-layer `moe/pathway_complexity`
+  when ≥ 2 routers with equal token counts are captured. Only
+  activations from modules matching the new
+  `Recipe.moe_router_pattern` field (default `r".*\.mlp\.gate$"`,
+  `re.search` semantics) feed the diagnostic — everything else is
+  ignored so it coexists with stock hooks. 7 new tests in
+  `tests/recorder/test_moe_routing.py`.
+- **`llm` recipe** — lists `"moe_routing"` (disabled by default:
+  `enabled={"moe_routing": False}`; dense models have no router) and
+  gains an optional `OUTPUT` HookPoint on `.*\.mlp\.gate$` so enabling
+  the diagnostic on an MoE model needs no recipe surgery.
+- `routing_entropy` / `expert_load_balance` / `pathway_complexity`
+  exported at top level.
+
+## [1.43.0] — 2026-06-11
+
+**Generation-time analysis.** Third milestone of `docs/plan-sota-3.md`:
+trace, steer, and patch across multi-token decoding, not just one forward
+pass. Model contract: anything causal-LM-shaped (`model(ids)` → logits
+tensor or `.logits` object, or a custom `logits_fn`); HF or hand-rolled.
+
+### Added
+- **`patching/generation.py`** (new module):
+  - `trace_generation(model, input_ids, *, n_steps, modules, logits_fn,
+    next_token_fn, top_k, stop_token_id) → GenerationTrace` — drives a
+    greedy (or custom) decode loop, teacher-forced full-prefix re-runs
+    (exact, KV-cache-free), recording per step: chosen token, top-k
+    logits, next-token entropy, and per-site activation stats
+    (`norm`/`mean`/`std` of the last position) for any `{name: module}`
+    map. `GenerationTrace` exposes `.token_ids`, `.entropy_series()`,
+    `.site_series(name, stat)`, `.to_markdown()`.
+  - `apply_steer_steps(model, module, vector, *, steps, coeff)` /
+    `patch_site_steps(model, module, value, *, steps, position=-1)` —
+    step-indexed interventions: active only on the selected decode
+    steps. The step clock counts top-level model forwards (prefill =
+    step 0), so both context managers also work inside an external
+    KV-cached `model.generate` loop. Tuple outputs handled; hooks
+    always removed.
+  - `prepare_generation_attribution(model, clean_ids, corrupted_ids, *,
+    target_step) → GenerationAttributionSetup` — attributes a
+    *generated* token: greedy-generates the realized sequence, appends
+    the realized prefix to both prompts (teacher-forced), and exposes
+    `.metric` (last-position logit of the realized target token) —
+    exactly the single-forward shape every existing runner expects.
+  - `generation_attribution(..., runner="causal_trace"|"patch_grid")` —
+    convenience wrapper running the setup through `CausalTraceRunner`
+    or `PatchGridRunner`.
+  - All names exported at top level and via `circuitry.patching`.
+    25 new tests in `tests/patching/test_generation.py`.
+
+## [1.42.0] — 2026-06-11
+
+**Weight-based transcoder analysis, cross-method consensus, pluggable
+auto-interp labeling.** Second milestone of `docs/plan-sota-3.md`.
+
+### Added
+- **`core/circuits.py`** — weight-based (input-independent) transcoder
+  analysis (Circuit Insights arXiv:2510.14936; arXiv:2501.18823):
+  - `transcoder_virtual_weights(W_dec_up, W_enc_down) → Tensor` —
+    `(f_up, d) @ (d, f_down)` global feature→feature connectivity from
+    weights alone; complements per-prompt CLT attribution graphs.
+  - `top_virtual_connections(V, *, k=20) → list[(i, j, w)]` — strongest
+    virtual connections by `|w|`.
+  - `feature_token_alignment(W_dec, W_U, *, k=10) → (ids, scores)` —
+    per-feature top-k promoted logit tokens, the batched all-features
+    analogue of `top_logit_tokens`. 12 new tests in
+    `tests/core/test_circuits.py`.
+- **`patching/consensus.py`** (new module) — `CircuitConsensus`
+  (CIRCUS-style cross-method stability ensembles; arXiv:2603.00523):
+  per-edge `agreement()`, `consensus_edges(min_agreement)`,
+  `pairwise_jaccard()`, `to_markdown()`, and
+  `CircuitConsensus.from_results(results, *, tau|top_k, names)` to
+  binarize scored results uniformly. Complements
+  `CertifiedCircuitRunner` (one method across data subsamples) with
+  many-methods-one-task agreement. Pure aggregation; no forward passes.
+  11 new tests in `tests/patching/test_consensus.py`.
+- **`sae/labeling.py`** (new module) — pluggable auto-interp labeling
+  (SAGE arXiv:2511.20820 / ADAG arXiv:2604.07615 workflows without an
+  API dependency): `FeatureEvidence` (per-feature evidence bundle with
+  `.to_prompt()`) and `describe_features(evidence, label_fn) →
+  {(layer, feature): str}` where `label_fn: Callable[[str], str]` is
+  user-supplied (their LLM call / cache / human). Output plugs directly
+  into the v1.41 exporters' `labels=` kwarg. 6 new tests in
+  `tests/sae/test_labeling.py`.
+- All new names exported at top level and via their packages.
+
+## [1.41.0] — 2026-06-11
+
+**Graph export & interchange — Neuronpedia JSON + self-contained HTML.**
+First milestone of `docs/plan-sota-3.md`: circuitry graph results become
+exchangeable with the existing visualization ecosystem (Anthropic
+circuit-tracer / Neuronpedia) instead of terminating at `to_markdown()`.
+
+### Added
+- **`patching/export.py`** (new module) — pure serialization, stdlib `json` only:
+  - `to_neuronpedia_graph(result, *, slug, scan, prompt, prompt_tokens,
+    node_threshold, top_k, labels) → dict` — serializes `CLTGraphResult`,
+    `EAPResult`, or `SAEFeatureCircuit` to the circuit-tracer /
+    Neuronpedia attribution-graph JSON schema (`schema_version` 1:
+    `metadata` / `qParams` / `nodes` / `links`; node `feature_type` ∈
+    {feature, error, embedding, logit}), uploadable to neuronpedia.org.
+    `labels={(layer, feature): str}` writes human labels to node `clerp`
+    fields (auto-interp labeling lands in v1.42).
+  - `save_neuronpedia_graph(result, path, **kwargs) → str` — JSON file
+    wrapper; returns the absolute path.
+  - `to_html(result, *, title, top_k=50, node_threshold, labels) → str` —
+    dependency-free single-file HTML report: deterministic layered-DAG
+    inline SVG (edge width/colour by score, hover isolation via vanilla
+    JS, no external URL fetches) with the normalized graph embedded as
+    `<script type="application/json">` for downstream tooling.
+  - `save_html(result, path, **kwargs) → str`.
+  - All four exported at top level (`circuitry.*`) and via
+    `circuitry.patching`. `SAEFeatureCircuit` handling is duck-typed so
+    `export.py` stays importable without sae_lens.
+  - 29 new tests in `tests/patching/test_export.py`.
+- **CLI: `circuitry export-graph <circuit.json> --format neuronpedia|html
+  --out PATH [--slug --scan --top-k]`** — re-serializes a saved circuit
+  JSON file (`EAPResult.save()`) to either format. 1 new test in
+  `tests/test_cli.py`.
+
+## [1.40.0] — 2026-06-09
+
+**Mean ablation + feature geometry.**
+
+### Added
+- **`patching/mean_ablation.py`** (new module):
+  - `compute_mean_activation(model, module, dataset_inputs) → Tensor` — runs the
+    model on a list of inputs, captures the target module's output, and returns the
+    mean activation (averaged over both batch and dataset).  Used to pre-compute the
+    reference activation for mean ablation.
+  - `mean_ablation(model, module, mean_act)` — context manager that replaces the
+    module's output with *mean_act* (broadcast to match the live batch shape) on every
+    forward pass inside the context.  Provides a more in-distribution null hypothesis
+    than zero ablation.  No hooks remain after the context exits.
+    12 new tests in `tests/patching/test_mean_ablation.py`.
+- **`core/feature_geometry.py`** (new module):
+  - `feature_interference(feature_dirs, *, normalize=True) → Tensor` — ``(n, n)``
+    pairwise cosine-similarity matrix between feature directions.  High off-diagonal
+    values indicate redundant or competing features.
+  - `feature_coverage(feature_dirs, acts, *, k=None) → float` — fraction of
+    activation variance explained by the feature directions (all, or top-k by
+    explained variance).  In ``[0, 1]``.
+  - `feature_spread(feature_dirs, *, normalize=True) → float` — mean pairwise
+    angular distance in radians.  Near π/2 ≈ high diversity; near 0 ≈ redundant set.
+    13 new tests in `tests/core/test_feature_geometry.py`.
+
+## [1.39.0] — 2026-06-09
+
+**Head knockout + neuron statistics.**
+
+### Added
+- **`patching/head_knockout.py`** (new module) — `HeadKnockoutRunner(model,
+  head_modules, *, layer_names)`, `HeadKnockoutResult`: ablates individual attention
+  heads by zeroing each head module's output and measures the metric drop.  Returns an
+  ``(n_layers, n_heads)`` importance matrix where
+  ``importance[l, h] = clean_score − knockout_score[l, h]``.  Positive = head was
+  helping; negative = head was hurting.  `HeadKnockoutResult` exposes `.top_heads(k)`,
+  `.to_markdown()`.  Based on Michel et al. 2019 / Voita et al. 2019.
+  12 new tests in `tests/patching/test_head_knockout.py`.
+- **`core/neuron.py`** (new module) — `neuron_stats(acts, *, threshold=0.0) →
+  NeuronStats`: fast vectorised per-neuron statistics over any ``(..., d)`` activation
+  tensor (leading dims flattened): mean, std, max, dead fraction (fraction of neurons
+  whose max < threshold), and excess kurtosis.  `NeuronStats` is a plain dataclass.
+  12 new tests in `tests/core/test_neuron.py`.
+
+## [1.38.0] — 2026-06-09
+
+**Transformer circuit primitives — QK/OV weight-space analysis.**
+
+### Added
+- **`core/circuits.py`** (new module) — pure weight-matrix analysis functions:
+  - `ov_matrix(W_V, W_O) → Tensor` — computes `W_V @ W_O` per head; shape
+    ``(..., d_model, d_head) × (..., d_head, d_model) → (..., d_model, d_model)``.
+    The OV circuit captures what each head writes to the residual stream.
+  - `qk_matrix(W_Q, W_K) → Tensor` — computes `W_Q @ W_K.T` per head; shape
+    ``(..., d_model, d_head) × (..., d_model, d_head) → (..., d_model, d_model)``.
+    The QK circuit captures what positions each head attends between.
+  - `head_composition_score(W_OV, W_dest) → float` — Frobenius-norm normalised
+    composition score `‖W_OV @ W_dest‖_F / (‖W_OV‖_F · ‖W_dest‖_F)` ∈ [0, 1].
+    Measures how strongly one head's output feeds into another's Q/K/V.
+  - `composition_scores(W_OV_src, W_dest) → Tensor` — batched composition score
+    matrix for all `(n_heads_src, n_heads_dst)` pairs.
+  - `top_logit_tokens(direction, W_U, *, k=10) → (ids, scores)` — top-k tokens
+    promoted by a residual-space direction via `direction @ W_U`.
+  - `top_embedding_tokens(direction, W_E, *, k=10) → (ids, scores)` — top-k tokens
+    whose embeddings are most aligned with a direction via `W_E @ direction`.
+  All pure functions; no forward passes. 14 new tests in `tests/core/test_circuits.py`.
+  Reference: Elhage et al. 2021 "A Mathematical Framework for Transformer Circuits".
+
+## [1.37.0] — 2026-06-09
+
+**Activation Patch Grid + Gradient-Based Input Attribution.**
+
+### Added
+- **`patching/patch_grid.py`** (new module) — `PatchGridRunner(model, *, modules,
+  module_names, module_pattern)`, `PatchGridResult`: runs activation patching across all
+  `(layer, position)` pairs and returns a `(n_layers, seq_len)` recovery heatmap.  For
+  each cell `(l, p)` the runner patches only position `p` of layer `l`'s output from the
+  clean run into the corrupted forward pass, then measures normalised metric recovery
+  `(patched − corrupted) / (clean − corrupted)`.  `PatchGridResult` exposes `.top_sites(k)`,
+  `.to_markdown()`.  Directly implements the residual-stream patching grid used in circuit
+  papers (Wang et al. 2022 IOI, Hanna et al. 2023 greater-than).  12 new tests in
+  `tests/patching/test_patch_grid.py`.
+- **`core/attribution.py`** (new module):
+  - `gradient_input_attribution(grads, embeds, *, reduction="l2") → Tensor` — per-token
+    gradient × input attribution.  Accepts pre-computed gradient and embedding tensors of
+    shape `(batch, seq, d_model)` or `(batch, d_model)`; reduces over `d_model` via
+    `"l2"` (default, always ≥ 0), `"dot"` (signed), `"abs"` / `"l1"` (sum of absolutes).
+    One backward pass by the caller; pure function here.
+  - `integrated_gradients(model_fn, embeds, *, baseline, n_steps=50, reduction="dot") → Tensor`
+    — Sundararajan et al. 2017 IG (arXiv:1703.01365).  Integrates the gradient of
+    `model_fn` along the path from `baseline` (default: zeros) to `embeds` and multiplies
+    by `embeds − baseline`.  With `reduction="dot"` satisfies the completeness axiom:
+    `attribution.sum() ≈ model_fn(embeds) − model_fn(baseline)`.  `n_steps` trapezoidal
+    integration steps.  13 new tests in `tests/core/test_attribution.py`.
+
+## [1.36.0] — 2026-06-09
+
+**Logit decomposition + causal tracing.**
+
+### Added
+- **`core/decompose.py`** (new module) — `logit_decomposition(components, unembed, token_a, token_b, *, position, ln_scale, ln_bias) → LogitDecompositionResult`:
+  decomposes `logit[token_a] − logit[token_b]` into per-component contributions by
+  projecting each residual-stream component onto the logit-difference direction
+  `W_U[:,token_a] − W_U[:,token_b]`.  Optional linear LayerNorm approximation via
+  `ln_scale`.  Components sum exactly to the true logit diff (no LN) or approximately
+  with LN folding.  `LogitDecompositionResult` exposes `.ranked()`, `.top_k(k)`,
+  `.to_markdown()`.  Based on the Transformer Circuits framework
+  (Elhage et al. 2021).  12 new tests in `tests/core/test_logit_decompose.py`.
+- **`patching/causal_trace.py`** (new module) — `CausalTraceRunner(model, *, modules,
+  module_names, module_pattern)`, `CausalTraceResult`: implements the ROME causal
+  tracing experiment (Meng et al. NeurIPS 2022, arXiv:2202.05262).  For each candidate
+  module, patches the clean hidden state back into the corrupted forward pass and
+  measures metric recovery, normalised to `(patched − corrupted) / (clean − corrupted)`.
+  Accepts either an explicit module list or a regex `module_pattern`.
+  `CausalTraceResult` exposes `.top_layers(k)`, `.to_markdown()`.
+  12 new tests in `tests/patching/test_causal_trace.py`.
+
+## [1.35.0] — 2026-06-09
+
+**DAAM cross-attention attribution + HyperDAS input-conditioned alignment search.**
+
+### Added
+- **`core/attention.py`** addition — `daam_attribution(attn_maps, *, head_agg, normalize,
+  spatial_shape) → Tensor`: aggregates per-step cross-attention maps from diffusion models
+  into a `(seq_len, n_patches)` attribution heatmap. Averages over denoising steps and
+  batch; aggregates heads by mean or max; optional L1 normalisation per token; optional
+  reshape to `(seq_len, H, W)` for a spatial grid (arXiv:2210.04885, Tang et al. ICCV 2023).
+  14 new tests in `tests/core/test_daam.py`.
+- **`patching/hyperdas.py`** (new module) — `HyperDASNet(d_model, subspace_dim, hidden_dim)`,
+  `HyperDASResult`, `HyperDASRunner(model, module, *, d_model, subspace_dim, hidden_dim)`:
+  input-conditioned alignment search via hypernetwork. Extends DAS by replacing the
+  global fixed rotation R with a hypernetwork H: activation → orthonormal subspace basis
+  (differentiable Gram-Schmidt). Training objective: cross-entropy under interchange
+  intervention; gradients flow through `basis = hyper_net(h_base_pooled)` while
+  base/source activations are detached (frozen model). Returns trained network, IIA score,
+  and per-step losses (arXiv:2503.10894). 12 new tests in `tests/patching/test_hyperdas.py`.
+
+## [1.34.0] — 2026-06-09
+
+**CLT Attribution Graphs.**
+
+### Added
+- **`patching/clt.py`** (new module) — `CLTNode`, `CLTEdge`, `CLTGraphResult`,
+  `CLTGraphRunner(model, layer_transcoders)`: builds a feature-level attribution
+  graph using cross-layer transcoders. For each consecutive layer pair `(l, l+1)`,
+  scores every feature-to-feature edge using the EAP approximation
+  `score(fi→fj) = Σ delta_fi · grad_fj`. Clean forward pass splices each
+  transcoder losslessly (`decode(encode(x)) + sg(output − decode(encode(x)))`) so
+  PyTorch autograd gives `f.grad = ∂metric/∂f` after `backward()`.
+  `CLTGraphResult` exposes `.top_k()`, `.threshold()`, `.to_markdown()`,
+  `.node_scores` (per-feature importance), `.layer_order` (arXiv:2603.21014).
+- 12 new tests in `tests/patching/test_clt.py`.
+
+## [1.33.0] — 2026-06-09
+
+**Inference-Time Diagnostics & Deeper Attribution.**
+
+### Added
+- **`patching/iti.py`** (new module) — `ITIConfig`, `fit_iti(head_acts, labels, *, coeff=15.0)`,
+  `apply_iti(model, config, *, attn_modules, resolver)`: Inference-Time Intervention.
+  Trains per-(layer, head) mass-mean probes on labelled activation data; at inference adds
+  `coeff × direction` to each head's output slice. Direct integration of existing
+  `mass_mean_probe` primitive (arXiv:2306.03341, Li et al.).
+- **`patching/cd.py`** (new module) — `CDResult`, `cd_token_contributions(attn_weights, *,
+  head_agg, add_residual)`: CD-T contextual decomposition. Propagates per-source-token
+  contribution scores through the attention stack via iterative left-multiplication of the
+  aggregated attention matrix; optional 50/50 residual blend models skip connections.
+  Returns `contributions[q, s]` = fraction of position *q* attributable to source *s*
+  (arXiv:2407.00886, Jain et al. ICLR 2025).
+- **`core/weight.py`** additions:
+  - `critical_sharpness(model, loss_fn, *, n_iters=20, tol=1e-4) → float`: largest Hessian
+    eigenvalue λ_max via power iteration using double backpropagation (HVP). High sharpness
+    correlates with poor generalisation (arXiv:2601.16979, Damian et al.).
+  - `gradient_subspace_saturation(grad_history, *, k=10) → float`: fraction of the current
+    gradient lying in the top-*k* principal directions of historical gradients. High
+    saturation = gradient has settled into a low-rank subspace (plasticity loss signal)
+    (arXiv:2508.07370, Chen et al.).
+- 34 new tests across `tests/patching/test_iti.py`, `tests/patching/test_cd.py`,
+  `tests/core/test_critical_sharpness.py`.
+
+## [1.32.0] — 2026-06-09
+
+**Attribution Quality.**
+
+### Added
+- **`patching/relp.py`** (new module) — `ReLPRunner(model, resolver, *, eps=1e-6)`:
+  RelP attribution — replaces EAP's gradient term with an LRP-epsilon residual-stream
+  coefficient `lrp_coeff_w = act_clean_w / (|Σ_w act_clean_w| + eps)`. Same 2-forward + 1-backward
+  cost as EAP; Pearson correlation to ground-truth patching = 0.956 vs 0.006 for EAP on
+  GPT-2 IOI. Returns `EAPResult` for drop-in compatibility (arXiv:2508.21258).
+- **`patching/certified.py`** (new module) — `CertifiedCircuitRunner(base_runner, *,
+  n_subsamples=20, confidence=0.95, subsample_frac=0.5)`: wraps any attribution runner
+  with randomised batch subsampling — an edge is "certified" (stable) if it appears in the
+  top-K of ≥ ``confidence × n_subsamples`` subsets; otherwise "abstained".
+  Returns `CertifiedCircuitResult` with `.certified_edges`, `.abstained_edges`,
+  `.vote_counts`, `.certified_set()`, `.n_certified()`, `.n_abstained()` (arXiv:2602.22968).
+- **`benchmarks/mib.py`** — three new synthetic task loaders:
+  `load_ravel(n, *, entity_type, attribute)` (RAVEL entity-attribute disentanglement;
+  arXiv:2402.17700), `load_arithmetic(n, *, op, modulus)` (addition / modular addition
+  circuits), `load_mcqa(n, *, n_choices)` (multiple-choice Q&A). Plus two evaluation
+  helpers: `mib_circuit_f1(circuit_edges, gt_edges) → float` (edge-set F1 for the MIB
+  localisation leaderboard) and `mib_iia_score(das_result, *, threshold=0.5) → float`
+  (IIA-at-threshold for causal variable localisation). All MIB arXiv:2504.13151.
+- `ReLPRunner`, `CertifiedCircuitResult`, `CertifiedCircuitRunner` exported at `circuitry.*`;
+  version bumped to `1.32.0`.
+- Tests: ~40 new tests across test_relp, test_certified, test_mib_v132, test_public_api.
+
+---
+
+## [1.31.0] — 2026-06-09
+
+**SAE Quality & Steering.**
+
+### Added
+- **`core/erase.py`** — `rlace_erase(acts, labels, *, rank=1) → EraseProjection`: rank-k
+  adversarial concept erasure (Ravfogel et al. ICML 2022, arXiv:2201.12091). Finds `P = I − U Uᵀ`
+  where U spans the top-`rank` eigenvectors of the between-class scatter `B = M_c^T M_c`; for
+  `rank=1` recovers the LEACE direction.
+- **`sae/metrics.py`** — `UNRELIABLE_METRICS: frozenset` containing `{"tpp", "scr"}` — a
+  frozen guard for metrics with high-variance estimates on standard SAE benchmarks.
+  `warn_if_unreliable(metric_name)`: emits a `UserWarning` when `metric_name ∈ UNRELIABLE_METRICS`.
+  `sae_downstream_loss(sae, model, tokens, *, site, resolver=None) → dict`: KL-faithfulness
+  metric — runs the model clean then with a SAE hook at `site`, returns
+  `{"kl_divergence", "ce_delta", "l0"}`.
+- **`sae/grad.py`** — `sae_influence_scores(sae, x, loss_fn) → Tensor`: GradSAE per-feature
+  influence `|∂loss/∂f_i| · |f_i|`, mean over batch/positions (arXiv:2505.08080). `p_anneal`
+  and `hierarchical_topk` added to `SUPPORTED_SAE_ARCHITECTURES`.
+- **`sae/steer.py`** (new module) — `fgaa_steering_vector(sae, positive_acts, negative_acts, *,
+  n_features=10) → Tensor`: Feature-Guided Activation Addition — selects top-`n_features`
+  discriminative SAE features by `|mean_pos − mean_neg|` and returns a weighted sum of their
+  decoder columns as a `(d_model,)` CPU float32 steering vector (arXiv:2501.09929).
+- All 4 new top-level names (`rlace_erase`, `sae_downstream_loss`, `sae_influence_scores`,
+  `fgaa_steering_vector`) exported at `circuitry.*`; version bumped to `1.31.0`.
+- Tests: ~35 new tests across test_erase (rlace_erase), test_metrics (UNRELIABLE_METRICS +
+  sae_downstream_loss), test_grad (sae_influence_scores), test_steer (fgaa_steering_vector),
+  test_sae_architectures (p_anneal + hierarchical_topk), test_public_api.
+
+---
+
+## [1.30.0] — 2026-06-09
+
+**Training Diagnostics.**
+
+### Added
+- **`core/weight.py`** — `update_weight_ratio(W_prev, W_curr) → float`: Frobenius
+  relative update `‖ΔW‖_F / ‖W_prev‖_F`; the μP scaling diagnostic. `FinetuningDeltaResult`
+  / `finetuning_delta_svd(W_base, W_ft) → FinetuningDeltaResult`: SVD of `W_ft − W_base`
+  returning scale factor and left/right rotation similarity; distinguishes geometry-changing
+  from geometry-preserving fine-tuning (arXiv:2509.17866).
+- **`core/spectral.py`** — `spectral_edge_gap(W_prev, W_curr, *, k=5) → float`: ratio
+  `s[k-1] / s[k]` of the weight-update singular values; a growing gap fingerprints
+  circuit formation during grokking (arXiv:2604.06256).
+- **`core/activation.py`** — `neural_collapse_score(acts, labels) → float`: NC1 metric
+  `Tr(Σ_W · Σ_B⁺) / C`; → 0 in terminal training, rising during plasticity loss /
+  continual learning (Papyan et al. 2020; arXiv:2404.02719). `spectral_collapse_rank(acts)
+  → float`: effective rank of the activation matrix — a downward trend signals
+  representation collapse (arXiv:2509.22335).
+- **`core/dynamics.py`** — `emergence_score(series, *, window=5) → float`: maximum
+  smoothed second log-derivative `d²M / d(log step)²`; a spike discriminates abrupt
+  emergent capabilities from smooth learning (arXiv:2508.04401).
+- **`core/attention.py`** — `attention_rollout(attn_weights, *, grads=None) → Tensor`:
+  recursive attention rollout for ViTs returning `(B, T)` patch saliency; uniform rollout
+  (Abnar & Zuidema ACL 2020) with optional gradient-weighted GMAR variant
+  (arXiv:2504.19414).
+- All 7 new names exported at `circuitry.*`; version bumped to `1.30.0`.
+- Tests: ~35 new tests across test_weight, test_spectral, test_activation, test_dynamics,
+  test_attention.
+
+---
+
+## [1.29.0] — 2026-06-09
+
+**Probing & Representation Geometry.**
+
+### Added
+- **`core/probe.py`** — `MDLResult` / `mdl_probe`: MDL probing (Voita & Titov
+  2020, arXiv:2003.12298) — computes online-coding code length across n_chunks
+  data splits; `mdl_ratio < 1` indicates genuine encoding. `MassMeanProbe` /
+  `mass_mean_probe`: binary mass-mean probe (Marks & Tegmark COLM 2024,
+  arXiv:2310.06824) — direction = normalised (μ₁ − μ₀), with threshold at the
+  midpoint; `.predict()` and `.accuracy()` methods. `verify_linear_representation`:
+  cosine similarity between a probe direction and a steering vector (Park et al.
+  arXiv:2311.03658), with graceful dimension-mismatch handling via truncation.
+- **`core/steer.py`** — `repe_direction`: first-PC concept direction from
+  activation differences (Zou et al. 2023, arXiv:2310.01405). `directional_ablation`:
+  orthogonal projection removing a concept direction from activations (Arditi et al.
+  NeurIPS 2024, arXiv:2406.11717).
+- **`patching/steer.py`** — `apply_ablation`: context manager that registers a
+  forward hook removing a concept direction at a site; mirrors `apply_steer`
+  structure (eval-mode, try/finally cleanup).
+- **`core/activation.py`** — `local_intrinsic_dim`: Two-NN manifold dimensionality
+  estimator (Levina & Bickel 2004). `kernel_alignment`: CKA or MNN cross-model
+  alignment score (Huh et al. ICML 2024, arXiv:2405.07987). `embedding_uniformity`:
+  mean off-diagonal cosine similarity for collapse detection (Guo et al. ICML 2024,
+  arXiv:2310.04400).
+- **`sae/metrics.py`** — `superposition_index`: effective feature count via SAE
+  activation entropy — `exp(H(|feature_acts|))`; `>> n_neurons` signals
+  superposition (arXiv:2512.13568).
+- All 12 new names exported at `circuitry.*`; version bumped to `1.29.0`.
+- Tests: 18 probe + 14 steer + 15 activation geometry + 7 SAE metrics = 54 new tests.
+
+---
+
+## [1.28.0] — 2026-06-08
+
+**Causal alignment — DAS and Causal Scrubbing.**
+
+### Added
+- **`patching/das.py`** — `DASRunner` and `DASResult`. Learns an orthogonal
+  rotation R such that the first `subspace_dim` columns of R·h align with a
+  specified causal variable via interchange-intervention training
+  (Geiger et al. NeurIPS 2023, arxiv:2303.02536).
+  `DASRunner(model).run(base_inputs, source_inputs, labels, *, module,
+  subspace_dim, n_steps, lr, loss_fn)` runs Adam on R with Stiefel-manifold
+  SVD retraction after each step. The interchange mixes the R-rotated
+  subspaces of base and source activations, injects the result at the target
+  module via a forward hook, and minimises CE loss against the target labels.
+  `DASResult.rotation` — (d, d) orthogonal matrix; `DASResult.iia_score` —
+  interchange-intervention accuracy; `DASResult.subspace_directions()` —
+  first `subspace_dim` rows of R (the causal directions).
+- **`patching/scrubbing.py`** — `CausalScrubRunner`, `CircuitHypothesis`, and
+  `CausalScrubResult` (Conmy et al. / Redwood Research 2022).
+  `CausalScrubRunner(model).run(clean_inputs, corrupted_inputs, metric,
+  hypothesis, *, compute_per_module)` measures faithfulness of a circuit
+  hypothesis: circuit modules keep clean activations; non-circuit modules are
+  replaced with pre-captured corrupted activations. Faithfulness =
+  (metric(scrubbed) − metric(corrupted)) / (metric(clean) − metric(corrupted)).
+  `CircuitHypothesis(circuit_modules, node_labels)` specifies which modules
+  implement the behaviour. `per_module_delta` (opt-in, one extra forward pass
+  per module) shows each module's individual contribution.
+- Both classes exported at `circuitry.patching.*` and top-level `circuitry.*`.
+- Tests: 9 DAS + 11 Causal Scrubbing = 20 new tests; all layering tests pass.
+
+---
+
+## [1.27.0] — 2026-06-08
+
+**Evaluation & benchmarks — MIB task loaders, SAEBench metrics, Fourier alignment, information bottleneck.**
+
+### Added
+- **`benchmarks/mib.py`** — `load_ioi(n, *, seed, vocab_size, seq_len)` and
+  `load_greater_than(n, *, seed, vocab_size, seq_len)` return `MIBTask` dataclasses
+  containing `clean_inputs`, `corrupted_inputs`, and a differentiable `metric_fn`
+  (logit-diff on the last position). Fully synthetic — no downloads. Compatible with
+  every `*Runner.run()` signature (Mueller et al. ICML 2025, arxiv:2504.13151).
+  Exported at `circuitry.benchmarks.*`.
+- **`benchmarks/saebench.py`** — `run_saebench(sae, acts, *, tasks=None) → SAEBenchResult`.
+  Analytically-tractable SAE evaluation suite: `l0_sparsity`, `explained_variance`,
+  `reconstruction_mse`, `feature_density`, `sparse_probing_r2` (1-NN linear probe
+  on top-1 active features). `SAEBenchResult` dataclass carries all five metrics + an
+  optional `ce_loss_score` field (populated when a model is provided). Operates on raw
+  activation tensors — no network access. Implements the 5 CPU-tractable metrics from
+  Karvonen et al. 2025 (arxiv:2503.09532). Exported at `circuitry.benchmarks.*`.
+- **`core/dynamics.py`** — `fourier_feature_alignment(W, task_freqs, *, n_freqs=None) → float`.
+  Computes the fraction of weight-matrix spectral power aligned with task-relevant
+  Fourier modes: `rfft` along the input dimension, sum power across output rows, return
+  `Σ_{k ∈ task_freqs} power[k] / Σ_k power[k]`. Returns 0.0 on empty `task_freqs` or
+  `d_in < 2`. Nanda et al. ICLR 2024.
+- **`core/dynamics.py`** — `information_bottleneck_score(acts_train, acts_val, labels_train, labels_val, *, n_bins, eps) → float`.
+  Mutual-information proxy I(T;Y)/H(Y) for measuring grokking progress: projects
+  activations onto the first PC (via `pca_lowrank`), bins into `n_bins` equal-width
+  buckets, estimates MI from the joint histogram. Clipped to `[0, 1]`. Leavitt &
+  Morcos 2024.
+- Both dynamics helpers exported at top-level `circuitry.*` and via `circuitry.core.dynamics`.
+- Tests: 8 `test_dynamics.py` additions (`fourier_feature_alignment` × 4 + `information_bottleneck_score` × 3 + range check).
+
+---
+
+## [1.26.0] — 2026-06-08
+
+**SAE ecosystem expansion — CrosscoderWrapper, Gemma/Llama Scope loaders, Matryoshka + BatchTopK.**
+
+### Added
+- **`patching/sae_features.py`** — `CrosscoderWrapper` (Anthropic Oct 2024). Wraps a
+  crosscoder SAE as a single-site intervention point (`hook_input=False`). Routes
+  `encode`/`decode` through `encode_at_layer`/`decode_at_layer` when available (with
+  `primary_layer` argument), falls back to plain `encode`/`decode`. `encode_all(acts)`
+  for full cross-layer mode. Exported lazily via `circuitry.patching` and eagerly at
+  top-level `circuitry`.
+- **`sae/loader.py`** — `load_gemma_scope(model_size, layer, width, *, site, average_l0, device)`
+  and `load_llama_scope(layer, width, *, device)`. Convenience wrappers over `load_sae()`
+  for pre-trained JumpReLU SAE suites (Lieberum et al. 2024, arxiv:2408.05147). Lazy import —
+  no crash at import time without `sae_lens`. Exported at `circuitry.sae.*`.
+- **`sae/grad.py`** — Added `"matryoshka"` (Bussmann et al. 2025, arxiv:2503.17547) and
+  `"batch_topk"` to `SUPPORTED_SAE_ARCHITECTURES`. Both use the existing `sae_decompose`
+  gradient path unchanged. Added `"crosscoder"` to `_BLOCKED_ARCHITECTURES` (raw crosscoder
+  objects must be wrapped in `CrosscoderWrapper` for attribution).
+- Tests: 13 CrosscoderWrapper + 5 architecture + 6 scope-loader = 24 new tests.
+
+---
+
+## [1.25.0] — 2026-06-08
+
+**Edge Pruning (NeurIPS 2024) + HAP — SOTA joint circuit discovery.**
+
+### Added
+- **`patching/edge_pruning.py`** — `EdgePruningRunner` learns binary edge masks jointly via
+  Adam + temperature-annealed sigmoid + L0 regularisation (Bhaskar & Wettig NeurIPS 2024,
+  arxiv:2406.16778). Uses `EAPRunner` to compute initial per-edge gradient signals, then
+  optimises scalar mask logits `z_e` to minimise `−(σ(z/T)·|score|) + λ·Σσ(z/T)` with
+  temperature annealing `T: temperature_init → temperature_final` over `n_steps`.
+  Supports `candidate_edges` to restrict the search space.
+  `EdgePruningResult` provides `circuit`, `removed_edges`, `mask_logits`, `eap_scores`,
+  `circuit_graph()`, `ranked()`, `to_json()`/`from_json()`/`save()`/`load()`.
+- **`patching/hap.py`** — `HAPRunner` implements Hybrid Attribution + Pruning (Hu et al.
+  2025, arxiv:2510.03282): Phase 1 pre-filters edges via EAP (keeps top `top_p` fraction
+  by |score|); Phase 2 runs `EdgePruningRunner` on the reduced subgraph. Achieves similar
+  faithfulness to full edge pruning at a fraction of the candidate set size.
+- Both classes exported at `circuitry.patching.*` and top-level `circuitry.*`.
+- Tests: 10 edge-pruning + 5 HAP = 15 new tests; 296 existing tests unaffected.
+
+---
+
+## [1.24.0] — 2026-06-08
+
+**Representational analysis primitives: linear probing, concept erasure, future lens.**
+
+### Added
+- **`core/probe.py`** — `train_linear_probe(acts, labels, *, max_iter, C, tol) → LinearProbe`.
+  Pure-PyTorch Adam training loop with L2 regularisation and early stopping. `LinearProbe`
+  provides `.predict()`, `.predict_proba()`, `.accuracy()`, and `.direction()` (unit concept
+  vector; binary: normalised `weight[0]`; multi-class: first left singular vector via
+  `pca_lowrank`). Both exported at top-level `circuitry.*` and `circuitry.core.*`.
+- **`core/erase.py`** — `leace_erase(acts, labels) → EraseProjection`. Mean-direction
+  orthogonal projection onto the concept complement (Park et al. 2023 LEACE). Binary: concept
+  direction = `μ₁ − μ₀` normalised; multi-class: first right singular vector of the
+  between-class mean matrix. `EraseProjection.apply(acts)` broadcasts to `(..., d_model)`.
+- **`core/lens.py`** — `future_lens_kl(residual, unembed, target_logits, *, horizon, layer_norm, chunk_size) → float`.
+  Extends logit lens to compare residual at position `t` against `target_logits[t + horizon]`,
+  measuring how much information about future tokens is already encoded at this layer.
+  Returns `0.0` when `horizon ≥ seq`. Reduces to `logit_lens_kl` at `horizon=0`.
+- Tests: 8 + 5 + 5 = 18 new tests across `test_probe.py`, `test_erase.py`, `test_future_lens.py`.
+
+---
+
+## [1.23.0] — 2026-06-08
+
+**Logit lens distribution primitive + activation steering + design doc backfill.**
+
+### Added
+- **`core/lens.py`** — `logit_lens_distributions(residuals, unembed, *, layer_norm, top_k) → list[LayerPrediction]`.
+  Complements the existing `logit_lens_kl` scalar: projects intermediate residual states
+  through the unembedding and returns per-layer top-k token predictions with probabilities.
+  Accepts `dict[int, Tensor]` or `list[Tensor]` residuals; collapses leading dims via
+  mean-reduce. `LayerPrediction` dataclass: `layer_idx`, `token_ids`, `probs`.
+- **`core/steer.py`** — `steer_vector(positive_acts, negative_acts, *, normalize=True) → Tensor`.
+  Contrastive Activation Addition (Rimsky et al. 2024 CAA): mean-difference direction between
+  class polarities, optionally unit-normalised. Raises `ValueError` on near-zero difference.
+- **`patching/steer.py`** — `apply_steer(model, site, vector, *, coeff=1.0, resolver=None)` context
+  manager. Registers a forward hook at `site` that adds `coeff * vector` (broadcast-safe for
+  1D/2D/3D outputs); hook is always removed on exit, even on exception.
+- Tests: 7 + 9 = 16 new tests across `test_logit_lens_dist.py`, `test_steer.py`.
+
+### Fixed
+- `patching/sae_edges.py` module docstring corrected: the TLSiteResolver path was already
+  implemented in v1.7 P3 but the docstring still read "TLSiteResolver → NotImplementedError".
+
+### Docs
+- `docs/design.md` §3: added `core/dynamics.py` to the repo structure file listing;
+  updated `core/attention.py` comment to include `head_specialization`.
+- `docs/design.md` §4.4: added `probe_batch`, `drift_method`, `drift_max_tokens` to the
+  `Recipe` dataclass code example (they were documented in a blockquote below but absent
+  from the code block).
+
+---
+
+## [1.22.0] — 2026-06-08
+
+**SAEFeatureTemporalRunner — multi-step SAE feature attribution.** Runs
+`SAEFeatureRunner` independently on each `(step_key, clean_inputs, corrupted_inputs)`
+triple and aggregates results into a `TemporalAtPResult` with per-step scores,
+attribution deltas between consecutive steps, and helpers for identifying stable
+vs step-specific features.
+
+### Added
+- **`SAEFeatureTemporalRunner(model, sae_sites, resolver)`** in
+  `circuitry.patching.sae_temporal` (re-exported from `circuitry.patching`).
+  `.run(steps, metric, **runner_kwargs) → TemporalAtPResult` accepts a list of
+  `(step_key, clean_inputs, corrupted_inputs)` triples and runs attribution
+  independently for each step. Step keys must be unique and non-empty.
+- **`TemporalAtPResult`** — result container with:
+  - `.scores: dict[step_key, AtPResult]` — per-step feature attribution.
+  - `.step_keys: list` — ordered step keys.
+  - `.delta_scores: dict[step_key, AtPResult]` — attribution change between
+    consecutive steps (`delta[k] = scores[k] − scores[k−1]`; first step has no entry).
+  - `.stable_features(threshold) → list[AtPNode]` — nodes with `|score| ≥ threshold`
+    at ALL steps, sorted by layer/neuron.
+  - `.step_specific_features(step_key, threshold) → list[AtPNode]` — nodes active
+    above threshold at `step_key` but not at any other step.
+  - `.top_stable(k=10) → list[(AtPNode, float)]` — top-k features by minimum
+    `|score|` across all steps (most reliably active), sorted descending.
+- Tests: 13 new tests in `tests/patching/test_sae_temporal.py`.
+
+Note: each step is evaluated independently. True recurrent-SAE attribution
+(where step k's activations depend on step k−1's hidden state) requires a
+different architecture and remains a known limitation.
+
+---
+
+## [1.21.0] — 2026-06-08
+
+**TranscoderWrapper — transcoder SAEs as intervention sites.** `TranscoderWrapper` wraps
+any transcoder (module-input → module-output feature decomposition) so it can be used as
+an SAE site in `SAEFeatureRunner` and `SAEFeatureEdgeRunner`. The wrapper sets
+`hook_input=True`, signalling the attribution hooks to encode from `inp[0]` (the module
+input) rather than from `output`. The SAE splice remains lossless: `x_hat + eps = output`
+where `eps = output − x_hat` (in output space).
+
+### Added
+- **`TranscoderWrapper`** in `circuitry.patching.sae_features` (and re-exported from
+  `circuitry.patching`). Wraps any object with `encode(x_in) → f` and `decode(f) → x_hat`
+  where `x_in` is the module input and `x_hat` is in the module output space. Setting
+  `hook_input = True` on the wrapper routes the attribution hooks through `inp[0]`.
+- Attribution hooks in `SAEFeatureRunner._run_site` now branch on `getattr(sae, "hook_input", False)`:
+  when `True`, the corrupted hook encodes from `inp[0]` and computes `eps = output − x_hat`;
+  the clean hook seeds the gradient leaf from `encode(inp[0])` with the same lossless splice.
+  The IG path is unchanged (uses pre-computed interpolated `f_k`, no re-encoding needed).
+- Same transcoder-aware branching added to the four writer/reader hooks in
+  `SAEFeatureEdgeRunner._compute_pair_edges` (`_writer_corr_hook`, `_writer_clean_hook`,
+  `_reader_corr_hook`, `_reader_clean_hook`).
+- Tests: 9 new tests in `tests/patching/test_sae_transcoder.py`.
+
+---
+
+## [1.20.0] — 2026-06-08
+
+**Parallel-attention arch flag for SAEFeatureEdgeRunner.** `arch='parallel'` on
+`SAEFeatureEdgeRunner.run()` proactively skips same-layer `attn_out → mlp_out` edges that
+are causally undefined in GPT-J-style models (both heads read `resid_pre` simultaneously).
+
+### Added
+- **`arch: str = 'sequential'`** keyword argument on `SAEFeatureEdgeRunner.run()`.
+  `'sequential'` (default, Llama-style — attention before MLP) preserves all existing edges.
+  `'parallel'` (GPT-J-style) skips `attn_out@L → mlp_out@L` pairs via the new
+  `_is_parallel_intra_layer()` helper. Unknown values raise `ValueError`.
+- **`_is_parallel_intra_layer(writer_site, reader_site) → bool`** — public helper returning
+  `True` when the pair is same-layer `attn_out → mlp_out`.
+- Tests: 10 new tests in `tests/patching/test_sae_parallel_arch.py`.
+
+---
+
+## [1.19.0] — 2026-06-08
+
+**Per-position SAE feature edge scores.** `SAEFeatureEdgeRunner.run()` gains a `per_position=False`
+flag. When enabled, the runner computes per-sequence-position attribution scores alongside the
+existing scalar scores.
+
+### Added
+- **`per_position: bool = False`** keyword argument on `SAEFeatureEdgeRunner.run()` — when `True`,
+  also computes position-level scores for each edge and stores them in
+  `SAEFeatureCircuit.position_scores` (a `dict[SAEFeatureEdge, Tensor]` where every value has
+  shape `(seq_len,)`). `position_scores[e].sum() == edges[e]` within float32 rounding.
+  Supported for both `variant='attrib'` and `variant='ig'` (including error→feature edges when
+  `include_error_node=True`). Default `False` — zero overhead at default settings.
+- **`SAEFeatureCircuit.position_scores`** — new field (`None` unless `per_position=True`).
+  Exposes which sequence positions drive each feature→feature edge, enabling positional
+  analysis of circuit attribution.
+- **`SAEFeatureCircuit.top_positions(edge, k=5)`** — convenience helper that returns the top-k
+  sequence positions by absolute per-position score as a list of `(position_index, score)` pairs
+  sorted by `|score|` descending. Raises `ValueError` when `position_scores is None`.
+- Tests: 11 new tests in `tests/patching/test_sae_edges_per_position.py`.
+
+---
+
+## [1.18.0] — 2026-06-08
+
+**Report polish + circuit I/O convenience.**
+
+### Added
+- **`_parse_matched_module_counts(text)`** in `recorder/report.py` — parses
+  `circuitry/matched_modules.txt` and returns matched-module counts per report family
+  (`"weight"`, `"activation"`, `"grad"`). The same module appearing under multiple
+  hook-points with the same source is deduplicated. `named_param` and `weight` sources
+  both map to the `"weight"` family; `output` and `input` map to `"activation"`.
+- **"Modules matched" line in `## Summary`** — when `matched_modules.txt` is present and
+  the report is not compact, a new bullet shows per-family module counts (e.g.
+  `**weight**: 42 · **activation**: 16`), complementing the existing tag-count line and
+  making recipe under-coverage immediately visible.
+- **`EAPResult.save(path)` / `EAPResult.load(path)`** — thin file-I/O wrappers around
+  `to_json()` / `from_json()` for convenience.
+- **`ACDCResult.save(path)` / `ACDCResult.load(path)`** — same pattern for ACDC circuits.
+- Tests: 4 new matched-module tests in `tests/recorder/test_report.py`; 4 new save/load
+  tests in `tests/patching/test_circuit_render.py` (53 pass total across those files).
+
+---
+
+## [1.17.0] — 2026-06-07
+
+**Circuit rendering.** `EAPResult`, `AtPResult`, and `ACDCResult` gain human-readable output
+and JSON I/O. A new `circuit-compare` CLI subcommand diffs two circuit files by edge-set.
+`circuitry scan --model-factory` is now fully functional.
+
+### Added
+- **`_node_str(node)`**, **`_node_to_dict(node)`**, **`_node_from_dict(d)`** in
+  `circuitry.patching.graph` — human-readable node labels (`embed`, `L2H5`, `mlp.L3`, …)
+  and JSON serialization helpers.
+- **`EAPResult.to_markdown(*, top_k=20) → str`** — `## EAP Circuit` header, graph stats,
+  top-K edge table (`rank | writer | slot | reader | score`).
+- **`EAPResult.to_json() → str`** / **`EAPResult.from_json(text) → EAPResult`** —
+  JSON serialization with `"kind": "eap"`, `n_layers`, `n_heads`, and scored edge list.
+- **`AtPResult.to_markdown(*, top_k=20) → str`** — `## AtP Node Attribution` header,
+  node count, top-K table (`rank | node | slot | score`).
+- **`ACDCResult.to_markdown(*, top_k=None) → str`** — `## ACDC Circuit` header, kept/total
+  edges, final KL, edge table with optional top-K elision.
+- **`ACDCResult.to_json() → str`** / **`ACDCResult.from_json(text) → ACDCResult`** —
+  JSON serialization with `"kind": "acdc"`, kept edges list, final KL. Removed edges are
+  reconstructed from the full graph on deserialization.
+- **`circuitry circuit-compare A.json B.json [--out file]`** CLI subcommand — loads two
+  circuit JSON files (EAP or ACDC), computes symmetric edge-set diff, renders a markdown
+  summary table + per-side unique-edge listings.
+- **`circuitry scan --model-factory pkg.module:factory`** — the scan subcommand now fully
+  works; uses `_load_entrypoint` (same helper as `fit-tuned-lens`) to resolve the factory,
+  then calls `scan_run`. `--out` flag added for output directory override.
+- Tests: 32 new tests in `tests/patching/test_circuit_render.py`; 4 new CLI tests in
+  `tests/test_cli.py`.
+
+### Removed
+- The stub `rc=2` / "not yet exposed via CLI" error path in `_cmd_scan`.
+
+---
+
+## [1.16.0] — 2026-06-07
+
+**Training-dynamics depth.** Two enhancements to the `## Training Dynamics` report section and
+a new flag rule for representational drift.
+
+### Added
+- **Direction labels in `### Phase Transitions`** — each row now has a `direction` column:
+  `weight/update_delta_rel` transitions are labelled `↑ norm growth` or `↓ norm collapse`;
+  all other metrics get `↑ growth` / `↓ collapse`.  `_transition_direction()` helper added.
+- **`### Representation Drift` sub-table** — any `activation/repr_drift/{module}` tags
+  produce a per-layer drift table (start drift, end drift, Δ, trend label: `↑ rising`,
+  `→ stable`, `↓ falling`, or `⚡ step N` when `phase_transition_steps` detects a sharp
+  jump).  Rows sorted by last-step drift descending.  `_drift_trend()` helper added.
+- **`repr_drift_high` flag rule** — fires when the last-step drift of any layer exceeds 0.5
+  (significant representational shift from reference snapshot).
+- **`activation/repr_drift` in `HERO_SECTIONS`** — the section is elevated to hero priority
+  in the main report body for quick scanning.
+- Tests: 8 new tests in `tests/recorder/test_training_dynamics_report.py`;
+  1 new flag test in `tests/recorder/test_report.py`.
+
+### Fixed
+- **`__version__`** bumped from the stale `1.12.0` to `1.16.0` (v1.13–v1.15 were released
+  but the version string was never updated).
+
+---
+
+## [1.15.0] — 2026-06-07
+
+**Polish sprint.** Adds `grokking_step`, per-hook-family tag counts in the report summary,
+Grokking Signals in Training Dynamics, and a tool-by-tool landscape comparison doc.
+
+### Added
+- **`core.dynamics.grokking_step(series, *, z_threshold=2.5) → int | None`** — thin wrapper
+  around `phase_transition_steps` returning the first detected transition step.  Default
+  threshold raised to 2.5 vs 2.0 to reduce false positives on noisy loss curves.
+- **Per-hook-family tag counts** in the `## Summary` block (e.g. `**weight**: 3 · **activation**: 2`).
+- **`### Grokking Signals` sub-table** in `## Training Dynamics` — auto-detected from
+  `loss`/`acc`/`accuracy`/`error`/`perplexity` tag names via `grokking_step`.
+- **`docs/positioning.md`** — tool-by-tool comparison: TransformerLens, nnsight, pyvene,
+  sae_lens.  Covers where circuitry is differentiated and where it defers.
+- Tests: 5 new `grokking_step` unit tests; 3 new report integration tests.
+
+### Fixed
+- **`gate_stats` return type** in `docs/design.md §4.1` corrected from `-> GateStats` to
+  `-> dict[str, float]` (the actual implementation type).
+
+---
+
+## [1.14.0] — 2026-06-07
+
+**Training-dynamics diagnostics.** A new `core/dynamics` module adds two pure-Python primitives
+that operate on the `list[tuple[int, float]]` series format from `_metrics.group`, requiring no
+GPU. The report gains a `## Training Dynamics` section (suppressed in compact mode and on
+single-step runs) with two sub-tables: **Head Formation Events** (heads that crossed their
+specialisation threshold during the recording window; pre-formed heads excluded) and **Phase
+Transitions** (sharp change-points detected in `effective_rank`, `rank_trajectory`, and
+`update_delta_rel` time series).
+
+### Added
+- **`core.dynamics.phase_transition_steps(series, *, window=5, z_threshold=2.0, min_gap=5) → list[int]`.**
+  Bilateral-mean change detector: at each center position computes `|mean(right_half) − mean(left_half)|`
+  and flags positions where the bilateral change exceeds `mean + z_threshold × std` across all
+  centers. Collapses nearby detections within `min_gap` index positions (keeping the largest). A
+  monotone linear ramp produces identical bilateral changes everywhere (std = 0) and returns `[]`.
+  Tests: `tests/core/test_dynamics.py`.
+- **`core.dynamics.head_formation_step(series, *, threshold, n_sustain=2) → int | None`.**
+  Returns the first training step where a per-head attention score crosses `threshold` and remains
+  above it for `n_sustain` consecutive recorded points. End-of-series tolerance: if the series ends
+  before `n_sustain` confirmations, the available tail is checked. Returns `None` if the threshold
+  is never crossed. Tests: `tests/core/test_dynamics.py`.
+- **`## Training Dynamics` report section** in `build_report()`. Uses `head_formation_step` on
+  `induction_score` / `copy_suppression_score` / `attention_sink_score` series (thresholds 0.4 /
+  0.3 / 0.5) to list heads that specialised during the recording window, and `phase_transition_steps`
+  on `effective_rank` / `rank_trajectory` / `update_delta_rel` to flag sharp change-points.
+  Tests: `tests/recorder/test_training_dynamics_report.py`.
+
+---
+
+## [1.13.0] — 2026-06-07
+
+**Head specialization classification.** A new `head_specialization` primitive synthesises the three
+per-head behavioral scores (induction, copy-suppression, sink) into a single label per head. The
+report gains a `## Head Specialization` table rendered after the hero sections, showing each head's
+inferred behavioral type with specialist labels bolded. The section is suppressed in compact mode.
+
+### Added
+- **`core.attention.head_specialization(induction, copy_suppression, sink, *, thresholds) → list[str]`.**
+  Classifies each head as `"induction"` / `"copy_suppression"` / `"sink"` / `"uniform"`. When a head
+  exceeds multiple thresholds, the type with the highest score-to-threshold ratio wins (normalised
+  tie-break). Threshold defaults match the report `FLAG_RULES` (0.4 / 0.3 / 0.5). Tests:
+  `tests/core/test_attention.py`.
+- **`## Head Specialization` table** in `build_report()`. Parses the last-step values of all three
+  attention-score families, calls `head_specialization` per module, and renders a markdown table
+  with columns: module | head | type | induction | copy_suppression | sink. Specialist types are
+  bolded; `uniform` is plain. Section absent when no attention-score tags are present; suppressed in
+  compact mode. Tests: `tests/recorder/test_head_specialization.py`.
+
+---
+
+## [1.12.0] — 2026-06-07
+
+**Attention sink head detection.** A new `attention_sink_score` primitive and live/scan
+diagnostic completes the attention-head behavioral triad: induction (offset +1 on probe),
+copy-suppression (offset 0 on probe), and sink (concentration on position 0 in real training
+inputs). Unlike the probe-based pair, this metric runs on the live training-forward attention
+pattern — sinks form on the real distribution, not on a synthetic repeated-token probe.
+
+### Added
+- **`core.attention.attention_sink_score(attn_pattern, *, sink_pos=0) → list[float]`.**
+  Per-head mean attention weight on a designated sink position (default 0 / BOS token) across
+  all query positions and batch elements. `sink_pos=-1` selects the last position. Operates on
+  the live training-forward `(B, H, T, T)` attention tensor, not the induction probe. Tests:
+  `tests/core/test_attention.py`.
+- **`attention_sink_score` activation diagnostic** (Recorder, scan, report). Added to the `llm`
+  recipe's `activation_diagnostics`. Emits `activation/attention_sink_score/<module>/head_N`.
+  The permanent `_main_pass_attn` capture hook now also fires when `attention_sink_score` is in
+  the recipe (previously only gated on `attention_pattern_entropy`). Report `HERO_SECTIONS` and
+  `FLAG_RULES` updated (`attention_sink_detected` fires when last > 0.5). Tests:
+  `tests/recorder/test_attention_sink_diagnostic.py`.
+
+## [1.11.0] — 2026-06-07
+
+**Copy-suppression head detection.** A new `copy_suppression_score` primitive and live/scan
+diagnostic completes the attention-circuit screening pair alongside `induction_score`. On the
+same repeated-token probe, `copy_suppression_score` measures how strongly each head attends
+back to the *same* token's prior position (offset 0), while `induction_score` measures offset +1.
+The two are mathematically complementary: a pure induction head scores ~0 on copy-suppression
+and vice versa. The recorder runs a single shared probe forward per step when both are enabled.
+
+### Added
+- **`core.attention.copy_suppression_score(attn_pattern, *, seq_len_repeat) → list[float]`.**
+  Per-head same-token-attention score on the repeated-token probe — the characteristic pattern of
+  copy-suppression heads (McDougall et al. 2023). Reuses the same `(B, H, T, T)` attention tensor
+  and probe structure as `induction_score`; complement at offset 0. Tests: `tests/core/test_attention.py`.
+- **`copy_suppression_score` activation diagnostic** (Recorder, scan, report). Added to the `llm`
+  recipe's `activation_diagnostics`. Emits `activation/copy_suppression_score/<module>/head_N` per
+  head per attention module per step. Shares the probe forward pass with `induction_score` via a
+  per-step lazy cache (`_get_probe_attn`) — no duplicate probe runs when both are enabled. Report
+  `HERO_SECTIONS` and `FLAG_RULES` updated (`copy_suppression_detected` fires when last > 0.3 nats).
+  Tests: `tests/recorder/test_copy_suppression_diagnostic.py`.
+
+### Changed
+- **Probe-pass deduplication.** The induction-probe forward pass is now extracted into a helper
+  method (`_get_probe_attn`) with a per-step lazy cache. Both `induction_score` and
+  `copy_suppression_score` call it; the probe runs at most once per emit step regardless of how
+  many probe-based diagnostics are enabled.
+
+## [1.10.0] — 2026-06-07
+
+The **tuned lens** (Belrose et al. 2023) — the one lens the project had flagged as future work —
+ships as a post-hoc workflow plus an opt-in live/scan diagnostic, completing the lens story
+alongside the v0.9 logit lens. New public surface: `core.lens.tuned_lens_kl`, the
+`circuitry.tuned_lens` package (`TunedLens`, `fit_tuned_lens`, `model_fingerprint`),
+`Recipe.tuned_lens`, the `tuned_lens_kl` activation diagnostic, and the `circuitry fit-tuned-lens`
+CLI. This release also clears three deferred polish/correctness items.
+
+### Added
+- **Tuned lens (`core.lens.tuned_lens_kl`).** A pure primitive that applies a learned per-layer
+  affine translator `A·h + b` to the residual before the unembed projection, so per-layer KL is no
+  longer confounded by the early/mid-layer basis mismatch the parameter-free logit lens suffers.
+  With `A = I, b = 0` it reduces exactly to `logit_lens_kl` (asserted in tests). The shared lens
+  tail (orientation auto-detect + token-chunked KL) is factored into helpers so the two lenses
+  can't drift. Tests: `tests/core/test_lens.py`.
+- **`circuitry.tuned_lens` workflow package.** `TunedLens` — a serializable container of per-layer
+  translators with `save`/`load`, layer/`d_model` metadata, and a `model_fingerprint` guard.
+  `fit_tuned_lens(model, batches, ...)` — the post-hoc trainer (the only optimizer loop in the
+  library, kept strictly in the workflow layer). It freezes the model, captures per-block residuals
+  the same way the recorder does, reconstructs the target final distribution as
+  `softmax(LN_f(last_block) @ W_U)`, and AdamW-trains each layer's affine (init identity) to
+  minimize KL to that target; the final block is the target frame and is not fitted. Layering:
+  `tuned_lens/` may import `core/` only — enforced in `.importlinter` and `tests/test_layering.py`.
+  Tests: `tests/tuned_lens/test_fit.py`.
+- **`tuned_lens_kl` Recorder + scan diagnostic (opt-in).** Set `Recipe.tuned_lens` to a fitted
+  `TunedLens` and add `"tuned_lens_kl"` to `activation_diagnostics`; the recorder emits
+  `activation/tuned_lens_kl/<layer>` per fitted block, reusing the shared unembed/final-LN
+  resolution (no new hooks). At `attach()` it verifies the lens fingerprint against the attached
+  model and **warns + skips** on a missing lens or a mismatch — it never emits a wrong KL. NOT in
+  any stock recipe's default list. Tests: `tests/recorder/test_tuned_lens_diagnostic.py`.
+- **`circuitry fit-tuned-lens` CLI.** Resolves `--model` / `--batches` as `package.module:attr`
+  entry points (zero-arg factories), fits the translators, and writes a `TunedLens` to `--out`.
+  Tests: `tests/test_tuned_lens_cli.py`.
+- **Report integration.** `activation/tuned_lens_kl` is a hero section; a new
+  `tuned_lens_not_forming` flag fires when a tuned-lens KL stays high (prediction not forming /
+  stale lens). Tests: `tests/recorder/test_tuned_lens_report.py`.
+- **`core.weight.relative_update_delta`** — scale-invariant per-parameter update size
+  `||ΔW|| / ||W||`; the recorder now emits `weight/update_delta_rel/*` alongside `update_delta`.
+
+### Fixed
+- **`build_report` Δ column reported the unsigned range, not the signed trend.** Deferred since
+  v1.2: `_metrics.stats` returned `delta = vmax - vmin`, so a monotonically *decreasing* metric
+  (`effective_rank: 15 → 5`) rendered `Δ = +10`, reading like an increase. `delta` is now the
+  signed `last − first`; the table cell shows the sign and the summary's "moving" label is relabelled
+  "(changed)" (range-based). The `## Flags` block already used a signed trend, so this only aligns
+  the table. Tests: `tests/recorder/test_report.py`.
+- **`update_delta_vanishing` flag used a scale-dependent absolute L2 threshold** (v1.3 review). It
+  now keys on the new dimensionless `weight/update_delta_rel` companion (`||ΔW||/||W||`), so the
+  threshold means the same thing across parameter sizes — a large-matrix healthy step no longer
+  reads as vanishing. Tests: `tests/core/test_weight.py`, `tests/recorder/test_report_flags.py`.
+
+### Investigated / deferred
+- **Gram-matrix (`eigvalsh(WᵀW)`) SVD speedup.** A CPU benchmark confirms ~1.8× at a 2:1 aspect
+  ratio with negligible error on the aggregate rank metrics, but the recorder shares one SVD across
+  all SVD-derived diagnostics — including `sv_histogram`, whose spectral *tail* the Gram squaring
+  degrades — so lowering the default `use_gram='auto'` threshold would regress the v1.8
+  accurate-by-default principle. The gate is the §10 **GPU** wall-clock number; deferred until a GPU
+  benchmark justifies it. Rationale in `docs/superpowers/specs/2026-06-07-v1.10-tuned-lens-design.md` §9.
+
+### Notes
+- The §10 GPU wall-clock budget re-validation **with `tuned_lens_kl` enabled** is pending a GPU
+  run; the diagnostic adds one `(d_model × d_model)` matmul per layer per emit on top of the
+  existing logit-lens projection (no extra forward pass), so it is expected to stay within the
+  ≤10% budget. Tuned-lens *fitting* is post-hoc and outside the training-loop budget by design.
+
 ## [1.9.0] — 2026-06-03
 
 Real-model evaluation follow-ups: every finding from the two v1.8.0 field reports (67-LM

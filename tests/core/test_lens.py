@@ -1,4 +1,4 @@
-"""Tests for logit_lens_kl. Spec §4.1."""
+"""Tests for logit_lens_kl and tuned_lens_kl. Spec §4.1."""
 from __future__ import annotations
 
 import logging
@@ -6,7 +6,7 @@ import logging
 import pytest
 import torch
 
-from circuitry.core.lens import logit_lens_kl
+from circuitry.core.lens import logit_lens_kl, tuned_lens_kl
 
 
 def test_kl_is_zero_when_projection_equals_final_logits():
@@ -82,4 +82,97 @@ def test_chunking_matches_single_shot():
     ref = logit_lens_kl(residual, W, final_logits, chunk_size=100_000)
     for cs in (1, 3, 7, 18, 1000):
         got = logit_lens_kl(residual, W, final_logits, chunk_size=cs)
+        assert got == pytest.approx(ref, abs=1e-5), f"chunk_size={cs}"
+
+
+# --- tuned lens -----------------------------------------------------------
+
+
+def _identity_translator(d_model: int) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.eye(d_model), torch.zeros(d_model)
+
+
+def test_tuned_lens_with_identity_translator_equals_logit_lens():
+    """A = I, b = 0 reduces tuned_lens_kl exactly to logit_lens_kl."""
+    torch.manual_seed(0)
+    d_model, vocab = 8, 16
+    residual = torch.randn(2, 5, d_model)
+    W = torch.randn(d_model, vocab)
+    final_logits = torch.randn(2, 5, vocab)
+    ln = torch.nn.LayerNorm(d_model)
+    for layer_norm in (None, ln):
+        ref = logit_lens_kl(residual, W, final_logits, layer_norm=layer_norm)
+        got = tuned_lens_kl(
+            residual, _identity_translator(d_model), W, final_logits,
+            layer_norm=layer_norm,
+        )
+        assert got == pytest.approx(ref, abs=1e-6)
+
+
+def test_tuned_lens_kl_zero_when_translator_matches_final():
+    """A translator that maps the residual onto the frame that produced the
+    final logits drives KL to zero."""
+    torch.manual_seed(1)
+    d_model, vocab = 6, 12
+    residual = torch.randn(3, 4, d_model)
+    A = torch.randn(d_model, d_model)
+    b = torch.randn(d_model)
+    W = torch.randn(d_model, vocab)
+    # final logits are produced by exactly the tuned projection.
+    final_logits = (residual @ A.t() + b) @ W
+    kl = tuned_lens_kl(residual, (A, b), W, final_logits)
+    assert kl == pytest.approx(0.0, abs=1e-5)
+
+
+def test_tuned_lens_can_beat_logit_lens_on_basis_mismatch():
+    """When the residual lives in a rotated basis vs the final frame, the
+    affine translator recovers it where the logit lens cannot."""
+    torch.manual_seed(2)
+    d_model, vocab = 5, 9
+    residual = torch.randn(2, 6, d_model)
+    A = torch.randn(d_model, d_model)
+    W = torch.randn(d_model, vocab)
+    final_logits = (residual @ A.t()) @ W
+    logit_kl = logit_lens_kl(residual, W, final_logits)
+    tuned_kl = tuned_lens_kl(residual, (A, torch.zeros(d_model)), W, final_logits)
+    assert tuned_kl < logit_kl
+    assert tuned_kl == pytest.approx(0.0, abs=1e-5)
+
+
+def test_tuned_lens_transpose_orientation_autodetected():
+    torch.manual_seed(3)
+    d_model, vocab = 4, 7
+    residual = torch.randn(1, 3, d_model)
+    tr = _identity_translator(d_model)
+    W = torch.randn(d_model, vocab)
+    final_logits = residual @ W
+    kl_a = tuned_lens_kl(residual, tr, W, final_logits)
+    kl_b = tuned_lens_kl(residual, tr, W.t(), final_logits)  # (vocab, d_model)
+    assert kl_a == pytest.approx(kl_b, abs=1e-5)
+
+
+def test_tuned_lens_rejects_mis_shaped_translator():
+    d_model, vocab = 6, 10
+    residual = torch.randn(2, 3, d_model)
+    W = torch.randn(d_model, vocab)
+    final_logits = torch.randn(2, 3, vocab)
+    with pytest.raises(ValueError, match="translator A must be"):
+        tuned_lens_kl(residual, (torch.eye(d_model + 1), torch.zeros(d_model)),
+                      W, final_logits)
+    with pytest.raises(ValueError, match="translator b must have last dim"):
+        tuned_lens_kl(residual, (torch.eye(d_model), torch.zeros(d_model + 1)),
+                      W, final_logits)
+
+
+def test_tuned_lens_chunking_matches_single_shot():
+    torch.manual_seed(5)
+    d_model, vocab = 8, 32
+    residual = torch.randn(2, 9, d_model)
+    A = torch.randn(d_model, d_model)
+    b = torch.randn(d_model)
+    W = torch.randn(d_model, vocab)
+    final_logits = torch.randn(2, 9, vocab)
+    ref = tuned_lens_kl(residual, (A, b), W, final_logits, chunk_size=100_000)
+    for cs in (1, 3, 7, 18, 1000):
+        got = tuned_lens_kl(residual, (A, b), W, final_logits, chunk_size=cs)
         assert got == pytest.approx(ref, abs=1e-5), f"chunk_size={cs}"

@@ -150,15 +150,34 @@ def test_rank_collapse_trend_flag(tmp_path):
 
 
 def test_update_delta_vanishing_flag(tmp_path):
-    """Near-zero update_delta fires update_delta_vanishing."""
+    """Near-zero RELATIVE update_delta fires update_delta_vanishing (v1.10:
+    the flag keys on the scale-invariant ||ΔW||/||W|| companion)."""
     _write(tmp_path / "metrics.jsonl", [
-        {"tag": "weight/update_delta/mod", "value": 1e-8, "step": 0, "kind": "scalar"},
-        {"tag": "weight/update_delta/mod", "value": 5e-9, "step": 1, "kind": "scalar"},
+        {"tag": "weight/update_delta_rel/mod", "value": 1e-7, "step": 0, "kind": "scalar"},
+        {"tag": "weight/update_delta_rel/mod", "value": 5e-8, "step": 1, "kind": "scalar"},
     ])
     out = tmp_path / "report.md"
     build_report(tmp_path, out)
     md = out.read_text()
     assert "update_delta_vanishing" in md
+
+
+def test_healthy_relative_step_keeps_flags_empty(tmp_path):
+    """A large-matrix healthy step (large ABSOLUTE ||ΔW|| but small relative)
+    must NOT fire the flag — the whole point of the v1.10 scale-invariant fix."""
+    _write(tmp_path / "metrics.jsonl", [
+        # Absolute delta is large, but the relative companion shows a healthy
+        # step well above the vanishing threshold.
+        {"tag": "weight/update_delta/mod", "value": 4.0, "step": 0, "kind": "scalar"},
+        {"tag": "weight/update_delta/mod", "value": 4.2, "step": 1, "kind": "scalar"},
+        {"tag": "weight/update_delta_rel/mod", "value": 0.02, "step": 0, "kind": "scalar"},
+        {"tag": "weight/update_delta_rel/mod", "value": 0.02, "step": 1, "kind": "scalar"},
+    ])
+    out = tmp_path / "report.md"
+    build_report(tmp_path, out)
+    # Assert precisely on the Flags block (the tmp path contains test names, so
+    # a bare substring check would false-positive).
+    assert "| — | — | no flags |" in out.read_text()
 
 
 def test_direction_reversal_flag(tmp_path):

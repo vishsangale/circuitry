@@ -351,6 +351,267 @@ def _drift_rbf_cka(R: torch.Tensor, C: torch.Tensor, eps: float) -> float:
     return float(1.0 - cka)
 
 
+def local_intrinsic_dim(
+    acts: ArrayLike,
+    *,
+    max_samples: int = 2048,
+    seed: int = 0,
+) -> float:
+    """Local intrinsic dimensionality via Two-NN estimator (Levina & Bickel 2004).
+
+    Estimates the dimensionality of the activation manifold from nearest-
+    neighbour distance ratios.  Complements ``effective_rank`` (linear/spectral)
+    with a nonlinear manifold geometry measure.
+
+    Args:
+        acts:        (n, d) activation tensor; any rank — flattened to 2-D.
+        max_samples: subsample rows before computing pairwise distances.
+        seed:        for reproducible subsampling.
+
+    Returns:
+        Estimated intrinsic dimensionality (float >= 0).
+
+    Reference: Levina & Bickel 2004; applied to LLMs in arXiv:2402.18048,
+               arXiv:2601.22722.
+    """
+    t = _as_tensor(acts)
+    if t.ndim == 1:
+        t = t.unsqueeze(0)
+    t = t.reshape(-1, t.shape[-1])
+    n = t.shape[0]
+    if n < 3:
+        raise ValueError(f"local_intrinsic_dim requires >= 3 samples; got {n}")
+
+    if n > max_samples:
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        idx = torch.randperm(n, generator=g)[:max_samples]
+        t = t[idx]
+        n = max_samples
+
+    if t.device.type != "cpu":
+        t = t.cpu()
+    t = t.to(dtype=torch.float64)
+
+    dists = torch.cdist(t, t, p=2)
+    dists.fill_diagonal_(float("inf"))
+    knn, _ = dists.topk(2, dim=1, largest=False)
+    d1, d2 = knn[:, 0], knn[:, 1]
+
+    valid = d1 > 1e-12
+    if valid.sum().item() < 3:
+        return 1.0
+    ratio_log = (d2[valid] / d1[valid].clamp_min(1e-12)).log()
+    mean_log = float(ratio_log.mean().item())
+    return float(1.0 / mean_log) if mean_log > 1e-10 else float("inf")
+
+
+def kernel_alignment(
+    acts_a: ArrayLike,
+    acts_b: ArrayLike,
+    *,
+    method: str = "cka",
+    max_samples: int = 256,
+    seed: int = 0,
+) -> float:
+    """Cross-model representation alignment score.
+
+    Measures how similarly two models represent the same data.  Unlike
+    ``repr_drift`` (single-model change over training), this compares two
+    different models on the same inputs.
+
+    Args:
+        acts_a, acts_b: (n, d) activation tensors from two models on the same data.
+        method:         ``'cka'`` — linear CKA in [0, 1]; or
+                        ``'mnn'`` — mutual nearest-neighbour overlap in [0, 1].
+        max_samples:    subsample to this many rows before computing.
+        seed:           for reproducible subsampling.
+
+    Returns:
+        Alignment score in [0, 1]; 1.0 = perfectly aligned.
+
+    Reference: Huh et al. ICML 2024 "Platonic Representation Hypothesis"
+               arXiv:2405.07987.
+    """
+    if method not in {"cka", "mnn"}:
+        raise ValueError(f"kernel_alignment: method must be 'cka' or 'mnn'; got {method!r}")
+
+    def _prep(x: ArrayLike) -> torch.Tensor:
+        t = _as_tensor(x)
+        if t.ndim == 1:
+            t = t.unsqueeze(0)
+        return t.reshape(-1, t.shape[-1])
+
+    a = _prep(acts_a)
+    b = _prep(acts_b)
+    if a.shape[0] != b.shape[0]:
+        raise ValueError(
+            f"kernel_alignment: acts_a and acts_b must have the same number of rows; "
+            f"got {a.shape[0]} vs {b.shape[0]}"
+        )
+    n = a.shape[0]
+    if n > max_samples:
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        idx = torch.randperm(n, generator=g)[:max_samples]
+        a, b = a[idx], b[idx]
+
+    if a.device.type != "cpu":
+        a = a.cpu()
+    if b.device.type != "cpu":
+        b = b.cpu()
+    a64 = a.to(dtype=torch.float64)
+    b64 = b.to(dtype=torch.float64)
+
+    if method == "cka":
+        return float(1.0 - _drift_linear_cka(a64, b64, eps=1e-10))
+
+    k = min(10, a64.shape[0] - 1)
+    if k < 1:
+        return 1.0
+    da = torch.cdist(a64, a64, p=2)
+    db = torch.cdist(b64, b64, p=2)
+    da.fill_diagonal_(float("inf"))
+    db.fill_diagonal_(float("inf"))
+    _, nn_a = da.topk(k, dim=1, largest=False)
+    _, nn_b = db.topk(k, dim=1, largest=False)
+    overlap = sum(
+        len(set(nn_a[i].tolist()) & set(nn_b[i].tolist()))
+        for i in range(a64.shape[0])
+    )
+    return float(overlap / (a64.shape[0] * k))
+
+
+def embedding_uniformity(
+    E: ArrayLike,
+    *,
+    n_samples: int = 2048,
+    seed: int = 0,
+) -> float:
+    """Mean pairwise cosine similarity in a random sample of embedding rows.
+
+    High values (→ 1.0) indicate embedding collapse (all items similar).
+    Low values (→ 0.0) indicate diverse, well-distributed embeddings.
+
+    Args:
+        E:         (vocab_size, d_model) embedding weight matrix.
+        n_samples: number of rows to sample for pairwise computation.
+        seed:      for reproducible sampling.
+
+    Returns:
+        Mean off-diagonal cosine similarity in [−1, 1].
+
+    Reference: Guo et al. ICML 2024 "Embedding Collapse" arXiv:2310.04400.
+    """
+    t = _as_tensor(E)
+    if t.ndim == 1:
+        return 1.0
+    E_2d = t.reshape(-1, t.shape[-1]).to(torch.float32)
+    n = E_2d.shape[0]
+    if n < 2:
+        return 1.0
+    if n > n_samples:
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        idx = torch.randperm(n, generator=g)[:n_samples]
+        E_2d = E_2d[idx]
+    if E_2d.device.type != "cpu":
+        E_2d = E_2d.cpu()
+    norms = E_2d.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    E_norm = E_2d / norms
+    gram = E_norm @ E_norm.T
+    n_s = gram.shape[0]
+    mask = ~torch.eye(n_s, dtype=torch.bool)
+    return float(gram[mask].mean().item())
+
+
+def neural_collapse_score(acts: ArrayLike, labels: ArrayLike) -> float:
+    """NC1 neural-collapse metric: within-class / between-class covariance ratio.
+
+    NC1 = Tr(Σ_W · Σ_B⁺) / C, where:
+      - Σ_W = mean within-class covariance (averaged over classes),
+      - Σ_B = between-class covariance of class means,
+      - C   = number of classes,
+      - Σ_B⁺ = Moore-Penrose pseudoinverse.
+
+    A perfectly collapsed network gives NC1 → 0 (within-class scatter vanishes).
+    Rising NC1 indicates representation collapse or plasticity loss (e.g. during
+    continual learning, after fine-tuning on a small dataset).
+
+    Args:
+        acts:   (n, d_model) activation tensor.
+        labels: (n,) integer class labels.
+
+    Returns:
+        NC1 score (float ≥ 0).  Lower = more collapsed (better for a finished
+        training run; high during fine-tuning signals plasticity loss).
+
+    Reference: Papyan et al. 2020 "Prevalence of Neural Collapse during the
+               terminal phase of deep learning training" PNAS; applied as a
+               fine-tuning health metric in arXiv:2404.02719, arXiv:2604.00230.
+    """
+    t = _as_tensor(acts)
+    if t.ndim == 1:
+        t = t.unsqueeze(0)
+    t = t.reshape(-1, t.shape[-1]).to(torch.float64)
+    lbl = torch.as_tensor(labels).long().flatten()
+    if lbl.shape[0] != t.shape[0]:
+        raise ValueError(
+            f"neural_collapse_score: acts and labels must have the same first dimension; "
+            f"got {t.shape[0]} vs {lbl.shape[0]}"
+        )
+    classes = lbl.unique()
+    c = classes.shape[0]
+    if c < 2:
+        return 0.0
+    d = t.shape[1]
+    global_mean = t.mean(0)
+    class_means = torch.stack([t[lbl == cls].mean(0) for cls in classes])  # (C, d)
+
+    # Between-class covariance Σ_B (outer product of centred class means, uniform weight)
+    centred_means = class_means - global_mean.unsqueeze(0)
+    sigma_b = (centred_means.T @ centred_means) / c  # (d, d)
+
+    # Within-class covariance Σ_W (average of per-class covariances)
+    sigma_w = torch.zeros(d, d, dtype=torch.float64)
+    for i, cls in enumerate(classes):
+        xi = t[lbl == cls] - class_means[i]
+        ni = xi.shape[0]
+        if ni > 0:
+            sigma_w += (xi.T @ xi) / ni
+    sigma_w /= c
+
+    # NC1 = Tr(Σ_W · pinv(Σ_B)) / C
+    sigma_b_pinv = torch.linalg.pinv(sigma_b)
+    nc1 = float(torch.trace(sigma_w @ sigma_b_pinv).item()) / c
+    return max(0.0, nc1)
+
+
+def spectral_collapse_rank(acts: ArrayLike) -> float:
+    """Effective rank of the activation matrix — an activation-space collapse signal.
+
+    A downward trend in ``spectral_collapse_rank`` over training steps signals
+    representation collapse or plasticity loss: the activations are spanning a
+    shrinking effective subspace.
+
+    This is the activation-space analogue of the weight-space
+    :func:`~circuitry.core.weight.effective_rank`.
+
+    Args:
+        acts: (n, d_model) activation tensor (or any shape; flattened to 2-D as
+              ``(n, d_model)`` with ``n = prod(shape[:-1])``).
+
+    Returns:
+        Effective rank (float in [1, min(n, d_model)]).
+
+    Reference: arXiv:2509.22335 "Spectral Collapse in Transformers".
+    """
+    from circuitry.core.weight import effective_rank as _eff_rank
+
+    t = _as_tensor(acts)
+    if t.ndim == 1:
+        t = t.unsqueeze(0)
+    t = t.reshape(-1, t.shape[-1])
+    return _eff_rank(t)
+
+
 def gate_stats(x: ArrayLike, eps: float = 1e-6) -> dict[str, float]:
     """Statistics on a post-gate MLP activation tensor.
 

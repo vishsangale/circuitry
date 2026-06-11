@@ -225,6 +225,9 @@ class Recorder:
         self._param_for_module: dict[str, str] = {}
         self._attn_meta: _AttnMeta | None = None
         self._lens_meta: _LensMeta | None = None
+        # v1.10 tuned lens: a fitted TunedLens whose fingerprint matches this
+        # model, or None (requested-but-unsupplied / mismatch — warned at attach).
+        self._tuned_lens: Any | None = None
         self._induction_probe: torch.Tensor | None = None
         self._main_pass_attn: dict[str, torch.Tensor] = {}
         self._warned_unnormalized_attn = False
@@ -232,6 +235,17 @@ class Recorder:
         self._saes: dict[str, Any] = {}  # module_name → loaded SAE
         self._noop = False
         self._current_step: int = -1
+        # Multi-process *_FULL support (design §11, v1.46).
+        # _participant: True on non-zero ranks when the recipe carries
+        # WEIGHT_FULL / ACTIVATION_FULL HookPoints — the rank joins the emit
+        # collectives (so rank 0 sees full tensors) but computes/writes nothing.
+        # _full_weight_modules: matched WEIGHT_FULL module names (sorted
+        # iteration order is the cross-rank collective order for full_tensor).
+        # _gather_activation_names: matched ACTIVATION_FULL module names whose
+        # captures are all-gathered across ranks at emit time.
+        self._participant = False
+        self._full_weight_modules: set[str] = set()
+        self._gather_activation_names: set[str] = set()
         # Modules whose primary weight is a batched 3-D expert tensor (e.g.
         # OlmoeExperts.gate_up_proj / down_proj).  Populated at attach() time.
         # Maps module_name → list of param_names for all batched-expert params
@@ -257,6 +271,13 @@ class Recorder:
         # When True the induction_score and attention_pattern_entropy blocks
         # skip silently rather than raising.
         self._attn_diags_sdpa_skip = False
+        # Per-step cache for the induction probe forward pass.  Both
+        # induction_score and copy_suppression_score need the same captured
+        # attention patterns; this avoids running two probe passes when both
+        # are enabled.  Reset to empty dict at the start of each step's
+        # diagnostic loop; -1 sentinel means "not yet run this step".
+        self._probe_attn_cache: dict[str, torch.Tensor] = {}
+        self._probe_attn_step: int = -1
 
     # ---- internal helpers ------------------------------------------------
 
@@ -319,6 +340,12 @@ class Recorder:
 
     def attach(self) -> None:
         if self._is_inactive_rank():
+            if any(
+                hp.source in (TensorSource.WEIGHT_FULL, TensorSource.ACTIVATION_FULL)
+                for hp in self.recipe.hook_points
+            ):
+                self._attach_participant()
+                return
             self._noop = True
             logger.info("circuitry: rank != 0 — Recorder is no-op")
             return
@@ -357,7 +384,13 @@ class Recorder:
                     "'head_dim': ...} to enable it; emitting no head-rank tags."
                 )
 
-        if "logit_lens_kl" in self.recipe.activation_diagnostics:
+        # Both the logit lens and the v1.10 tuned lens share unembed + final-LN
+        # resolution, so resolve _lens_meta if either diagnostic is requested.
+        _lens_requested = (
+            "logit_lens_kl" in self.recipe.activation_diagnostics
+            or "tuned_lens_kl" in self.recipe.activation_diagnostics
+        )
+        if _lens_requested:
             try:
                 emb = self.model.get_output_embeddings()
             except (AttributeError, NotImplementedError):
@@ -374,10 +407,36 @@ class Recorder:
                                             layer_norm=ln)
             else:
                 logger.warning(
-                    "circuitry: logit_lens_kl requested but model has no "
-                    "resolvable output embedding (get_output_embeddings or "
-                    ".lm_head) — skipping"
+                    "circuitry: a lens diagnostic (logit_lens_kl / tuned_lens_kl) "
+                    "was requested but the model has no resolvable output "
+                    "embedding (get_output_embeddings or .lm_head) — skipping"
                 )
+
+        # v1.10 tuned lens: requires a fitted Recipe.tuned_lens whose
+        # fingerprint matches this model. Resolve once at attach() so the
+        # diagnostic loop only ever applies a validated, frozen lens.
+        if "tuned_lens_kl" in self.recipe.activation_diagnostics:
+            tl = getattr(self.recipe, "tuned_lens", None)
+            if tl is None:
+                logger.warning(
+                    "circuitry: tuned_lens_kl requested but no fitted "
+                    "Recipe.tuned_lens supplied — fit one with "
+                    "`circuitry fit-tuned-lens` (or circuitry.tuned_lens."
+                    "fit_tuned_lens) and set recipe.tuned_lens; skipping."
+                )
+            else:
+                from circuitry.tuned_lens import model_fingerprint as _fp
+                got = _fp(self.model)
+                if got != tl.model_fingerprint:
+                    logger.warning(
+                        "circuitry: tuned_lens_kl skipped — the supplied "
+                        "Recipe.tuned_lens was fitted on a different model "
+                        "(fingerprint %s) than the attached one (%s). Re-fit the "
+                        "lens for this model.",
+                        tl.model_fingerprint, got,
+                    )
+                else:
+                    self._tuned_lens = tl
 
         # SDPA / flash-attention silently drop per-head attention weights even
         # when output_attentions=True is injected, so induction_score and
@@ -409,7 +468,11 @@ class Recorder:
                     " / ".join(_attn_diags), impl,
                 )
 
-        if "induction_score" in self.recipe.activation_diagnostics:
+        _needs_probe = (
+            "induction_score" in self.recipe.activation_diagnostics
+            or "copy_suppression_score" in self.recipe.activation_diagnostics
+        )
+        if _needs_probe:
             cfg = getattr(self.model, "config", None)
             text_cfg = getattr(cfg, "text_config", None)
             vocab = None
@@ -433,8 +496,8 @@ class Recorder:
                         break
             if vocab is None:
                 logger.warning(
-                    "circuitry: induction_score requested but cannot resolve "
-                    "vocab_size — skipping"
+                    "circuitry: induction_score / copy_suppression_score "
+                    "requested but cannot resolve vocab_size — skipping"
                 )
             else:
                 n = self.recipe.induction_probe_seq_len
@@ -494,11 +557,15 @@ class Recorder:
                     raise RuntimeError(msg)
                 logger.warning("circuitry: %s", msg)
 
-            # For WEIGHT / GRAD HookPoints, resolve each matched module name
-            # to its primary weight Parameter via the inventory. Loud-on-fail:
-            # unresolvable matches WARN per module so wrapper-Linear classes
-            # don't silently drop diagnostics.
-            if hp.source in (TensorSource.WEIGHT, TensorSource.GRAD):
+            # For WEIGHT / WEIGHT_FULL / GRAD HookPoints, resolve each matched
+            # module name to its primary weight Parameter via the inventory.
+            # Loud-on-fail: unresolvable matches WARN per module so
+            # wrapper-Linear classes don't silently drop diagnostics.
+            if hp.source in (
+                TensorSource.WEIGHT, TensorSource.WEIGHT_FULL, TensorSource.GRAD
+            ):
+                if hp.source is TensorSource.WEIGHT_FULL:
+                    self._full_weight_modules.update(names)
                 unresolved = 0
                 for mn in names:
                     rec = self._inventory.find_primary_weight(mn)
@@ -635,9 +702,12 @@ class Recorder:
             _json.dumps(attach_summary, indent=2)
         )
 
-        # Install hooks for INPUT / OUTPUT sources (WEIGHT/GRAD read directly at step time).
+        # Install hooks for INPUT / OUTPUT / ACTIVATION_FULL sources
+        # (WEIGHT/GRAD read directly at step time).
         for idx, hp in enumerate(self.recipe.hook_points):
-            if hp.source is TensorSource.OUTPUT:
+            if hp.source in (TensorSource.OUTPUT, TensorSource.ACTIVATION_FULL):
+                if hp.source is TensorSource.ACTIVATION_FULL:
+                    self._gather_activation_names.update(self._matched[idx])
                 for n in self._matched[idx]:
                     handle = name_to_mod[n].register_forward_hook(self._mk_fwd_hook(n))
                     self._hook_handles.append(handle)
@@ -653,7 +723,11 @@ class Recorder:
         # see _set_output_attentions_true) rather than by injecting an
         # output_attentions=True forward kwarg — the kwarg path raises TypeError
         # on wrapper models whose forward() lacks **kwargs.
-        if "attention_pattern_entropy" in self.recipe.activation_diagnostics:
+        _needs_main_pass_attn = any(
+            d in self.recipe.activation_diagnostics
+            for d in ("attention_pattern_entropy", "attention_sink_score")
+        )
+        if _needs_main_pass_attn:
             attn_modules: list[str] = []
             for idx, hp in enumerate(self.recipe.hook_points):
                 if hp.source is not TensorSource.OUTPUT:
@@ -741,6 +815,72 @@ class Recorder:
         except TypeError:
             return self.model(probe)
 
+    def _get_probe_attn(self, ctx: StepContext) -> dict[str, torch.Tensor]:
+        """Return {module_name: attn_tensor} from the induction probe forward.
+
+        Lazily runs the probe pass once per step and caches the result so that
+        both ``induction_score`` and ``copy_suppression_score`` share a single
+        forward pass when both are enabled.  Returns an empty dict when the
+        probe is unavailable (SDPA backend, probe not built, etc.).
+        """
+        if self._probe_attn_step == ctx.step:
+            return self._probe_attn_cache
+
+        self._probe_attn_cache = {}
+        self._probe_attn_step = ctx.step
+
+        if self._induction_probe is None or self._attn_diags_sdpa_skip:
+            return self._probe_attn_cache
+
+        # Collect self_attn modules matched by OUTPUT hook points.
+        self_attn_modules: dict[str, nn.Module] = {}
+        name_to_mod = dict(self.model.named_modules())
+        for idx, hp in enumerate(self.recipe.hook_points):
+            if hp.source is not TensorSource.OUTPUT:
+                continue
+            for mn in self._matched[idx]:
+                mod = name_to_mod.get(mn)
+                if mod is None:
+                    continue
+                short = mn.rsplit(".", 1)[-1]
+                if short in ("self_attn", "attn", "attention"):
+                    self_attn_modules[mn] = mod
+        if not self_attn_modules:
+            return self._probe_attn_cache
+
+        captured: dict[str, torch.Tensor] = {}
+
+        def _mk_capture(mn: str, _cap: dict[str, torch.Tensor] = captured):
+            def _h(_mod, _inp, hook_out):
+                if (
+                    isinstance(hook_out, tuple)
+                    and len(hook_out) >= 2
+                    and isinstance(hook_out[1], torch.Tensor)
+                ):
+                    _cap[mn] = hook_out[1].detach()
+            return _h
+
+        handles = [
+            mod.register_forward_hook(_mk_capture(mn))
+            for mn, mod in self_attn_modules.items()
+        ]
+        # Snapshot training-forward attention so the permanent _main_pass_attn
+        # hook (which fires during the probe forward too) doesn't overwrite the
+        # training values needed by attention_pattern_entropy later this step.
+        _main_pass_attn_snapshot = dict(self._main_pass_attn)
+        try:
+            probe_dev = next(self.model.parameters()).device
+            probe = self._induction_probe.to(probe_dev)
+            with torch.inference_mode():
+                self._probe_forward(probe)
+        finally:
+            for h in handles:
+                h.remove()
+            self._main_pass_attn.update(_main_pass_attn_snapshot)
+
+        self._probe_attn_cache = captured
+        return self._probe_attn_cache
+
     def _set_output_attentions_true(self) -> None:
         """Enable per-head attention output via the HF config (not a forward
         kwarg, which breaks wrappers whose forward lacks **kwargs). Records the
@@ -792,6 +932,77 @@ class Recorder:
             source.output_attentions = original
         self._output_attentions_restore.clear()
 
+    def _attach_participant(self) -> None:
+        """Minimal attach for non-zero ranks when the recipe carries *_FULL sources.
+
+        The rank registers only what it needs to join the emit-step collectives
+        (capture hooks for ACTIVATION_FULL, param resolution for WEIGHT_FULL).
+        No writer, no run-dir files, no diagnostics — rank 0 does all of that.
+        """
+        from circuitry.writers.null import NullWriter
+
+        self._participant = True
+        self._writer = NullWriter()
+        self._inventory = ModelInventory.build(self.model)
+        name_to_mod = dict(self.model.named_modules())
+        for hp in self.recipe.hook_points:
+            if hp.source not in (
+                TensorSource.WEIGHT_FULL, TensorSource.ACTIVATION_FULL
+            ):
+                continue
+            names = filtered_matches(self.model, hp, self.recipe)
+            if hp.source is TensorSource.WEIGHT_FULL:
+                for mn in names:
+                    rec = self._inventory.find_primary_weight(mn)
+                    if rec is not None:
+                        self._param_for_module.setdefault(mn, rec.name)
+                        self._full_weight_modules.add(mn)
+            else:
+                self._gather_activation_names.update(names)
+                for n in names:
+                    handle = name_to_mod[n].register_forward_hook(
+                        self._mk_fwd_hook(n)
+                    )
+                    self._hook_handles.append(handle)
+        logger.info(
+            "circuitry: rank != 0 — participant mode (joins *_FULL gathers, "
+            "writes nothing)"
+        )
+
+    def _join_full_gathers(
+        self, weights: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]:
+        """Run the *_FULL collectives in the cross-rank deterministic order.
+
+        Order contract (identical on every rank, every emit step): (1)
+        ``full_tensor`` per WEIGHT_FULL module in sorted-name order, (2) ONE
+        ``all_gather_named`` for the ACTIVATION_FULL captures. Rank 0 passes
+        a *weights* dict to receive the materialized full weights; participant
+        ranks pass None and discard results. Returns the gathered activations
+        (empty dict when there are no ACTIVATION_FULL names).
+        """
+        from circuitry.core import distributed as _dist
+
+        if self._full_weight_modules:
+            name_to_param = dict(self.model.named_parameters())
+            for mod_name in sorted(self._full_weight_modules):
+                param_name = self._param_for_module.get(mod_name)
+                if param_name is None:
+                    continue
+                p = name_to_param.get(param_name)
+                if not isinstance(p, torch.Tensor):
+                    continue
+                full = _dist.full_tensor(p).detach()
+                if weights is not None:
+                    weights[mod_name] = full
+        if not self._gather_activation_names:
+            return {}
+        local = {
+            n: t for n, t in self._captured_activations.items()
+            if n in self._gather_activation_names
+        }
+        return _dist.all_gather_named(local)
+
     def detach(self) -> None:
         for h in self._hook_handles:
             h.remove()
@@ -801,6 +1012,11 @@ class Recorder:
         self._prev_prev_weights.clear()
         # Release drift-probe reference activations (v1.4).
         self._ref_probe_activations = None
+        # Release the fitted tuned lens reference (v1.10).
+        self._tuned_lens = None
+        # Release per-step probe-attn cache (v1.11).
+        self._probe_attn_cache = {}
+        self._probe_attn_step = -1
         self._restore_output_attentions()
         if self._writer is not None:
             self._writer.flush()
@@ -823,6 +1039,15 @@ class Recorder:
              loss_components: dict[str, float | torch.Tensor] | None = None,
              **user: Any) -> None:
         if self._noop:
+            return
+        if self._participant:
+            # Non-zero rank with *_FULL sources: join the collectives on emit
+            # steps (same cadence as rank 0 — every_n_steps must agree across
+            # ranks, and every rank must call step() with the same step values),
+            # then discard. No diagnostics, no writes.
+            if self._should_capture(int(step)):
+                self._join_full_gathers(None)
+                self._captured_activations.clear()
             return
         self._current_step = int(step)
         assert self._writer is not None, "Recorder.step called before attach()"
@@ -878,10 +1103,19 @@ class Recorder:
                     if p.grad is not None:
                         gradients[mod_name] = p.grad.detach()
 
+        # *_FULL gathers (design §11, v1.46): materialize DTensor-sharded
+        # WEIGHT_FULL params and all-gather ACTIVATION_FULL captures across
+        # ranks. Single-process: pure passthrough (WEIGHT_FULL == WEIGHT,
+        # ACTIVATION_FULL == OUTPUT). Participant ranks mirror this exact
+        # collective order in their step() short-circuit above.
+        activations = dict(self._captured_activations)
+        if self._full_weight_modules or self._gather_activation_names:
+            activations.update(self._join_full_gathers(weights))
+
         ctx = StepContext(
             step=self._current_step,
             model=self.model,
-            activations=dict(self._captured_activations),
+            activations=activations,
             gradients=gradients,
             weights=weights,
             loss=loss,
@@ -903,6 +1137,69 @@ class Recorder:
 
     def _enabled(self, name: str) -> bool:
         return self.recipe.enabled.get(name, True)
+
+    @staticmethod
+    def _block_layer_idx(name: str) -> int | None:
+        """Layer index N from a residual-block module name ending in ``layers.N``."""
+        import re as _re
+        m = _re.search(r'(?:^|\.)layers\.(\d+)$', name)
+        return int(m.group(1)) if m else None
+
+    def _lens_block_outputs(
+        self, ctx: StepContext,
+    ) -> tuple[list[tuple[str, torch.Tensor]], torch.Tensor, int | None] | None:
+        """Shared setup for the logit / tuned lens diagnostics.
+
+        Returns ``(block_outputs, final_logits, max_tok)`` where ``block_outputs``
+        is the per-layer ``[(module_name, residual), ...]`` sorted by numeric
+        layer index, and ``final_logits`` is the model's final distribution
+        reconstructed as ``LN_f(last_block) @ W_U`` — the same reconstruction the
+        tuned lens was fitted against. Returns ``None`` (and disables further
+        lens emission this attach) when no residual-stream block outputs match.
+        """
+        if self._lens_meta is None:
+            return None
+        _W_raw = self._lens_meta.unembed
+        # HF convention is (vocab, d_model) so d_model is the smaller dim; for
+        # the unusual square case we fall back to dim 1.
+        d_model_unembed = (
+            _W_raw.shape[-1]
+            if _W_raw.shape[0] >= _W_raw.shape[-1]
+            else _W_raw.shape[0]
+        )
+        # Keep only residual-stream block outputs (module name ends in
+        # `.layers.N`); the d_model check is a secondary guard. Sort by numeric
+        # layer index so block_outputs[-1] is the true final layer regardless of
+        # digit count (layer 9 must not sort after layer 34).
+        block_outputs = sorted(
+            ((k, v) for k, v in ctx.activations.items()
+             if self._block_layer_idx(k) is not None
+             and v.shape[-1] == d_model_unembed),
+            key=lambda kv: self._block_layer_idx(kv[0]),
+        )
+        if not block_outputs:
+            logger.warning(
+                "circuitry: lens diagnostic found no activations with last-dim "
+                "matching unembed d_model=%d — skipping.",
+                d_model_unembed,
+            )
+            self._lens_meta = None
+            return None
+        _last_name, last_x = block_outputs[-1]
+        max_tok = self.recipe.lens_max_tokens
+        with torch.inference_mode():
+            last_f32 = last_x.detach().to(torch.float32)
+            if max_tok is not None:
+                last_f32 = last_f32[:, :max_tok, :]
+            ln = self._lens_meta.layer_norm
+            last_normed = ln(last_f32) if ln is not None else last_f32
+            W = _W_raw.to(torch.float32)
+            # unembed for HF is (vocab, d_model); transpose if needed.
+            if W.shape[-1] == last_normed.shape[-1]:
+                final_logits = last_normed @ W.t()
+            else:
+                final_logits = last_normed @ W
+        return block_outputs, final_logits, max_tok
 
     def _run_diagnostics(
         self,
@@ -992,6 +1289,14 @@ class Recorder:
                     self._writer.add_scalar(
                         f"weight/update_delta/{mod_name}", val, ctx.step
                     )
+                # Scale-invariant companion (v1.10): ||ΔW|| / ||W||. The
+                # update_delta_vanishing flag keys on this so its threshold means
+                # the same thing across parameter sizes.
+                rel = _w.relative_update_delta(ctx.weights, self._prev_weights)
+                for mod_name, val in rel.items():
+                    self._writer.add_scalar(
+                        f"weight/update_delta_rel/{mod_name}", val, ctx.step
+                    )
             elif name == "direction_cosine":
                 if not self._prev_weights or not self._prev_prev_weights:
                     continue  # need two prior snapshots; skip first two emit steps
@@ -1047,60 +1352,57 @@ class Recorder:
                             val, ctx.step,
                         )
                 continue
-            if name == "logit_lens_kl":
-                if self._lens_meta is None:
-                    continue
-                from circuitry.core.lens import logit_lens_kl as _llk
-                # Derive d_model from the unembed weight. HF convention is
-                # (vocab, d_model) so d_model is the smaller dim; for the
-                # unusual square case we fall back to dim 1.
-                _W_raw = self._lens_meta.unembed
-                d_model_unembed = (
-                    _W_raw.shape[-1]
-                    if _W_raw.shape[0] >= _W_raw.shape[-1]
-                    else _W_raw.shape[0]
-                )
-                # Keep only residual-stream block outputs: activations whose
-                # module name ends in `.layers.N` (or is exactly `layers.N`).
-                # Sub-module outputs (self_attn / mlp / layernorm) and the
-                # down_proj INPUT capture are excluded even though several share
-                # d_model — otherwise the lens runs once per d_model-shaped
-                # activation (175 on Gemma 4) instead of once per layer (35).
-                # The d_model check is a secondary guard. Sort by numeric layer
-                # index so block_outputs[-1] is the true final layer regardless
-                # of digit count (layer 9 must not sort after layer 34).
-                import re as _re
-                def _block_layer_idx(_n: str) -> int | None:
-                    _m = _re.search(r'(?:^|\.)layers\.(\d+)$', _n)
-                    return int(_m.group(1)) if _m else None
-                block_outputs = sorted(
-                    ((k, v) for k, v in ctx.activations.items()
-                     if _block_layer_idx(k) is not None
-                     and v.shape[-1] == d_model_unembed),
-                    key=lambda kv: _block_layer_idx(kv[0]),
-                )
-                if not block_outputs:
-                    logger.warning(
-                        "circuitry: logit_lens_kl found no activations with "
-                        "last-dim matching unembed d_model=%d — skipping.",
-                        d_model_unembed,
+            if name == "moe_routing":
+                # Opt-in (v1.44). Applies only to activations from modules
+                # matching recipe.moe_router_pattern (router/gate outputs of
+                # shape (..., n_experts)); other captured activations are
+                # ignored so the diagnostic can coexist with the stock hooks.
+                import re as _re_moe
+
+                from circuitry.core import moe as _moe
+                rx = _re_moe.compile(self.recipe.moe_router_pattern)
+                top1_per_layer: list[torch.Tensor] = []
+                for mod_name in sorted(ctx.activations):
+                    if not rx.search(mod_name):
+                        continue
+                    x = ctx.activations[mod_name]
+                    if x.ndim < 1 or x.shape[-1] < 2:
+                        logger.warning(
+                            "circuitry: moe_routing — %s output shape %s has no "
+                            "n_experts dim; skipping", mod_name, tuple(x.shape),
+                        )
+                        continue
+                    n_experts = x.shape[-1]
+                    top1 = x.reshape(-1, n_experts).argmax(dim=-1)
+                    self._writer.add_scalar(
+                        f"moe/routing_entropy/{mod_name}",
+                        _moe.routing_entropy(x), ctx.step,
                     )
-                    self._lens_meta = None
-                    continue
-                _last_name, last_x = block_outputs[-1]
-                max_tok = self.recipe.lens_max_tokens
-                with torch.inference_mode():
-                    last_f32 = last_x.detach().to(torch.float32)
-                    if max_tok is not None:
-                        last_f32 = last_f32[:, :max_tok, :]
-                    ln = self._lens_meta.layer_norm
-                    last_normed = ln(last_f32) if ln is not None else last_f32
-                    W = _W_raw.to(torch.float32)
-                    # unembed for HF is (vocab, d_model); transpose if needed.
-                    if W.shape[-1] == last_normed.shape[-1]:
-                        final_logits = last_normed @ W.t()
+                    self._writer.add_scalar(
+                        f"moe/expert_load_balance/{mod_name}",
+                        _moe.expert_load_balance(top1, n_experts), ctx.step,
+                    )
+                    top1_per_layer.append(top1)
+                if len(top1_per_layer) >= 2:
+                    n_tokens = {t.shape[0] for t in top1_per_layer}
+                    if len(n_tokens) == 1:
+                        self._writer.add_scalar(
+                            "moe/pathway_complexity",
+                            _moe.pathway_complexity(top1_per_layer), ctx.step,
+                        )
                     else:
-                        final_logits = last_normed @ W
+                        logger.warning(
+                            "circuitry: moe_routing — router layers saw differing "
+                            "token counts %s; skipping pathway_complexity",
+                            sorted(n_tokens),
+                        )
+                continue
+            if name == "logit_lens_kl":
+                resolved = self._lens_block_outputs(ctx)
+                if resolved is None:
+                    continue
+                block_outputs, final_logits, max_tok = resolved
+                from circuitry.core.lens import logit_lens_kl as _llk
                 for mod_name, x in block_outputs:
                     if max_tok is not None:
                         x = x[:, :max_tok, :]
@@ -1126,60 +1428,48 @@ class Recorder:
                         f"activation/logit_lens_kl/{mod_name}", kl, ctx.step,
                     )
                 continue
-            if name == "induction_score":
-                if self._induction_probe is None or self._attn_diags_sdpa_skip:
+            if name == "tuned_lens_kl":
+                # Opt-in (v1.10). Needs a fitted, fingerprint-matched lens,
+                # resolved at attach() into self._tuned_lens (else None).
+                if self._tuned_lens is None:
                     continue
-                from circuitry.core.attention import induction_score as _is
-                # Find matched self_attn modules from the hook points.
-                self_attn_modules: dict[str, nn.Module] = {}
-                name_to_mod = dict(self.model.named_modules())
-                for idx, hp in enumerate(self.recipe.hook_points):
-                    if hp.source is not TensorSource.OUTPUT:
+                resolved = self._lens_block_outputs(ctx)
+                if resolved is None:
+                    continue
+                block_outputs, final_logits, max_tok = resolved
+                from circuitry.core.lens import tuned_lens_kl as _tlk
+                for mod_name, x in block_outputs:
+                    layer = self._block_layer_idx(mod_name)
+                    translator = self._tuned_lens.translator_for(layer)
+                    if translator is None:
+                        continue  # this block wasn't fitted (e.g. final frame)
+                    if max_tok is not None:
+                        x = x[:, :max_tok, :]
+                    try:
+                        kl = _tlk(
+                            x, translator, self._lens_meta.unembed, final_logits,
+                            layer_norm=self._lens_meta.layer_norm,
+                        )
+                    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                        if (not isinstance(e, torch.cuda.OutOfMemoryError)
+                                and "out of memory" not in str(e).lower()):
+                            raise
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        logger.warning(
+                            "circuitry: tuned_lens_kl ran out of memory on %s — "
+                            "skipping this layer's emission for this step. Set "
+                            "recipe.lens_max_tokens to cap the lens cost. (%s)",
+                            mod_name, e,
+                        )
                         continue
-                    for mn in self._matched[idx]:
-                        mod = name_to_mod.get(mn)
-                        if mod is None:
-                            continue
-                        short = mn.rsplit(".", 1)[-1]
-                        if short in ("self_attn", "attn", "attention"):
-                            self_attn_modules[mn] = mod
-                if not self_attn_modules:
-                    continue
-                # Capture attn_weights from each self_attn during probe pass.
-                captured: dict[str, torch.Tensor] = {}
-
-                def _mk_capture(mn: str, _cap: dict[str, torch.Tensor] = captured):
-                    def _h(_mod, _inp, hook_out):
-                        if (
-                            isinstance(hook_out, tuple)
-                            and len(hook_out) >= 2
-                            and isinstance(hook_out[1], torch.Tensor)
-                        ):
-                            _cap[mn] = hook_out[1].detach()
-                    return _h
-
-                handles = [
-                    mod.register_forward_hook(_mk_capture(mn))
-                    for mn, mod in self_attn_modules.items()
-                ]
-                # Snapshot the training-forward attention before the probe pass
-                # so that attention_pattern_entropy (processed later in the same
-                # step loop) reads the TRAINING attention, not the probe's.
-                # The permanent _main_pass_attn capture hook fires during the
-                # probe forward and would otherwise overwrite the training values.
-                _main_pass_attn_snapshot = dict(self._main_pass_attn)
-                try:
-                    probe_dev = next(self.model.parameters()).device
-                    probe = self._induction_probe.to(probe_dev)
-                    with torch.inference_mode():
-                        self._probe_forward(probe)
-                finally:
-                    for h in handles:
-                        h.remove()
-                    # Restore training-forward attention regardless of whether
-                    # the probe forward succeeded or raised.
-                    self._main_pass_attn.update(_main_pass_attn_snapshot)
-                for mn, attn in captured.items():
+                    self._writer.add_scalar(
+                        f"activation/tuned_lens_kl/{mod_name}", kl, ctx.step,
+                    )
+                continue
+            if name == "induction_score":
+                from circuitry.core.attention import induction_score as _is
+                for mn, attn in self._get_probe_attn(ctx).items():
                     try:
                         scores = _is(
                             attn,
@@ -1193,6 +1483,26 @@ class Recorder:
                     for i, s in enumerate(scores):
                         self._writer.add_scalar(
                             f"activation/induction_score/{mn}/head_{i}",
+                            s, ctx.step,
+                        )
+                continue
+            if name == "copy_suppression_score":
+                from circuitry.core.attention import copy_suppression_score as _css
+                for mn, attn in self._get_probe_attn(ctx).items():
+                    try:
+                        scores = _css(
+                            attn,
+                            seq_len_repeat=self.recipe.induction_probe_seq_len,
+                        )
+                    except ValueError as e:
+                        logger.warning(
+                            "circuitry: copy_suppression_score on %s failed: %s",
+                            mn, e,
+                        )
+                        continue
+                    for i, s in enumerate(scores):
+                        self._writer.add_scalar(
+                            f"activation/copy_suppression_score/{mn}/head_{i}",
                             s, ctx.step,
                         )
                 continue
@@ -1221,6 +1531,18 @@ class Recorder:
                         self._writer.add_scalar(
                             f"activation/attention_pattern_entropy/{mn}/head_{i}",
                             e, ctx.step,
+                        )
+                continue
+            if name == "attention_sink_score":
+                if self._attn_diags_sdpa_skip:
+                    continue
+                from circuitry.core.attention import attention_sink_score as _ass
+                for mn, attn in self._main_pass_attn.items():
+                    scores = _ass(attn)
+                    for i, s in enumerate(scores):
+                        self._writer.add_scalar(
+                            f"activation/attention_sink_score/{mn}/head_{i}",
+                            s, ctx.step,
                         )
                 continue
             if name == "sae_reconstruction":

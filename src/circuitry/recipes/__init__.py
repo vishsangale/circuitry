@@ -5,10 +5,14 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import torch
 
 from circuitry.recorder.hooks import HookPoint, StepContext
+
+if TYPE_CHECKING:
+    from circuitry.tuned_lens import TunedLens
 
 DiagnosticFn = Callable[[StepContext], dict[str, float]]
 
@@ -27,6 +31,12 @@ class Recipe:
     sae_checkpoints: dict[str, tuple[str, str]] | None = None
     induction_probe_seq_len: int = 25
     lens_max_tokens: int | None = None
+    # v1.10 tuned lens: a fitted TunedLens (circuitry.tuned_lens.fit_tuned_lens
+    # or `circuitry fit-tuned-lens`). Required for the opt-in ``tuned_lens_kl``
+    # activation diagnostic; the recorder verifies its fingerprint against the
+    # attached model at attach() and warns + skips on mismatch. Default None —
+    # tuned_lens_kl is NOT in any stock recipe's default list (it needs a fit).
+    tuned_lens: TunedLens | None = None
     # Explicit attention-head metadata for attention_head_rank, used when the
     # model exposes no resolvable ``config`` (custom non-HF models). Keys:
     # ``n_heads`` (required), ``n_kv_heads`` (optional, defaults to n_heads),
@@ -60,6 +70,11 @@ class Recipe:
     probe_batch: torch.Tensor | None = None
     drift_method: str = "linear_cka"
     drift_max_tokens: int | None = None
+    # v1.44 MoE routing: regex (re.search semantics, matching HookPoint
+    # patterns) selecting which captured activations are router/gate outputs
+    # of shape (..., n_experts). Only matching modules feed the opt-in
+    # ``moe_routing`` activation diagnostic; everything else is ignored.
+    moe_router_pattern: str = r".*\.mlp\.gate$"
 
     def with_prefix(self, prefix: str) -> Recipe:
         """Return a new Recipe scoped to ``prefix``.

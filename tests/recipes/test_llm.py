@@ -72,8 +72,10 @@ def test_llm_recipe_attaches_and_emits_scalars(tmp_path):
     test_recipe = dataclasses.replace(
         r,
         activation_diagnostics=[d for d in r.activation_diagnostics
-                                if d not in ("induction_score", "logit_lens_kl",
-                                            "attention_pattern_entropy")]
+                                if d not in ("induction_score",
+                                             "copy_suppression_score",
+                                             "logit_lens_kl",
+                                             "attention_pattern_entropy")]
     )
     rec = Recorder(model, run_dir=tmp_path, recipe=test_recipe,
                    writer=writer, every_n_steps=1, strict=False)
@@ -128,15 +130,16 @@ def test_llm_recipe_has_down_proj_input_hook():
     assert len(matches) == 1, [hp.pattern for hp in r.hook_points]
 
 
-def test_llm_recipe_has_twelve_hook_points():
-    # 10 original + 2 MoE additions (mlp.gate router, mlp.experts batched experts).
+def test_llm_recipe_has_thirteen_hook_points():
+    # 10 original + 2 MoE weight additions (mlp.gate router, mlp.experts
+    # batched experts) + 1 MoE router OUTPUT for moe_routing (v1.44).
     r = get_recipe("llm")
-    assert len(r.hook_points) == 12
+    assert len(r.hook_points) == 13
 
 
 def test_llm_recipe_includes_new_activation_diagnostics():
     r = get_recipe("llm")
-    for diag in ("logit_lens_kl", "induction_score",
+    for diag in ("logit_lens_kl", "induction_score", "copy_suppression_score",
                  "attention_pattern_entropy"):
         assert diag in r.activation_diagnostics
 

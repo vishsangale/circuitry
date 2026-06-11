@@ -7,6 +7,7 @@ def test_public_surface():
     import circuitry
 
     expected = {
+        # recorder / workflow
         "HookPoint",
         "MetricWriter",
         "ModelInventory",
@@ -24,8 +25,146 @@ def test_public_surface():
         "scan_run",
         "token_similarity",
         "update_delta",
+        # patching
+        "CausalScrubResult",
+        "CausalScrubRunner",
+        # graph export (v1.41)
+        "save_html",
+        "save_neuronpedia_graph",
+        "to_html",
+        "to_neuronpedia_graph",
+        # weight-based transcoder analysis / consensus / labeling (v1.42)
+        "CircuitConsensus",
+        "FeatureEvidence",
+        "describe_features",
+        "feature_token_alignment",
+        "top_virtual_connections",
+        "transcoder_virtual_weights",
+        # generation-time analysis (v1.43)
+        "GenerationAttributionSetup",
+        "GenerationTrace",
+        "StepRecord",
+        "apply_steer_steps",
+        "generation_attribution",
+        "patch_site_steps",
+        "prepare_generation_attribution",
+        "trace_generation",
+        # stochastic parameter decomposition (v1.48)
+        "SPDResult",
+        "SPDRunner",
+        # cross-layer feature flow (v1.47)
+        "FeatureFlowGraph",
+        "FlowEdge",
+        "feature_flow_graph",
+        "match_features",
+        # MoE routing diagnostics (v1.44)
+        "expert_load_balance",
+        "pathway_complexity",
+        "routing_entropy",
+        "CircuitHypothesis",
+        "CrosscoderWrapper",
+        "DASResult",
+        "DASRunner",
+        "EdgePruningResult",
+        "EdgePruningRunner",
+        "EraseProjection",
+        "HAPRunner",
+        "LayerPrediction",
+        "apply_ablation",
+        "apply_steer",
+        "future_lens_kl",
+        "leace_erase",
+        "logit_lens_distributions",
+        # dynamics
+        "emergence_score",
+        "fourier_feature_alignment",
+        "information_bottleneck_score",
+        # activation geometry
+        "embedding_uniformity",
+        "kernel_alignment",
+        "local_intrinsic_dim",
+        "neural_collapse_score",
+        "spectral_collapse_rank",
+        # probing / representation
+        "LinearProbe",
+        "MDLResult",
+        "MassMeanProbe",
+        "mass_mean_probe",
+        "mdl_probe",
+        "train_linear_probe",
+        "verify_linear_representation",
+        # steering / attention
+        "attention_rollout",
+        "directional_ablation",
+        "repe_direction",
+        "steer_vector",
+        # weight / spectral training diagnostics
+        "FinetuningDeltaResult",
+        "finetuning_delta_svd",
+        "spectral_edge_gap",
+        "update_weight_ratio",
+        # SAE
+        "superposition_index",
+        "sae_downstream_loss",
+        "sae_influence_scores",
+        "fgaa_steering_vector",
+        "rlace_erase",
+        # attribution quality (v1.32)
+        "ReLPRunner",
+        "CertifiedCircuitResult",
+        "CertifiedCircuitRunner",
+        # ITI + CD-T + sharpness (v1.33)
+        "ITIConfig",
+        "fit_iti",
+        "apply_iti",
+        "CDResult",
+        "cd_token_contributions",
+        "critical_sharpness",
+        "gradient_subspace_saturation",
+        # CLT attribution graphs (v1.34)
+        "CLTNode",
+        "CLTEdge",
+        "CLTGraphResult",
+        "CLTGraphRunner",
+        # DAAM + HyperDAS (v1.35)
+        "daam_attribution",
+        "HyperDASNet",
+        "HyperDASResult",
+        "HyperDASRunner",
+        # Logit Decomposition + Causal Tracing (v1.36)
+        "LogitDecompositionResult",
+        "logit_decomposition",
+        "CausalTraceResult",
+        "CausalTraceRunner",
+        # Patch Grid + Gradient Attribution (v1.37)
+        "PatchGridResult",
+        "PatchGridRunner",
+        "gradient_input_attribution",
+        "integrated_gradients",
+        # QK/OV circuits + token direction analysis (v1.38)
+        "ov_matrix",
+        "qk_matrix",
+        "head_composition_score",
+        "composition_scores",
+        "top_logit_tokens",
+        "top_embedding_tokens",
+        # Head knockout + neuron stats (v1.39)
+        "HeadKnockoutResult",
+        "HeadKnockoutRunner",
+        "NeuronStats",
+        "neuron_stats",
+        # Mean ablation + feature geometry (v1.40)
+        "compute_mean_activation",
+        "mean_ablation",
+        "feature_interference",
+        "feature_coverage",
+        "feature_spread",
     }
-    assert set(circuitry.__all__) == expected
+    actual = set(circuitry.__all__)
+    missing = expected - actual
+    extra = actual - expected
+    assert not missing, f"Missing from __all__: {sorted(missing)}"
+    assert not extra, f"Unexpected in __all__: {sorted(extra)}"
     for name in expected:
         assert hasattr(circuitry, name), f"circuitry.{name} not re-exported"
 
