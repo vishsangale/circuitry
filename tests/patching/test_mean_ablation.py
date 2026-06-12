@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
-
 import pytest
 import torch
 import torch.nn as nn
 from torch import Tensor
 
 from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
-
 
 # ---------------------------------------------------------------------------
 # Shared toy model
@@ -178,7 +175,6 @@ def test_mean_ablation_works_with_dict_inputs(model):
             return self.inner(x)
 
     wrapped = WrappedModel(model)
-    mean_act = torch.zeros(4)
     x_tensor = torch.randn(2, 4)
     # Pass dict input to compute_mean_activation — exercises the dict branch
     dict_inputs = [{"x": x_tensor}]

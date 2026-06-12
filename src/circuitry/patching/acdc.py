@@ -1,6 +1,7 @@
 """ACDC: greedy circuit discovery via corrupted-resample set-ablation. Spec §2–§6."""
 from __future__ import annotations
 
+import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -82,7 +83,7 @@ class ACDCResult:
         return json.dumps(data, indent=2)
 
     @classmethod
-    def from_json(cls, text: str) -> "ACDCResult":
+    def from_json(cls, text: str) -> ACDCResult:
         """Deserialize from JSON produced by to_json()."""
         import json
         data = json.loads(text)
@@ -103,15 +104,13 @@ class ACDCResult:
             graph=graph,
         )
 
-    def save(self, path: "str | pathlib.Path") -> None:
+    def save(self, path: str | pathlib.Path) -> None:
         """Write to_json() output to a file."""
-        import pathlib
         pathlib.Path(path).write_text(self.to_json())
 
     @classmethod
-    def load(cls, path: "str | pathlib.Path") -> "ACDCResult":
+    def load(cls, path: str | pathlib.Path) -> ACDCResult:
         """Load from a file written by save()."""
-        import pathlib
         return cls.from_json(pathlib.Path(path).read_text())
 
 

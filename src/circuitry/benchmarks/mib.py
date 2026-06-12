@@ -11,8 +11,8 @@ download required.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -414,8 +414,8 @@ def load_mcqa(
 
 
 def mib_circuit_f1(
-    circuit_edges: "set | list",
-    ground_truth_edges: "set | list",
+    circuit_edges: set | list,
+    ground_truth_edges: set | list,
 ) -> float:
     """Edge-set F1 for the MIB circuit localisation track.
 
@@ -444,8 +444,8 @@ def mib_circuit_f1(
 
 
 def mib_iia_score(
-    das_result: "Any",
-    task: "MIBTask | None" = None,
+    das_result: Any,
+    task: MIBTask | None = None,
     *,
     threshold: float = 0.5,
 ) -> float:

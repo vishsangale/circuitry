@@ -1,14 +1,13 @@
 """Tests for steer_vector, repe_direction, directional_ablation (core) and apply_steer/apply_ablation (patching)."""
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
 from circuitry.core.steer import directional_ablation, repe_direction, steer_vector
+from circuitry.patching.sites import HFSiteResolver, Site
 from circuitry.patching.steer import apply_ablation, apply_steer
-from circuitry.patching.sites import Site, HFSiteResolver
-
 
 # ---------------------------------------------------------------------------
 # steer_vector tests

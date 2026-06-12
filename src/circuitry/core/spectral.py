@@ -68,8 +68,8 @@ def rank_trajectory(
 
 
 def spectral_edge_gap(
-    W_prev: "ArrayLike",
-    W_curr: "ArrayLike",
+    W_prev: ArrayLike,
+    W_curr: ArrayLike,
     *,
     k: int = 5,
 ) -> float:
@@ -97,7 +97,6 @@ def spectral_edge_gap(
     Reference: arXiv:2604.06256 "Spectral Signatures of Circuit Formation".
     """
     import torch as _torch
-    import numpy as _np
 
     a = _torch.as_tensor(W_prev).to(_torch.float64)
     b = _torch.as_tensor(W_curr).to(_torch.float64)

@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from circuitry.patching.eap import EAPResult, EAPRunner
+from circuitry.patching.eap import EAPRunner
 from circuitry.patching.graph import (
     Edge,
     EdgeGraph,
@@ -101,7 +101,7 @@ class EdgePruningResult:
         return json.dumps(data, indent=2)
 
     @classmethod
-    def from_json(cls, text: str) -> "EdgePruningResult":
+    def from_json(cls, text: str) -> EdgePruningResult:
         """Deserialize from to_json() output."""
         data = json.loads(text)
         graph = build_graph(data["n_layers"], data["n_heads"])
@@ -142,7 +142,7 @@ class EdgePruningResult:
         Path(path).write_text(self.to_json())
 
     @classmethod
-    def load(cls, path: str | Path) -> "EdgePruningResult":
+    def load(cls, path: str | Path) -> EdgePruningResult:
         return cls.from_json(Path(path).read_text())
 
 
@@ -234,10 +234,10 @@ class EdgePruningRunner:
             active = final_soft > 0.5
             z_vals = z.tolist()
 
-        circuit = [e for e, a in zip(edges, active.tolist()) if a]
+        circuit = [e for e, a in zip(edges, active.tolist(), strict=True) if a]
         circuit_set = set(circuit)
         removed = [e for e in all_edges if e not in circuit_set]
-        mask_logits = {e: z_val for e, z_val in zip(edges, z_vals)}
+        mask_logits = {e: z_val for e, z_val in zip(edges, z_vals, strict=True)}
         # Excluded candidates get logit = -10
         for e in all_edges:
             if e not in mask_logits:

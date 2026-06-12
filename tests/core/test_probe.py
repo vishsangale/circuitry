@@ -1,13 +1,13 @@
 """Tests for circuitry.core.probe — LinearProbe, MDL probing, mass-mean probe."""
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
 from circuitry.core.probe import (
     LinearProbe,
-    MDLResult,
     MassMeanProbe,
+    MDLResult,
     mass_mean_probe,
     mdl_probe,
     train_linear_probe,
@@ -50,9 +50,12 @@ def test_train_linear_probe_multiclass():
     rng.manual_seed(7)
     n, d = 60, 16
     # Each class separated by large offset on a different dimension
-    acts0 = torch.randn(n, d, generator=rng); acts0[:, 0] += 5.0
-    acts1 = torch.randn(n, d, generator=rng); acts1[:, 1] += 5.0
-    acts2 = torch.randn(n, d, generator=rng); acts2[:, 2] += 5.0
+    acts0 = torch.randn(n, d, generator=rng)
+    acts0[:, 0] += 5.0
+    acts1 = torch.randn(n, d, generator=rng)
+    acts1[:, 1] += 5.0
+    acts2 = torch.randn(n, d, generator=rng)
+    acts2[:, 2] += 5.0
     acts = torch.cat([acts0, acts1, acts2], dim=0)
     labels = torch.cat([
         torch.zeros(n, dtype=torch.long),
@@ -92,9 +95,12 @@ def test_linear_probe_direction_unit():
     rng = torch.Generator()
     rng.manual_seed(3)
     n, dim = 60, 8
-    a0 = torch.randn(n, dim, generator=rng); a0[:, 0] += 5.0
-    a1 = torch.randn(n, dim, generator=rng); a1[:, 1] += 5.0
-    a2 = torch.randn(n, dim, generator=rng); a2[:, 2] += 5.0
+    a0 = torch.randn(n, dim, generator=rng)
+    a0[:, 0] += 5.0
+    a1 = torch.randn(n, dim, generator=rng)
+    a1[:, 1] += 5.0
+    a2 = torch.randn(n, dim, generator=rng)
+    a2[:, 2] += 5.0
     acts3 = torch.cat([a0, a1, a2])
     labels3 = torch.cat([torch.zeros(n, dtype=torch.long),
                          torch.ones(n, dtype=torch.long),
@@ -164,9 +170,12 @@ def test_mdl_probe_multiclass():
     """mdl_probe works for 3-class labels."""
     torch.manual_seed(7)
     n, d = 90, 16
-    acts0 = torch.randn(n // 3, d); acts0[:, 0] += 5.0
-    acts1 = torch.randn(n // 3, d); acts1[:, 1] += 5.0
-    acts2 = torch.randn(n // 3, d); acts2[:, 2] += 5.0
+    acts0 = torch.randn(n // 3, d)
+    acts0[:, 0] += 5.0
+    acts1 = torch.randn(n // 3, d)
+    acts1[:, 1] += 5.0
+    acts2 = torch.randn(n // 3, d)
+    acts2[:, 2] += 5.0
     acts = torch.cat([acts0, acts1, acts2])
     labels = torch.cat([torch.zeros(n // 3, dtype=torch.long),
                         torch.ones(n // 3, dtype=torch.long),

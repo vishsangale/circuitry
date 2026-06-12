@@ -2,7 +2,6 @@
 
 import pytest
 import torch
-from torch import Tensor
 
 from circuitry.core.circuits import (
     composition_scores,
@@ -12,7 +11,6 @@ from circuitry.core.circuits import (
     top_embedding_tokens,
     top_logit_tokens,
 )
-
 
 # ---------------------------------------------------------------------------
 # ov_matrix

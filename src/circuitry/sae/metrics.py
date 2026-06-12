@@ -110,9 +110,9 @@ def sae_downstream_loss(
     Reference: arXiv:2406.04093 "Scaling and evaluating SAEs"; SAEBench
                arXiv:2503.09532.
     """
-    import contextlib
     import torch.nn as nn
     import torch.nn.functional as F
+
     from circuitry.patching.sites import HFSiteResolver
 
     if resolver is None:

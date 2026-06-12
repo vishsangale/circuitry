@@ -15,11 +15,9 @@ from circuitry.patching.acdc import ACDCResult, ACDCRunner
 from circuitry.patching.atp import AtPNode, AtPResult, AtPRunner
 from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
 from circuitry.patching.cd import CDResult, cd_token_contributions
-from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
 from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
 from circuitry.patching.consensus import CircuitConsensus
-from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.eap import EAPResult, EAPRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
@@ -42,9 +40,11 @@ from circuitry.patching.generation import (
 from circuitry.patching.graph import Edge, Node
 from circuitry.patching.hap import HAPRunner
 from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
-from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
 from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
 from circuitry.patching.intervene import PatchHandle, patch_site
+from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
+from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 from circuitry.patching.relp import ReLPRunner
 from circuitry.patching.runner import PatchResult, PatchRunner
 from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis

@@ -7,9 +7,8 @@ import torch.nn as nn
 from torch import Tensor
 
 from circuitry.patching.eap import EAPResult, EAPRunner
-from circuitry.patching.graph import Edge, Node, build_graph
+from circuitry.patching.graph import build_graph
 from circuitry.patching.relp import ReLPRunner, _score_edges_relp
-
 
 # ---------------------------------------------------------------------------
 # Minimal 2-layer flat toy model (same shape as test_eap_mlp_exact.py)

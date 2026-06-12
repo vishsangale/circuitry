@@ -1,14 +1,11 @@
 """Tests for DASRunner — Distributed Alignment Search."""
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 import torch.nn as nn
 
 from circuitry.patching.das import DASResult, DASRunner, _interchange
-
 
 # ---------------------------------------------------------------------------
 # Synthetic "causal model" fixture
@@ -157,7 +154,6 @@ def test_das_recovers_causal_direction(causal_model):
     After training, |cos(R_learned[0], R_true[0])| should be close to 1.
     """
     torch.manual_seed(2)
-    d = 4
     n = 32
     # base: causal_var = +1; source: causal_var = −1
     base   = causal_model.make_inputs(torch.ones(n))

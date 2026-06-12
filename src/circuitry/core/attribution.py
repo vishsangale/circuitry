@@ -13,7 +13,8 @@ integrated_gradients — Sundararajan et al. 2017 (arXiv:1703.01365):
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch import Tensor

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
 import torch
 
 from circuitry.core.feature_geometry import (
@@ -12,7 +11,6 @@ from circuitry.core.feature_geometry import (
     feature_interference,
     feature_spread,
 )
-
 
 # ---------------------------------------------------------------------------
 # feature_interference tests

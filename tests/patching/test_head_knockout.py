@@ -43,7 +43,8 @@ def model_and_runner():
     head_modules = [[model.l0h0, model.l0h1], [model.l1h0, model.l1h1]]
     runner = HeadKnockoutRunner(model, head_modules)
     inputs = torch.randn(3, 4)
-    metric = lambda out: out.mean().item()
+    def metric(out):
+        return out.mean().item()
     result = runner.run(inputs, metric)
     return model, runner, head_modules, inputs, metric, result
 
@@ -172,6 +173,7 @@ def test_custom_layer_names_stored():
     custom_names = ["layer_zero", "layer_one"]
     runner = HeadKnockoutRunner(model, head_modules, layer_names=custom_names)
     inputs = torch.randn(3, 4)
-    metric = lambda out: out.mean().item()
+    def metric(out):
+        return out.mean().item()
     result = runner.run(inputs, metric)
     assert result.layer_names == custom_names

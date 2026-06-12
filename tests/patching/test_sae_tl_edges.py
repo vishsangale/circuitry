@@ -19,7 +19,6 @@ transformer_lens = pytest.importorskip("transformer_lens")
 
 from circuitry.patching.sites import Site, TLSiteResolver  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -119,7 +118,6 @@ def _metric(out: Any) -> Tensor:
 
 from typing import Any  # noqa: E402 (after inline use above)
 
-
 # ---------------------------------------------------------------------------
 # Test 1: smoke — non-empty edges, finite scores
 # ---------------------------------------------------------------------------
@@ -133,7 +131,7 @@ def test_tl_sae_edge_runner_smoke():
       - Stage 2 VJP loop for resid_post@0 → resid_post@1
       - Result is SAEFeatureCircuit with ≥1 edge and all-finite scores
     """
-    from circuitry.patching.sae_edges import SAEFeatureEdgeRunner, SAEFeatureCircuit
+    from circuitry.patching.sae_edges import SAEFeatureCircuit, SAEFeatureEdgeRunner
 
     model = _tiny_tl(seed=0)
     d_model = model.cfg.d_model  # 16

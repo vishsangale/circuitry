@@ -10,7 +10,6 @@ import torch
 
 from circuitry.sae.grad import assert_supported_sae, sae_decompose
 
-
 # ---------------------------------------------------------------------------
 # Helpers — minimal synthetic SAE objects
 # ---------------------------------------------------------------------------

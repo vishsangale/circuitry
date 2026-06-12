@@ -6,7 +6,6 @@ import torch.nn as nn
 
 from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
 
-
 # ---------------------------------------------------------------------------
 # Toy model
 # ---------------------------------------------------------------------------
@@ -42,7 +41,8 @@ def inputs(model):
     return clean, corrupted
 
 
-metric = lambda out: out.mean().item()
+def metric(out):
+    return out.mean().item()
 
 
 # ---------------------------------------------------------------------------

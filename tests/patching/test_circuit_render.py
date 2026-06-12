@@ -3,20 +3,16 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from circuitry.patching.acdc import ACDCResult
 from circuitry.patching.atp import AtPNode, AtPResult
 from circuitry.patching.eap import EAPResult
 from circuitry.patching.graph import (
-    Edge,
     Node,
     _node_from_dict,
     _node_str,
     _node_to_dict,
     build_graph,
 )
-
 
 # ---------------------------------------------------------------------------
 # _node_str
@@ -96,7 +92,8 @@ def test_eap_to_markdown_top_k_limits_rows():
     eap = _make_eap(n_layers=6, n_heads=4)
     md = eap.to_markdown(top_k=5)
     # Table has header + separator + 5 data rows → at most 7 pipe-starting lines with |
-    data_rows = [l for l in md.splitlines() if l.startswith("| ") and "---" not in l and "rank" not in l]
+    data_rows = [ln for ln in md.splitlines()
+                 if ln.startswith("| ") and "---" not in ln and "rank" not in ln]
     assert len(data_rows) <= 5
 
 

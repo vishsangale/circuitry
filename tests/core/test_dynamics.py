@@ -7,13 +7,13 @@ import pytest
 import torch
 
 from circuitry.core.dynamics import (
+    emergence_score,
     fourier_feature_alignment,
     grokking_step,
     head_formation_step,
     information_bottleneck_score,
     phase_transition_steps,
 )
-
 
 # ---------------------------------------------------------------------------
 # phase_transition_steps
@@ -272,7 +272,6 @@ def test_information_bottleneck_low_when_random():
 # emergence_score tests (v1.30)
 # ---------------------------------------------------------------------------
 
-from circuitry.core.dynamics import emergence_score
 
 
 def test_emergence_score_returns_float():

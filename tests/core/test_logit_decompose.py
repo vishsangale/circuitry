@@ -8,7 +8,6 @@ import torch
 
 from circuitry.core.decompose import LogitDecompositionResult, logit_decomposition
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

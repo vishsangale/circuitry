@@ -6,7 +6,6 @@ from torch import Tensor
 
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -108,7 +107,8 @@ def test_ig_output_shape():
     """integrated_gradients returns tensor of shape (batch, seq)."""
     torch.manual_seed(0)
     embeds = torch.randn(2, 5, 8)
-    model_fn = lambda e: e.sum(dim=(-2, -1))
+    def model_fn(e):
+        return e.sum(dim=(-2, -1))
     out = integrated_gradients(model_fn, embeds)
     assert out.shape == (2, 5), f"Expected (2, 5), got {out.shape}"
 
@@ -124,7 +124,8 @@ def test_ig_completeness_axiom():
     embeds = torch.ones(batch, seq, d)
     baseline = torch.zeros(batch, seq, d)
     # Linear model: f(e) = sum of all elements → grad is all-ones everywhere
-    model_fn = lambda e: e.sum(dim=(-2, -1))
+    def model_fn(e):
+        return e.sum(dim=(-2, -1))
     ig = integrated_gradients(
         model_fn, embeds, baseline=baseline, n_steps=100, reduction="dot"
     )
@@ -147,7 +148,8 @@ def test_ig_custom_baseline():
     torch.manual_seed(1)
     embeds = torch.randn(1, 4, 6)
     baseline = torch.full_like(embeds, 0.5)
-    model_fn = lambda e: e.sum(dim=(-2, -1))
+    def model_fn(e):
+        return e.sum(dim=(-2, -1))
     out = integrated_gradients(model_fn, embeds, baseline=baseline, n_steps=10)
     assert out.shape == (1, 4)
 
@@ -160,7 +162,8 @@ def test_ig_l2_non_negative():
     """integrated_gradients with reduction='l2' returns non-negative values."""
     torch.manual_seed(2)
     embeds = torch.randn(2, 4, 6)
-    model_fn = lambda e: e.sum(dim=(-2, -1))
+    def model_fn(e):
+        return e.sum(dim=(-2, -1))
     out = integrated_gradients(model_fn, embeds, reduction="l2", n_steps=20)
     assert (out >= 0).all(), "l2 IG values must be non-negative"
 
@@ -174,7 +177,8 @@ def test_ig_n_steps_affects_result():
     torch.manual_seed(3)
     embeds = torch.randn(1, 4, 6)
     # Nonlinear model: square then sum
-    model_fn = lambda e: (e ** 2).sum(dim=(-2, -1))
+    def model_fn(e):
+        return (e ** 2).sum(dim=(-2, -1))
     out1 = integrated_gradients(model_fn, embeds, n_steps=1, reduction="dot")
     out20 = integrated_gradients(model_fn, embeds, n_steps=20, reduction="dot")
     assert not torch.allclose(out1, out20, atol=1e-4), (

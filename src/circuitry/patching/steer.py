@@ -11,12 +11,11 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 
-import torch
 import torch.nn as nn
 from torch import Tensor
 
 from circuitry.core.steer import directional_ablation, repe_direction, steer_vector  # re-exports
-from circuitry.patching.sites import Site, SiteResolver, HFSiteResolver
+from circuitry.patching.sites import HFSiteResolver, Site, SiteResolver
 
 __all__ = ["apply_ablation", "apply_steer", "directional_ablation", "repe_direction", "steer_vector"]
 

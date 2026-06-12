@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import torch
 
-from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
 from circuitry.patching.eap import EAPRunner
+from circuitry.patching.edge_pruning import EdgePruningResult
 from circuitry.patching.hap import HAPRunner
 
 

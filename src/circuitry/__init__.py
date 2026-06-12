@@ -41,17 +41,6 @@ from circuitry.core.activation import (
 )
 from circuitry.core.attention import attention_rollout, daam_attribution
 from circuitry.core.attribution import gradient_input_attribution, integrated_gradients
-from circuitry.core.feature_flow import (
-    FeatureFlowGraph,
-    FlowEdge,
-    feature_flow_graph,
-    match_features,
-)
-from circuitry.core.feature_geometry import (
-    feature_coverage,
-    feature_interference,
-    feature_spread,
-)
 from circuitry.core.circuits import (
     composition_scores,
     feature_token_alignment,
@@ -69,8 +58,18 @@ from circuitry.core.dynamics import (
     fourier_feature_alignment,
     information_bottleneck_score,
 )
-from circuitry.patching.sae_features import CrosscoderWrapper
 from circuitry.core.erase import EraseProjection, leace_erase, rlace_erase
+from circuitry.core.feature_flow import (
+    FeatureFlowGraph,
+    FlowEdge,
+    feature_flow_graph,
+    match_features,
+)
+from circuitry.core.feature_geometry import (
+    feature_coverage,
+    feature_interference,
+    feature_spread,
+)
 from circuitry.core.inventory import ModelInventory, ParameterRecord
 from circuitry.core.lens import LayerPrediction, future_lens_kl, logit_lens_distributions
 from circuitry.core.moe import (
@@ -81,8 +80,8 @@ from circuitry.core.moe import (
 from circuitry.core.neuron import NeuronStats, neuron_stats
 from circuitry.core.probe import (
     LinearProbe,
-    MDLResult,
     MassMeanProbe,
+    MDLResult,
     mass_mean_probe,
     mdl_probe,
     train_linear_probe,
@@ -100,20 +99,18 @@ from circuitry.core.weight import (
     update_weight_ratio,
 )
 from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
-from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
-from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
 from circuitry.patching.cd import CDResult, cd_token_contributions
-from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
-from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
-from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
-from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
 from circuitry.patching.certified import CertifiedCircuitResult, CertifiedCircuitRunner
+from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
+from circuitry.patching.consensus import CircuitConsensus
 from circuitry.patching.das import DASResult, DASRunner
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
-from circuitry.patching.hap import HAPRunner
-from circuitry.patching.relp import ReLPRunner
-from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
-from circuitry.patching.consensus import CircuitConsensus
+from circuitry.patching.export import (
+    save_html,
+    save_neuronpedia_graph,
+    to_html,
+    to_neuronpedia_graph,
+)
 from circuitry.patching.generation import (
     GenerationAttributionSetup,
     GenerationTrace,
@@ -124,12 +121,15 @@ from circuitry.patching.generation import (
     prepare_generation_attribution,
     trace_generation,
 )
-from circuitry.patching.export import (
-    save_html,
-    save_neuronpedia_graph,
-    to_html,
-    to_neuronpedia_graph,
-)
+from circuitry.patching.hap import HAPRunner
+from circuitry.patching.head_knockout import HeadKnockoutResult, HeadKnockoutRunner
+from circuitry.patching.hyperdas import HyperDASNet, HyperDASResult, HyperDASRunner
+from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
+from circuitry.patching.mean_ablation import compute_mean_activation, mean_ablation
+from circuitry.patching.patch_grid import PatchGridResult, PatchGridRunner
+from circuitry.patching.relp import ReLPRunner
+from circuitry.patching.sae_features import CrosscoderWrapper
+from circuitry.patching.scrubbing import CausalScrubResult, CausalScrubRunner, CircuitHypothesis
 from circuitry.patching.spd import SPDResult, SPDRunner
 from circuitry.patching.steer import apply_ablation, apply_steer
 from circuitry.recipes import Recipe, register_recipe
@@ -138,9 +138,9 @@ from circuitry.recorder.hooks import HookPoint, StepContext, TensorSource
 from circuitry.recorder.live import Recorder
 from circuitry.recorder.report import build_report
 from circuitry.recorder.scan import scan_run
-from circuitry.sae.metrics import sae_downstream_loss, superposition_index
 from circuitry.sae.grad import sae_influence_scores
 from circuitry.sae.labeling import FeatureEvidence, describe_features
+from circuitry.sae.metrics import sae_downstream_loss, superposition_index
 from circuitry.sae.steer import fgaa_steering_vector
 from circuitry.writers.base import MetricWriter
 

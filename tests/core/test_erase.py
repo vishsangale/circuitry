@@ -1,11 +1,10 @@
 """Tests for circuitry.core.erase (LEACE concept erasure)."""
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
-from circuitry.core.erase import EraseProjection, leace_erase
-
+from circuitry.core.erase import EraseProjection, leace_erase, rlace_erase
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -157,7 +156,6 @@ def test_leace_erase_returns_cpu_tensors():
 # rlace_erase tests (v1.31)
 # ---------------------------------------------------------------------------
 
-from circuitry.core.erase import rlace_erase
 
 
 def test_rlace_erase_returns_eraser_projection():

@@ -6,8 +6,7 @@ See docs/design.md §4.1 for the contract.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -512,8 +511,8 @@ def finetuning_delta_svd(
 
 
 def critical_sharpness(
-    model: "nn.Module",
-    loss_fn: "Callable[[], Tensor]",
+    model: nn.Module,
+    loss_fn: Callable[[], Tensor],
     *,
     n_iters: int = 20,
     tol: float = 1e-4,
@@ -552,17 +551,17 @@ def critical_sharpness(
         with torch.enable_grad():
             loss = loss_fn()
             grads = torch.autograd.grad(loss, params, create_graph=True)
-            vg = sum((vi * gi).sum() for vi, gi in zip(v, grads))
+            vg = sum((vi * gi).sum() for vi, gi in zip(v, grads, strict=True))
             hvp_raw = torch.autograd.grad(vg, params, retain_graph=False)
 
         # Replace any None entries (disconnected params) with zeros.
         hvp = [
             (h if h is not None else torch.zeros_like(p))
-            for h, p in zip(hvp_raw, params)
+            for h, p in zip(hvp_raw, params, strict=True)
         ]
 
         # New eigenvalue estimate: <Hv, v> / <v, v>  (v is already unit).
-        new_eig = sum((h * vi).sum().item() for h, vi in zip(hvp, v))
+        new_eig = sum((h * vi).sum().item() for h, vi in zip(hvp, v, strict=True))
 
         # Normalise Hv to get the new unit vector.
         hv_norm = math.sqrt(sum(h.pow(2).sum().item() for h in hvp))
@@ -581,7 +580,7 @@ def critical_sharpness(
 
 
 def gradient_subspace_saturation(
-    grad_history: "list[Tensor]",
+    grad_history: list[Tensor],
     *,
     k: int = 10,
 ) -> float:

@@ -8,6 +8,7 @@ Exported from sae/__init__.py.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -103,7 +104,7 @@ def decode_features(sae: Any, f: Tensor) -> Tensor:
 def sae_influence_scores(
     sae: Any,
     x: Tensor,
-    loss_fn: "Callable[[Tensor], Tensor]",
+    loss_fn: Callable[[Tensor], Tensor],
 ) -> Tensor:
     """GradSAE per-feature influence scores: ``|∂loss/∂f_i| · |f_i|``.
 
@@ -126,7 +127,6 @@ def sae_influence_scores(
 
     Reference: arXiv:2505.08080 "GradSAE: Gradient-Weighted SAE Features".
     """
-    from collections.abc import Callable  # local import avoids circular at top level
 
     x_in = _device_dtype_align(x, sae)
     if not x_in.requires_grad:

@@ -1,7 +1,6 @@
 """Tests for fgaa_steering_vector. Spec §4.3 / v1.31."""
 from __future__ import annotations
 
-import pytest
 import torch
 
 from circuitry.sae.steer import fgaa_steering_vector

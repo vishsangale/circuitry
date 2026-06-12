@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from circuitry.core import spectral, weight
+from circuitry.core.spectral import spectral_edge_gap
 
 
 def test_esd_returns_pair_of_tensors():
@@ -53,7 +54,6 @@ def test_esd_returns_consistent_devices_on_cuda():
 # spectral_edge_gap tests (v1.30)
 # ---------------------------------------------------------------------------
 
-from circuitry.core.spectral import spectral_edge_gap
 
 
 def test_spectral_edge_gap_returns_float():

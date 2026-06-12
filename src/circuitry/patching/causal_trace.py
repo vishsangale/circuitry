@@ -12,8 +12,9 @@ arXiv:2202.05262
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -45,12 +46,12 @@ class CausalTraceResult:
 
     def top_layers(self, k: int = 3) -> list[tuple[str, float]]:
         """Return the top-k layers by recovery score, descending."""
-        pairs = list(zip(self.layer_names, self.recovery.tolist()))
+        pairs = list(zip(self.layer_names, self.recovery.tolist(), strict=True))
         return sorted(pairs, key=lambda kv: kv[1], reverse=True)[:k]
 
     def to_markdown(self, *, top_k: int = 20) -> str:
         """Render as a Markdown table."""
-        rows = list(zip(self.layer_names, self.recovery.tolist()))[:top_k]
+        rows = list(zip(self.layer_names, self.recovery.tolist(), strict=True))[:top_k]
         lines = [
             f"## Causal Trace"
             f" (clean={self.clean_score:.4f}, corrupted={self.corrupted_score:.4f})",
@@ -121,7 +122,7 @@ class CausalTraceRunner:
                 raise ValueError(
                     f"CausalTraceRunner: no modules matched pattern {module_pattern!r}"
                 )
-            names, mods = zip(*matched)
+            names, mods = zip(*matched, strict=True)
             self._modules = list(mods)
             self._names = list(names)
 
@@ -178,7 +179,7 @@ class CausalTraceRunner:
         # ── Step 3: for each module patch clean state into corrupted run ─────
         recovery_scores: list[float] = []
 
-        for i, (mod, cached) in enumerate(zip(self._modules, clean_cache)):
+        for mod, cached in zip(self._modules, clean_cache, strict=True):
             if cached is None:
                 recovery_scores.append(0.0)
                 continue

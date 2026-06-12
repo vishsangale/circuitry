@@ -399,7 +399,7 @@ def emergence_score(
     if len(series) < 3:
         return 0.0
 
-    steps, values = zip(*sorted(series, key=lambda x: x[0]))
+    steps, values = zip(*sorted(series, key=lambda x: x[0]), strict=True)
     log_steps = [_math.log(max(s, 1)) for s in steps]
     vals = list(values)
     n = len(vals)

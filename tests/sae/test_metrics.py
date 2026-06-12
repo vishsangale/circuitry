@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 import time
+import warnings
 from unittest.mock import MagicMock
 
 import pytest
 import torch
+import torch.nn as nn
 
+from circuitry.patching.sites import HFSiteResolver, Site
 from circuitry.sae import sae_reconstruction_error
-from circuitry.sae.metrics import superposition_index
+from circuitry.sae.metrics import (
+    UNRELIABLE_METRICS,
+    sae_downstream_loss,
+    superposition_index,
+    warn_if_unreliable,
+)
 
 
 class _IdentitySAE:
@@ -161,8 +169,7 @@ def test_superposition_index_nd_input():
 # UNRELIABLE_METRICS / warn_if_unreliable tests (v1.31)
 # ---------------------------------------------------------------------------
 
-import warnings
-from circuitry.sae.metrics import UNRELIABLE_METRICS, warn_if_unreliable
+
 
 
 def test_unreliable_metrics_contains_tpp_scr():
@@ -194,10 +201,7 @@ def test_unreliable_metrics_is_frozenset():
 # sae_downstream_loss tests (v1.31)
 # ---------------------------------------------------------------------------
 
-import torch.nn as nn
-import torch.nn.functional as F
-from circuitry.sae.metrics import sae_downstream_loss
-from circuitry.patching.sites import Site, HFSiteResolver
+
 
 
 class _TinyLM(nn.Module):

@@ -1,13 +1,11 @@
 """Tests for CLTGraphRunner and CLTGraphResult. v1.34."""
 from __future__ import annotations
 
-import pytest
 import torch
 import torch.nn as nn
 from torch import Tensor
 
-from circuitry.patching.clt import CLTEdge, CLTGraphResult, CLTGraphRunner, CLTNode
-
+from circuitry.patching.clt import CLTGraphResult, CLTGraphRunner
 
 # ---------------------------------------------------------------------------
 # Toy model and helpers

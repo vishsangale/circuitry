@@ -13,7 +13,8 @@ Reference:
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import torch
 import torch.nn as nn

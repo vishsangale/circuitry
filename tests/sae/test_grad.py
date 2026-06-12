@@ -1,7 +1,6 @@
 """Tests for sae_influence_scores (GradSAE). v1.31."""
 from __future__ import annotations
 
-import pytest
 import torch
 import torch.nn.functional as F
 

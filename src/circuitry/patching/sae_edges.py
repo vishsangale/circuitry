@@ -29,7 +29,6 @@ from circuitry.patching.atp import AtPNode, AtPResult
 from circuitry.patching.graph import Node
 from circuitry.patching.sae_features import (
     SAEFeatureRunner,
-    TranscoderWrapper,
     _extract_tensor,
     _freeze_sae,
     _restore_sae,

@@ -13,8 +13,6 @@ from circuitry.patching.certified import (
     _index_inputs,
 )
 from circuitry.patching.eap import EAPRunner
-from circuitry.patching.graph import Edge, Node, build_graph
-
 
 # ---------------------------------------------------------------------------
 # Minimal flat toy model
@@ -141,7 +139,7 @@ def test_certified_vote_counts_bounded_by_n_subsamples():
     clean = torch.randint(0, 32, (10, 4))
     corr = torch.randint(0, 32, (10, 4))
     result = runner.run(clean, corr, _metric, top_k=3)
-    for e, v in result.vote_counts.items():
+    for v in result.vote_counts.values():
         assert 0 <= v <= n_sub
 
 

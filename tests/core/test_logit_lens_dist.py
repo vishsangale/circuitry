@@ -1,11 +1,10 @@
 """Tests for logit_lens_distributions and LayerPrediction."""
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
-from circuitry.core.lens import logit_lens_distributions, LayerPrediction
-
+from circuitry.core.lens import LayerPrediction, logit_lens_distributions
 
 D_MODEL = 8
 VOCAB = 16
@@ -59,7 +58,7 @@ def test_logit_lens_distributions_with_layer_norm():
     result_with_ln = logit_lens_distributions(residuals, unembed, layer_norm=ln, top_k=5)
 
     # The probabilities should differ when LayerNorm is applied to large-magnitude residuals
-    for no_ln, with_ln in zip(result_no_ln, result_with_ln):
+    for no_ln, with_ln in zip(result_no_ln, result_with_ln, strict=True):
         # At least the probabilities should differ
         assert not torch.allclose(no_ln.probs, with_ln.probs), (
             "Expected layer_norm to change the output probabilities"

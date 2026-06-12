@@ -4,8 +4,6 @@ from __future__ import annotations
 import torch
 
 from circuitry.patching.edge_pruning import EdgePruningResult, EdgePruningRunner
-from circuitry.patching.graph import Edge, Node, build_graph
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers

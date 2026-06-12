@@ -9,6 +9,7 @@ import torch
 
 from circuitry.core.attention import (
     attention_pattern_entropy,
+    attention_rollout,
     attention_sink_score,
     copy_suppression_score,
     head_specialization,
@@ -371,7 +372,6 @@ def test_entropy_all_valid_mask_matches_no_mask():
 # attention_rollout tests (v1.30)
 # ---------------------------------------------------------------------------
 
-from circuitry.core.attention import attention_rollout
 
 
 def test_attention_rollout_output_shape():

@@ -1,6 +1,7 @@
 """EAP scoring engine + runner. Design spec §3, §5, §7."""
 from __future__ import annotations
 
+import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -17,7 +18,6 @@ from circuitry.patching.graph import (
     _node_str,
     _node_to_dict,
     build_graph,
-    edge_sort_key,
 )
 
 # Type alias for flexible inputs: either a raw tensor (toy models) or a dict
@@ -77,7 +77,7 @@ class EAPResult:
         return json.dumps(data, indent=2)
 
     @classmethod
-    def from_json(cls, text: str) -> "EAPResult":
+    def from_json(cls, text: str) -> EAPResult:
         """Deserialize from JSON produced by to_json()."""
         import json
         data = json.loads(text)
@@ -94,15 +94,13 @@ class EAPResult:
             scores[edge] = row["score"]
         return cls(graph=graph, scores=scores)
 
-    def save(self, path: "str | pathlib.Path") -> None:
+    def save(self, path: str | pathlib.Path) -> None:
         """Write to_json() output to a file."""
-        import pathlib
         pathlib.Path(path).write_text(self.to_json())
 
     @classmethod
-    def load(cls, path: "str | pathlib.Path") -> "EAPResult":
+    def load(cls, path: str | pathlib.Path) -> EAPResult:
         """Load from a file written by save()."""
-        import pathlib
         return cls.from_json(pathlib.Path(path).read_text())
 
 

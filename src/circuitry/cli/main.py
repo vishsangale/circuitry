@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import sys
 from typing import Any
 
 from circuitry import __version__
@@ -61,6 +60,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     import pathlib
+
     from circuitry.recorder.scan import scan_run
     factory = _load_entrypoint(args.model_factory)
     out_dir = args.out or str(pathlib.Path(args.run) / "scan_report")

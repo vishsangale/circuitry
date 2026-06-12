@@ -7,7 +7,6 @@ import torch.nn as nn
 
 from circuitry.patching.causal_trace import CausalTraceResult, CausalTraceRunner
 
-
 # ---------------------------------------------------------------------------
 # Toy model
 # ---------------------------------------------------------------------------

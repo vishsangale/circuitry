@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from circuitry.core import weight
+from circuitry.core.weight import FinetuningDeltaResult, finetuning_delta_svd, update_weight_ratio
 
 
 def test_singular_values_diagonal():
@@ -393,7 +394,6 @@ def test_weight_diagnostics_run_on_mps():
 # update_weight_ratio tests (v1.30)
 # ---------------------------------------------------------------------------
 
-from circuitry.core.weight import FinetuningDeltaResult, finetuning_delta_svd, update_weight_ratio
 
 
 def test_update_weight_ratio_small_update():

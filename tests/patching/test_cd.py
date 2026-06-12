@@ -6,7 +6,6 @@ import torch
 
 from circuitry.patching.cd import CDResult, cd_token_contributions
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------

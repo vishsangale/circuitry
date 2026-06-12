@@ -1,20 +1,19 @@
 """Tests for circuitry.benchmarks.saebench — SAEBench metric runner."""
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
 from circuitry.benchmarks.saebench import (
     SAEBenchResult,
-    l0_sparsity,
     explained_variance,
-    reconstruction_mse,
     feature_density,
-    sparse_probing_r2,
+    l0_sparsity,
+    reconstruction_mse,
     run_saebench,
+    sparse_probing_r2,
 )
-
 
 # ---------------------------------------------------------------------------
 # Synthetic SAE fixtures

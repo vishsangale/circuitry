@@ -21,7 +21,6 @@ from tests.patching.test_sae_features import (
     _metric,
 )
 
-
 # ---------------------------------------------------------------------------
 # SyntheticTranscoder fixture
 # ---------------------------------------------------------------------------
@@ -185,18 +184,14 @@ def test_transcoder_splice_is_lossless():
 
     clean, _ = _make_clean_corr(d=d)
 
-    # Capture metric without SAE
     model.eval()
-    with torch.no_grad():
-        out_no_sae = model(clean)
-        metric_no_sae = float(_metric(out_no_sae).item())
 
     # Run with transcoder (clean forward is spliced) — use corrupted == clean so Δf ≈ 0
     # but the splice itself should still be lossless regardless of Δf
     runner, tc = _make_transcoder_runner(model, tc_raw, d)
     with torch.no_grad():
-        from circuitry.patching.sae_features import _routed_extract, _routed_inject, _extract_tensor
-        from circuitry.patching.sites import Site, HFSiteResolver
+        from circuitry.patching.sae_features import _extract_tensor, _routed_inject
+        from circuitry.patching.sites import Site
 
         resolver = _make_resolver(d)
         site = Site("resid_post", layer=0)
@@ -221,11 +216,11 @@ def test_transcoder_splice_is_lossless():
 
         # Check that recon == original output
         orig_h = layer_mod.register_forward_hook(_capture_hook)
-        out_orig = model(clean)
+        model(clean)
         orig_h.remove()
 
         splice_h = layer_mod.register_forward_hook(_splice_hook)
-        out_spliced = model(clean)
+        model(clean)
         splice_h.remove()
 
     orig_tensor = original_output_store["out"]
@@ -251,8 +246,8 @@ def test_transcoder_edge_runner_returns_edges():
     torch.manual_seed(52)
     tc1 = SyntheticTranscoder(d_in=d, d_out=d, d_sae=d_sae)
 
-    from circuitry.patching.sae_features import TranscoderWrapper
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
+    from circuitry.patching.sae_features import TranscoderWrapper
     from circuitry.patching.sites import Site
 
     site0 = Site("resid_post", layer=0)
@@ -284,8 +279,8 @@ def test_transcoder_mixed_sae_edge_runner():
     torch.manual_seed(62)
     tc_raw = SyntheticTranscoder(d_in=d, d_out=d, d_sae=d_sae)
 
-    from circuitry.patching.sae_features import TranscoderWrapper
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
+    from circuitry.patching.sae_features import TranscoderWrapper
     from circuitry.patching.sites import Site
 
     site0 = Site("resid_post", layer=0)

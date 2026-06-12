@@ -11,8 +11,9 @@ Based on: Michel et al. 2019, NeurIPS "Are Sixteen Heads Really Better Than One?
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -46,8 +47,8 @@ class HeadKnockoutResult:
         """Top-k most important (layer_name, head_idx, importance) triples."""
         n_layers, n_heads = self.importance.shape
         triples: list[tuple[str, int, float]] = [
-            (self.layer_names[l], h, self.importance[l, h].item())
-            for l in range(n_layers)
+            (self.layer_names[li], h, self.importance[li, h].item())
+            for li in range(n_layers)
             for h in range(n_heads)
         ]
         return sorted(triples, key=lambda t: t[2], reverse=True)[:k]

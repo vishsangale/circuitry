@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import torch
-import pytest
 
-from circuitry.benchmarks.mib import MIBTask, load_ioi, load_greater_than
-
+from circuitry.benchmarks.mib import MIBTask, load_greater_than, load_ioi
 
 # ---------------------------------------------------------------------------
 # load_ioi

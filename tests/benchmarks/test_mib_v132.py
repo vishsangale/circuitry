@@ -9,13 +9,12 @@ import torch
 
 from circuitry.benchmarks.mib import (
     MIBTask,
-    load_ravel,
     load_arithmetic,
     load_mcqa,
+    load_ravel,
     mib_circuit_f1,
     mib_iia_score,
 )
-
 
 # ---------------------------------------------------------------------------
 # load_ravel

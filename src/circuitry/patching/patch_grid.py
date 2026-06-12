@@ -15,8 +15,9 @@ For each cell (l, p), the runner:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -124,7 +125,7 @@ class PatchGridRunner:
                 raise ValueError(
                     f"PatchGridRunner: no modules matched pattern {module_pattern!r}"
                 )
-            names, mods = zip(*matched)
+            names, mods = zip(*matched, strict=True)
             self._modules = list(mods)
             self._names = list(names)
 
@@ -187,7 +188,7 @@ class PatchGridRunner:
         # ── Step 3: grid: for each (layer, position) patch and measure ────────
         grid = torch.zeros(n_layers, seq_len, dtype=torch.float32)
 
-        for l_idx, (mod, cached) in enumerate(zip(self._modules, clean_cache)):
+        for l_idx, (mod, cached) in enumerate(zip(self._modules, clean_cache, strict=True)):
             if cached is None:
                 continue
 

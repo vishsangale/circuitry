@@ -8,23 +8,22 @@ All synthetic; no network access or dataset downloads required.
 """
 from circuitry.benchmarks.mib import (
     MIBTask,
-    load_ioi,
-    load_greater_than,
-    load_ravel,
     load_arithmetic,
+    load_greater_than,
+    load_ioi,
     load_mcqa,
+    load_ravel,
     mib_circuit_f1,
     mib_iia_score,
 )
-
 from circuitry.benchmarks.saebench import (
     SAEBenchResult,
-    l0_sparsity,
     explained_variance,
-    reconstruction_mse,
     feature_density,
-    sparse_probing_r2,
+    l0_sparsity,
+    reconstruction_mse,
     run_saebench,
+    sparse_probing_r2,
 )
 
 __all__ = [

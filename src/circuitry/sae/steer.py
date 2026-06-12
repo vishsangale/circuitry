@@ -84,5 +84,5 @@ def fgaa_steering_vector(
 
     # Weight each decoder column by the signed activation difference at that feature
     weights = diff[top_idx].cpu()  # (k,)
-    vector = sum(w * col for w, col in zip(weights, decoder_cols))  # (d_model,)
+    vector = sum(w * col for w, col in zip(weights, decoder_cols, strict=True))  # (d_model,)
     return vector.detach().cpu().float()

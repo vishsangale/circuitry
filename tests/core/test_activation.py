@@ -11,7 +11,9 @@ from circuitry.core.activation import (
     embedding_uniformity,
     kernel_alignment,
     local_intrinsic_dim,
+    neural_collapse_score,
     repr_drift,
+    spectral_collapse_rank,
 )
 
 
@@ -404,7 +406,9 @@ def test_local_intrinsic_dim_low_lt_high():
     n, d = 300, 16
     # Low-dim: 2-D subspace in 16-D
     t = torch.randn(n, 2, generator=rng)
-    basis = torch.zeros(2, d); basis[0, 0] = 1.0; basis[1, 1] = 1.0
+    basis = torch.zeros(2, d)
+    basis[0, 0] = 1.0
+    basis[1, 1] = 1.0
     acts_low = t @ basis + 0.001 * torch.randn(n, d, generator=rng)
     # High-dim: full 16-D random noise
     acts_high = torch.randn(n, d, generator=rng)
@@ -527,7 +531,6 @@ def test_embedding_uniformity_deterministic():
 # neural_collapse_score tests (v1.30)
 # ---------------------------------------------------------------------------
 
-from circuitry.core.activation import neural_collapse_score, spectral_collapse_rank
 
 
 def test_neural_collapse_score_returns_float():

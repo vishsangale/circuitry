@@ -117,11 +117,8 @@ def logit_decomposition(
 
     if ln_scale is not None:
         scale = torch.as_tensor(ln_scale).detach().to(torch.float32)  # (d_model,)
-        bias_vec = (
-            torch.as_tensor(ln_bias).detach().to(torch.float32)
-            if ln_bias is not None
-            else torch.zeros_like(scale)
-        )
+        # ln_bias is component-independent in a logit *difference* decomposition
+        # (it adds the same constant to every component's score), so it is unused.
 
         # σ_total from the full residual (sum of all components)
         full = sum(vecs.values())

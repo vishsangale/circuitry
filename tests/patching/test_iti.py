@@ -1,12 +1,11 @@
 """Tests for circuitry.patching.iti (Inference-Time Intervention)."""
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
 from circuitry.patching.iti import ITIConfig, apply_iti, fit_iti
-
 
 # ---------------------------------------------------------------------------
 # Toy model helpers
@@ -108,7 +107,7 @@ def test_fit_iti_custom_coeff(sample_head_acts):
 def test_apply_iti_steers_output(toy_model):
     """Output slice for head 0 changes by exactly coeff * direction."""
     torch.manual_seed(42)
-    d_in, d_head, n_heads = 8, 4, 2
+    d_in, d_head = 8, 4
     x = torch.randn(1, d_in)
 
     # Build a known unit direction

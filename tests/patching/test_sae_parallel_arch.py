@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-import torch.nn as nn
-from torch import Tensor
 
 from tests.patching.test_sae_features import (
     LinearResidToy,
@@ -18,7 +16,6 @@ from tests.patching.test_sae_features import (
     _make_resolver,
     _metric,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests: _is_parallel_intra_layer helper
@@ -89,10 +86,11 @@ def test_invalid_arch_raises():
 def test_parallel_arch_does_not_call_compute_for_intra_layer_attn_mlp():
     """Verify that _compute_pair_edges is never called for attn_out@L→mlp_out@L under arch='parallel'."""
     from unittest.mock import patch
+
+    from circuitry.patching.atp import AtPNode, AtPResult
     from circuitry.patching.graph import Node
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
     from circuitry.patching.sites import Site
-    from circuitry.patching.atp import AtPNode, AtPResult
 
     d, d_sae = 8, 16
     torch.manual_seed(70)
@@ -140,10 +138,11 @@ def test_parallel_arch_does_not_call_compute_for_intra_layer_attn_mlp():
 def test_sequential_arch_does_call_compute_for_intra_layer_attn_mlp():
     """With arch='sequential', attn_out@L→mlp_out@L IS passed to _compute_pair_edges."""
     from unittest.mock import patch
+
+    from circuitry.patching.atp import AtPNode, AtPResult
     from circuitry.patching.graph import Node
     from circuitry.patching.sae_edges import SAEFeatureEdgeRunner
     from circuitry.patching.sites import Site
-    from circuitry.patching.atp import AtPNode, AtPResult
 
     d, d_sae = 8, 16
     torch.manual_seed(80)

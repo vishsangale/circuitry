@@ -93,7 +93,7 @@ class ReLPRunner(EAPRunner):
         self,
         clean_inputs: _Inputs,
         corrupted_inputs: _Inputs,
-        metric: "Callable[[Any], Tensor]",
+        metric: Callable[[Any], Tensor],
         ig_steps: int = 1,
     ) -> EAPResult:
         """Run RelP attribution and return an EAPResult.

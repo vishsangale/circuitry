@@ -22,7 +22,7 @@ computation graph without altering the numeric values seen by later layers.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import torch

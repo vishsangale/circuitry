@@ -17,10 +17,8 @@ from tests.patching.test_sae_edges import (
 )
 from tests.patching.test_sae_features import (
     LinearResidToy,
-    _make_resolver,
     _metric,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,7 +119,6 @@ def test_top_positions_default_k():
 
 
 def test_top_positions_raises_without_per_position():
-    from circuitry.patching.sae_edges import SAEFeatureEdge
     circuit = _run_pair(per_position=False)
     if not circuit.edges:
         pytest.skip("no edges found")
@@ -137,7 +134,7 @@ def test_top_positions_raises_without_per_position():
 def test_scalar_edges_unchanged_by_per_position_flag():
     """Run the same inputs with and without per_position; scalar scores must match."""
     torch.manual_seed(42)
-    from tests.patching.test_sae_features import LinearResidToy, _make_resolver, _metric
+    from tests.patching.test_sae_features import LinearResidToy, _metric
     d, d_sae, seq_len = 8, 16, 4
     model = LinearResidToy(n_layers=2, d=d)
     sae0, sae1 = _make_two_saes(d=d, d_sae=d_sae)

@@ -1,7 +1,6 @@
 """Recorder integration for the v1.11 copy_suppression_score diagnostic."""
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
 
 from circuitry import HookPoint, Recipe, Recorder, TensorSource
