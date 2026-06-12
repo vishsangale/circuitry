@@ -61,9 +61,10 @@ is the right interface. circuitry is local-process only.
 **What it does well:** Interchange intervention framework; first-class support for
 distributed alignment search (DAS / boundless DAS); causal abstraction workflows.
 
-**Where circuitry defers:** For causal abstraction experiments (finding the minimal
-subspace that implements a high-level variable), pyvene's DAS primitives are the right
-tool. circuitry has no equivalent.
+**Where circuitry defers:** For elaborate causal abstraction experiments (boundless DAS,
+multi-variable alignment maps), pyvene's intervention framework is more complete.
+circuitry ships the core methods (`DASRunner` since v1.28, `HyperDASRunner` since v1.35)
+but not pyvene's full intervention-configuration DSL.
 
 **Where circuitry is differentiated:**
 - Training monitoring vs single-run intervention — pyvene is a single-forward-pass
@@ -99,7 +100,6 @@ itself (an optional dependency).
 |---|---|---|
 | Model serving / remote inference | Not a training-loop concern | nnsight, NDIF |
 | Logit-attribution dashboards / feature vis | Needs a frontend, not a library | Neuroscope, sae\_lens |
-| Causal abstraction / DAS | Different intervention semantics | pyvene |
 | Training data provenance / influence functions | Different analysis axis | kronfluence, trak |
 | Sparse fine-tuning / LoRA | Not a diagnostic — is a training method | PEFT, LLaMA-Factory |
 
@@ -115,6 +115,7 @@ A typical interpretability workflow might combine all of them:
    and direct logit attribution.
 3. **Load** a public SAE via **sae\_lens**; pass it to circuitry's `FeatureACDCRunner` for
    feature-circuit extraction.
-4. **Probe** causal structure with **pyvene** (DAS) or circuitry's own `EAPRunner` / `AtPRunner`.
+4. **Probe** causal structure with circuitry's own `DASRunner` / `EAPRunner` / `AtPRunner`
+   (or **pyvene** for boundless-DAS-style experiments).
 5. **Scale** to a model hosted on NDIF using **nnsight** for large-model inference, then
    analyse the results in circuitry's compare report.

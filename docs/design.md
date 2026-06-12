@@ -50,23 +50,35 @@ The library bundles primitives that get re-implemented project-by-project (effec
 ├── src/circuitry/
 │   ├── __init__.py
 │   ├── core/               # pure primitives — no torch.nn assumptions, no I/O
-│   │   ├── weight.py
-│   │   ├── activation.py
-│   │   ├── gradient.py
-│   │   ├── spectral.py
-│   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); fourier_feature_alignment, information_bottleneck_score (v1.27)
+│   │   ├── weight.py       # singular_values, effective_rank, spectral_entropy, stable_rank, condition_number, heavy_tail_alpha, update_delta, direction_cosine, attention_head_rank, update_weight_ratio, finetuning_delta_svd, critical_sharpness, gradient_subspace_saturation
+│   │   ├── activation.py   # dead_fraction, norm_stats, kurtosis, participation_ratio, token_similarity, repr_drift, gate_stats; local_intrinsic_dim, kernel_alignment, embedding_uniformity, neural_collapse_score, spectral_collapse_rank (v1.29)
+│   │   ├── gradient.py     # grad_norm_per_module, total_grad_norm, signal_propagation_depth
+│   │   ├── spectral.py     # esd, rank_trajectory, spectral_edge_gap
+│   │   ├── dynamics.py     # phase_transition_steps, head_formation_step, grokking_step (v1.14); emergence_score; fourier_feature_alignment, information_bottleneck_score (v1.27)
 │   │   ├── moe.py          # routing_entropy, expert_load_balance, pathway_complexity (v1.44)
-│   │   ├── distributed.py  # §11 reduce helpers: all_gather_concat, full_tensor (v1.45)
+│   │   ├── distributed.py  # §11 reduce helpers: all_gather_concat, all_gather_named, full_tensor (v1.45)
 │   │   ├── feature_flow.py # match_features, feature_flow_graph / FeatureFlowGraph (v1.47)
 │   │   ├── lens.py         # logit_lens_kl, tuned_lens_kl; logit_lens_distributions, future_lens_kl (v1.23–v1.24)
 │   │   ├── steer.py        # steer_vector (v1.23); repe_direction, directional_ablation (v1.29)
 │   │   ├── probe.py        # train_linear_probe / LinearProbe (v1.24); mdl_probe/MDLResult, mass_mean_probe/MassMeanProbe, verify_linear_representation (v1.29)
-│   │   ├── erase.py        # leace_erase / EraseProjection — orthogonal concept erasure (v1.24)
-│   │   └── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy, head_specialization
+│   │   ├── erase.py        # leace_erase / EraseProjection — orthogonal concept erasure (v1.24); rlace_erase (v1.31)
+│   │   ├── attention.py    # induction_score, copy_suppression_score, attention_sink_score, attention_pattern_entropy, head_specialization; attention_rollout (v1.30)
+│   │   ├── attribution.py  # gradient_input_attribution, integrated_gradients (v1.37)
+│   │   ├── circuits.py     # qk_matrix / ov_matrix / composition_scores / top_logit_tokens (v1.38); transcoder_virtual_weights, top_virtual_connections, feature_token_alignment (v1.42)
+│   │   ├── decompose.py    # logit_decomposition / LogitDecompositionResult (v1.36)
+│   │   ├── feature_geometry.py  # feature_interference, feature_coverage, feature_spread (v1.40)
+│   │   ├── neuron.py       # neuron_stats / NeuronStats (v1.39)
+│   │   ├── patching.py     # pure patching metrics: logit_diff, kl_divergence, ce_loss (+ tensor variants)
+│   │   └── inventory.py    # ParameterRecord / ModelInventory — parameter-centric model inventory
 │   ├── sae/                # v0.9: SAELens-backed SAE workflow
 │   │   ├── loader.py       # load_sae; load_gemma_scope, load_llama_scope (v1.26)
-│   │   ├── metrics.py      # sae_reconstruction_error; superposition_index (v1.29)
+│   │   ├── metrics.py      # sae_reconstruction_error, sae_downstream_loss; superposition_index (v1.29)
+│   │   ├── grad.py         # differentiable SAE helpers: encode/decode_features, sae_influence_scores (v1.5)
+│   │   ├── steer.py        # fgaa_steering_vector (v1.31)
 │   │   └── labeling.py     # FeatureEvidence / describe_features — pluggable auto-interp labels (v1.42)
+│   ├── tuned_lens/         # v1.10: post-hoc tuned-lens training + serializable container
+│   │   ├── container.py    # TunedLens
+│   │   └── fit.py          # fit_tuned_lens, model_fingerprint
 │   ├── benchmarks/         # v1.27: synthetic MIB tasks + SAEBench metrics
 │   │   ├── __init__.py
 │   │   ├── mib.py          # MIBTask, load_ioi, load_greater_than (Mueller et al. ICML 2025)
@@ -75,25 +87,47 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │   │   ├── sites.py        # Site dataclass + HF/TL resolution
 │   │   ├── intervene.py    # patch_site() context manager
 │   │   ├── runner.py       # PatchRunner prompt-pair runner
+│   │   ├── graph.py        # EAP edge graph: nodes, edges, causal enumeration
+│   │   ├── eap.py          # EAPRunner / EAPResult — edge attribution patching (+ EAP-IG)
+│   │   ├── atp.py          # AtPRunner / AtPResult — AtP* node attribution
+│   │   ├── acdc.py         # ACDCRunner — greedy circuit discovery via set-ablation
+│   │   ├── sae_features.py # SAEFeatureRunner — SAE feature node attribution (v1.5)
+│   │   ├── sae_edges.py    # SAEFeatureEdgeRunner / FeatureACDCRunner — feature→feature edges (v1.6)
+│   │   ├── sae_temporal.py # SAEFeatureTemporalRunner — per-step feature attribution (v1.22)
 │   │   ├── steer.py        # apply_steer (v1.23); apply_ablation (v1.29)
 │   │   ├── edge_pruning.py # EdgePruningRunner / EdgePruningResult — mask-logit L0 pruning (v1.25)
 │   │   ├── hap.py          # HAPRunner — EAP pre-filter + EdgePruningRunner (v1.25)
 │   │   ├── das.py          # DASRunner / DASResult — interchange-intervention rotation learning (v1.28)
+│   │   ├── scrubbing.py    # CausalScrubRunner / CircuitHypothesis / CausalScrubResult (v1.28)
+│   │   ├── relp.py         # ReLPRunner — relevance-propagation attribution (v1.32)
+│   │   ├── certified.py    # CertifiedCircuitRunner — circuit stability via data subsampling (v1.32)
+│   │   ├── iti.py          # fit_iti / apply_iti / ITIConfig — inference-time intervention (v1.33)
+│   │   ├── cd.py           # cd_token_contributions / CDResult — contextual decomposition (v1.33)
+│   │   ├── clt.py          # CLTGraphRunner / CLTGraphResult — cross-layer transcoder attribution graphs (v1.34)
+│   │   ├── hyperdas.py     # HyperDASRunner / daam_attribution (v1.35)
+│   │   ├── causal_trace.py # CausalTraceRunner / CausalTraceResult — layer-wise causal tracing (v1.36)
+│   │   ├── patch_grid.py   # PatchGridRunner / PatchGridResult — (layer × position) heatmap (v1.37)
+│   │   ├── head_knockout.py # HeadKnockoutRunner — (layer × head) importance (v1.39)
+│   │   ├── mean_ablation.py # compute_mean_activation / mean_ablation (v1.40)
 │   │   ├── consensus.py    # CircuitConsensus — cross-method stability ensembles (v1.42)
 │   │   ├── export.py       # to_neuronpedia_graph / to_html + save_* — graph interchange (v1.41)
 │   │   ├── generation.py   # trace_generation, apply_steer_steps/patch_site_steps, generation_attribution (v1.43)
 │   │   ├── spd.py          # SPDRunner / SPDResult — stochastic parameter decomposition (v1.48)
-│   │   └── scrubbing.py    # CausalScrubRunner / CircuitHypothesis / CausalScrubResult (v1.28)
+│   │   ├── tl_bridge.py    # HF → TransformerLens bridge for the optional TL backend
+│   │   └── _layout.py      # shared HF model-layout helpers (private)
 │   ├── recorder/           # opinionated training-time workflow
-│   │   ├── live.py         # LiveRecorder
+│   │   ├── live.py         # Recorder
 │   │   ├── scan.py         # scan_run
 │   │   ├── report.py       # build_report
+│   │   ├── compare.py      # compare_runs / build_compare_report
+│   │   ├── _metrics.py     # shared grouping/stats helpers (private)
 │   │   └── hooks.py        # HookPoint, TensorSource, module-type → hook strategy
 │   ├── recipes/
 │   │   ├── llm.py
 │   │   ├── vision.py
 │   │   ├── two_tower.py    # two-tower + DLRM retrieval
-│   │   └── recsys.py       # sequential recsys (SASRec / BERT4Rec / GRU4Rec)
+│   │   ├── recsys.py       # sequential recsys (SASRec / BERT4Rec / GRU4Rec)
+│   │   └── _discovery.py   # LLaMA-family state_dict classifier (private)
 │   ├── writers/
 │   │   ├── base.py         # MetricWriter Protocol
 │   │   ├── tensorboard.py
@@ -104,13 +138,19 @@ The library bundles primitives that get re-implemented project-by-project (effec
 │       └── main.py         # circuitry scan / report / compare / list-recipes / fit-tuned-lens / export-graph
 ├── tests/
 │   ├── core/
+│   ├── patching/
+│   ├── sae/
+│   ├── tuned_lens/
+│   ├── benchmarks/
 │   ├── recorder/
 │   ├── recipes/
+│   ├── perf/
 │   └── e2e/
 ├── examples/
 │   ├── tiny_llm.py
 │   ├── tiny_vision.py
-│   └── tiny_two_tower.py
+│   ├── tiny_two_tower.py
+│   └── tuned_lens.py
 └── docs/                   # markdown notes only
 ```
 
@@ -867,7 +907,7 @@ Four layers, sized to where bugs actually live:
 1. **`tests/core/` — property tests on primitives.** Known answers on synthetic matrices (identity → effective_rank = n; rank-1 outer product → 1; orthogonal → cond = 1). Invariance under orthogonal transforms. ~30-50 tests; <10s on CPU.
 2. **`tests/recorder/` — hook & writer smoke tests.** Tiny 2-layer MLP; `RecordingWriter` captures every `add_scalar`; assert tags / steps / no hook leaks after `detach()`. ~10 tests; <5s.
 3. **`tests/recipes/` — modality fixtures.** Three minimal fixtures: 1M-param toy transformer, 100k-param ResNet block, 50k-param two-tower model. Attach recorder, 3 steps, assert recipe-specific scalars appear. ~5 tests / recipe.
-4. **`tests/e2e/` — full pipeline.** Train tiny model 20 steps with `LiveRecorder` → `scan_run` over its 2 checkpoints → `build_report` → assert markdown contains expected sections. <30s.
+4. **`tests/e2e/` — full pipeline.** Train tiny model 20 steps with `Recorder` → `scan_run` over its 2 checkpoints → `build_report` → assert markdown contains expected sections. <30s.
 
 CI: GitHub Actions, Python 3.10 / 3.11 / 3.12, PyTorch latest stable. No GPU jobs (everything CPU-sized). Performance benchmark (§10) is a separate CI job using `pytest-benchmark`; regressions >15% over baseline block merge.
 
@@ -879,7 +919,7 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the full version log. Public releases 
 
 - SAE training (interop with SAELens later if demand surfaces).
 - JAX / Flax support.
-- DDP / FSDP-aware reductions — current releases are single-process; non-zero ranks no-op. See §11 for the additive future-release path.
+- ~~DDP / FSDP-aware reductions~~ **First two increments shipped: `core/distributed.py` reduce helpers in v1.45; opt-in `TensorSource.WEIGHT_FULL` / `ACTIVATION_FULL` sources with non-zero-rank participant mode in v1.46** (§11, §4.4). Default recipes remain single-process (non-zero ranks no-op); FSDP1 flat-param gathering and `DDPMetricWriter` are still open (see `TODO.md`).
 - ~~Logit lens / tuned lens beyond `core/lens.py`'s `logit_lens_kl`.~~ **Tuned lens shipped in v1.10** (`core.lens.tuned_lens_kl` + `circuitry.tuned_lens.fit_tuned_lens` + the opt-in `tuned_lens_kl` Recorder/scan diagnostic; §4.1, §4.4). **SAE-feature circuits shipped: node-level attribution in v1.5** (`SAEFeatureRunner`); **feature→feature edges + greedy `FeatureACDC` in v1.6** (`SAEFeatureEdgeRunner`, §4.6); **`mlp_out`/`attn_out` SAE sites, multi-site-per-layer composite keying, the TransformerLens backend, and the integrated-gradients variant (`variant='ig'`) all shipped in v1.7.** SAE *reconstruction* metrics shipped in v0.9 (`circuitry.sae`). **~~Per-position feature edges~~** shipped in v1.19 (`per_position=True` flag + `SAEFeatureCircuit.position_scores` + `top_positions()`; §4.6). **~~Parallel-attention intra-layer edge skipping~~** shipped in v1.20 (`arch='parallel'` flag + `_is_parallel_intra_layer()`; §4.6). **~~Transcoder SAEs as intervention sites~~** shipped in v1.21 (`TranscoderWrapper` + `hook_input=True` routing in `SAEFeatureRunner` and `SAEFeatureEdgeRunner`; §4.6). **~~Temporal SAE attribution~~** shipped in v1.22 (`SAEFeatureTemporalRunner` + `TemporalAtPResult`; §4.6). Note: each step is independent; true recurrent-SAE attribution remains a known limitation. **~~Logit lens distributions~~** shipped in v1.23 (`logit_lens_distributions` / `LayerPrediction`; §4.1). **~~Activation steering / CAA~~** shipped in v1.23 (`steer_vector` / `apply_steer`; §4.1, §4.6). **~~Linear probing~~** shipped in v1.24 (`train_linear_probe` / `LinearProbe`; §4.1). **~~Concept erasure (LEACE)~~** shipped in v1.24 (`leace_erase` / `EraseProjection`; §4.1). **~~Future lens~~** shipped in v1.24 (`future_lens_kl`; §4.1). **~~Edge Pruning (NeurIPS 2024)~~** shipped in v1.25 (`EdgePruningRunner` + `EdgePruningResult`; §4.6). **~~HAP~~** shipped in v1.25 (`HAPRunner`; §4.6). **~~CrosscoderWrapper~~** shipped in v1.26 (`CrosscoderWrapper`; §4.6). **~~Gemma Scope / Llama Scope loaders~~** shipped in v1.26 (`load_gemma_scope`/`load_llama_scope`; §4.1). **~~MIB task loaders~~** shipped in v1.27 (`load_ioi`/`load_greater_than`; §4.1). **~~SAEBench metrics~~** shipped in v1.27 (`run_saebench`/`SAEBenchResult`; §4.1). **~~Fourier feature alignment + information bottleneck~~** shipped in v1.27 (`fourier_feature_alignment`/`information_bottleneck_score`; §4.1). **~~DAS (Distributed Alignment Search)~~** shipped in v1.28 (`DASRunner`/`DASResult`; §4.6). **~~Causal Scrubbing~~** shipped in v1.28 (`CausalScrubRunner`/`CircuitHypothesis`/`CausalScrubResult`; §4.6). **~~MDL probing~~** shipped in v1.29 (`mdl_probe`/`MDLResult`; §4.1). **~~Mass-mean probe~~** shipped in v1.29 (`mass_mean_probe`/`MassMeanProbe`; §4.1). **~~verify_linear_representation~~** shipped in v1.29 (§4.1). **~~repe_direction~~** shipped in v1.29 (`core/steer.py`; §4.1). **~~directional_ablation + apply_ablation~~** shipped in v1.29 (§4.1, §4.6). **~~local_intrinsic_dim~~** shipped in v1.29 (Two-NN estimator; §4.1). **~~kernel_alignment~~** shipped in v1.29 (CKA/MNN; §4.1). **~~embedding_uniformity~~** shipped in v1.29 (§4.1). **~~superposition_index~~** shipped in v1.29 (`sae/metrics.py`; §4.1).
 - **Note:** causal interventions / activation patching shipped as the `circuitry.patching` subsystem in v1.0 — see §4.6. It is no longer out of scope.
 - Web dashboard. TB + markdown report is the UI.
@@ -948,20 +988,20 @@ Reference benchmark workload: a 50M-param decoder-only transformer on synthetic 
 
 ## 11. Multi-process (DDP / FSDP) design notes
 
-Current releases are single-process. This section locks in *what circuitry does today* so a future-release FSDP upgrade is additive, not a rewrite.
+Default recipes are single-process; opt-in multi-process support shipped incrementally in v1.45–v1.46 (status notes inline below). This section locks in the default contract and the additive upgrade path.
 
-### Current contract (single process, rank-0 semantics)
+### Default contract (single process, rank-0 semantics)
 
-- `Recorder.attach()` checks `torch.distributed.is_initialized()`. If True and `rank != 0`, the recorder becomes a no-op (`attach()` returns immediately, all hooks are skipped). This means existing multi-rank training scripts can import `circuitry` without crashing and without duplicate writes; they just don't get diagnostics until the multi-process path lands.
+- `Recorder.attach()` checks `torch.distributed.is_initialized()`. If True and `rank != 0`, the recorder becomes a no-op (`attach()` returns immediately, all hooks are skipped) — unless the recipe declares `*_FULL` sources, in which case non-zero ranks attach in participant mode (v1.46; see below). This means existing multi-rank training scripts can import `circuitry` without crashing and without duplicate writes.
 - Primitives in `core/` assume **full, unsharded** tensors. They do not gather. They will silently return wrong numbers if given an FSDP-sharded parameter. The docstring and a runtime assertion (`shape sanity check against module's intended shape`) flag this.
 - Writers write to the rank-0 process's filesystem; no rank coordination.
 
-### Future-release path (additive, no rewrite)
+### Upgrade path (additive, no rewrite — partially shipped v1.45–v1.46)
 
-To enable multi-process diagnostics in a future release without changing the current API surface:
+To enable multi-process diagnostics without changing the current API surface:
 
 - `HookPoint` already takes a `source` enum; the future release adds `TensorSource.WEIGHT_FULL` and `ACTIVATION_FULL` variants that trigger an `all_gather_into_tensor` before passing to the primitive. The pattern / modules / selector escape hatches are unchanged. **Status: shipped in v1.46.0.** Implementation note: the activation gather uses `all_gather_object` of `{name: cpu tensor}` dicts (one collective per emit step) rather than `all_gather_into_tensor` — it tolerates per-rank shape differences and missing captures without shape-negotiation collectives, and emit cadence is not a hot path. Non-zero ranks attach in *participant mode* (join the collectives, write nothing); recipes without `*_FULL` sources keep the v0.x no-op contract. See §4.4 for the user-facing contract.
-- `core/` primitives stay single-tensor in / single-float out. The future release adds a small `core/distributed.py` with helpers (`all_gather_sharded_param(param) -> Tensor`) that the recorder calls before the primitive; primitives themselves never know about ranks. **Status: the helper module shipped in v1.45.0** (`is_distributed` / `world_size` / `is_main_process` / `all_gather_concat` / DTensor-aware `full_tensor`; single-process passthrough semantics; 2-process gloo tests). The recorder integration (`WEIGHT_FULL` / `ACTIVATION_FULL` sources, FSDP1 `summon_full_params` gathering, all-rank collective participation with rank-0-only writes) remains the follow-up.
+- `core/` primitives stay single-tensor in / single-float out. A small `core/distributed.py` provides helpers that the recorder calls before the primitive; primitives themselves never know about ranks. **Status: the helper module shipped in v1.45.0** (`is_distributed` / `world_size` / `is_main_process` / `all_gather_concat` / `all_gather_named` / DTensor-aware `full_tensor`; single-process passthrough semantics; 2-process gloo tests), **and the recorder integration shipped in v1.46.0** (`WEIGHT_FULL` / `ACTIVATION_FULL` sources, all-rank collective participation with rank-0-only writes). FSDP1 `summon_full_params` gathering remains open (see `TODO.md`).
 - `MetricWriter` gains an optional `rank: int` constructor argument; the default tensorboard adapter writes from rank 0 only (current behavior). A new `DDPMetricWriter` aggregates histogram tensors across ranks before writing.
 - The `StepContext.gradients` / `activations` / `weights` dicts gain a "gathered" status flag; built-in diagnostics ignore it (they only see post-gather tensors), but custom diagnostics that want raw shards can opt in.
 

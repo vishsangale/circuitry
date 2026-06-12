@@ -7,8 +7,7 @@ unavailable or uninitialized, so single-process behaviour is unchanged.
 
 This module is the foundation increment of the multi-process milestone; the
 ``TensorSource.WEIGHT_FULL`` / ``ACTIVATION_FULL`` recorder integration that
-drives these helpers lands in a follow-up release (see
-``docs/plan-sota-3.md`` v1.45).
+drives these helpers shipped in v1.46 (see design §11 and §4.4).
 """
 from __future__ import annotations
 
