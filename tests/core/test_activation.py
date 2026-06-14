@@ -17,6 +17,46 @@ from circuitry.core.activation import (
 )
 
 
+def test_rms_known_value():
+    # rms([3, 4]) = sqrt((9+16)/2) = sqrt(12.5)
+    x = torch.tensor([3.0, 4.0])
+    assert activation.rms(x) == pytest.approx(math.sqrt(12.5), rel=1e-6)
+
+
+def test_rms_zeros():
+    assert activation.rms(torch.zeros(8)) == pytest.approx(0.0)
+
+
+def test_rms_empty():
+    assert activation.rms(torch.tensor([])) == pytest.approx(0.0)
+
+
+def test_rms_constant():
+    # rms of constant c = |c|
+    c = 3.7
+    assert activation.rms(torch.full((10,), c)) == pytest.approx(abs(c), rel=1e-6)
+    assert activation.rms(torch.full((10,), -c)) == pytest.approx(abs(c), rel=1e-6)
+
+
+def test_rms_returns_float():
+    assert isinstance(activation.rms(torch.ones(4)), float)
+
+
+def test_rms_ge_std_nonzero_mean():
+    # For a non-zero-mean distribution, rms >= std (because rms^2 = std^2 + mean^2)
+    x = torch.tensor([2.0, 3.0, 4.0, 5.0])
+    assert activation.rms(x) >= float(x.std(unbiased=False).item())
+
+
+def test_rms_in_act_diags_registry():
+    from circuitry.recorder.live import _ACT_DIAGS
+    assert "rms" in _ACT_DIAGS
+    # callable and returns a float
+    result = _ACT_DIAGS["rms"](torch.tensor([3.0, 4.0]))
+    assert isinstance(result, float)
+    assert result == pytest.approx(math.sqrt(12.5), rel=1e-6)
+
+
 def test_dead_fraction_all_zeros_is_one():
     x = torch.zeros(4, 8)
     assert activation.dead_fraction(x) == pytest.approx(1.0)

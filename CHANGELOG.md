@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`activation.rms`** (`core/activation.py`): root-mean-square magnitude
+  diagnostic — `sqrt(mean(x**2))`. Unlike `norm_stats.std` (mean-centered),
+  RMS includes any mean offset and therefore tracks true activation magnitude.
+  Motivated by residual-stream scale blowups (e.g. DyT / saturating-norm
+  failures where residual RMS grows 0.04 → 20 across layers; `std` alone
+  misses a mean shift). Registered as `"rms"` in `_ACT_DIAGS` so recipes can
+  name it in `activation_diagnostics`. Re-exported at package top-level.
+
 ## [1.48.0] — 2026-06-11
 
 **Stochastic Parameter Decomposition.** Second loose-end milestone

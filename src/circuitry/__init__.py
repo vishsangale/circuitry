@@ -36,6 +36,7 @@ from circuitry.core.activation import (
     local_intrinsic_dim,
     neural_collapse_score,
     repr_drift,
+    rms,
     spectral_collapse_rank,
     token_similarity,
 )
@@ -257,6 +258,7 @@ __all__ = [
     "routing_entropy",
     "repe_direction",
     "repr_drift",
+    "rms",
     "apply_steer_steps",
     "generation_attribution",
     "patch_site_steps",

@@ -203,6 +203,7 @@ weight.direction_cosine(sd_now: Mapping[str, Tensor], sd_prev: Mapping[str, Tens
 activation.dead_fraction(x: Tensor, threshold: float = 0.0) -> float
 activation.kurtosis(x: Tensor, dim: int | tuple = -1) -> Tensor
 activation.participation_ratio(x: Tensor) -> float
+activation.rms(x: Tensor) -> float  # sqrt(mean(x**2)); includes mean offset — tracks true magnitude (e.g. residual-stream scale blowup); registered as "rms" in _ACT_DIAGS
 activation.norm_stats(x: Tensor) -> NormStats   # mean, std, max, frac>k*median
 activation.gate_stats(x: Tensor, eps: float = 1e-6) -> dict[str, float]  # frac_active, mean_abs, std (returns plain dict; keys: "frac_active", "mean_abs", "std")
 activation.repr_drift(ref: Tensor, cur: Tensor, method: str = 'linear_cka', *,

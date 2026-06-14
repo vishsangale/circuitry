@@ -22,6 +22,7 @@ def test_public_surface():
         "discover",
         "register_recipe",
         "repr_drift",
+        "rms",
         "scan_run",
         "token_similarity",
         "update_delta",
@@ -184,6 +185,7 @@ def test_v02_surface_exports():
     assert hasattr(circuitry, "direction_cosine")
     assert hasattr(circuitry, "discover")
     assert hasattr(circuitry, "repr_drift")
+    assert hasattr(circuitry, "rms")
 
 
 def test_sae_feature_runner_accessible():

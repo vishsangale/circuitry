@@ -40,6 +40,7 @@ _ACT_DIAGS = {
     "dead_fraction": _act.dead_fraction,
     "participation_ratio": _act.participation_ratio,
     "kurtosis": lambda x: float(_act.kurtosis(x).mean().item()),
+    "rms": _act.rms,
 }
 
 _GRAD_DIAGS = {

@@ -51,6 +51,18 @@ def norm_stats(x: ArrayLike, k: float = 3.0) -> NormStats:
     )
 
 
+def rms(x: ArrayLike) -> float:
+    """Root-mean-square magnitude of all elements, ``sqrt(mean(x**2))``.
+
+    Unlike :func:`norm_stats` ``std`` (which is mean-centered), RMS includes
+    any mean offset — so it tracks the true activation magnitude (e.g. a
+    residual stream whose scale runs away with depth)."""
+    t = _as_tensor(x)
+    if t.numel() == 0:
+        return 0.0
+    return float(t.pow(2).mean().sqrt().item())
+
+
 def kurtosis(x: ArrayLike, dim: int | tuple[int, ...] = -1) -> torch.Tensor:
     """Excess kurtosis along ``dim``. Returns a tensor (not a Python float)
     because callers commonly want per-channel kurtosis."""
